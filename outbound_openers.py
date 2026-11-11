@@ -106,8 +106,9 @@ _ANGLE_SYSTEM = (
 def clean(text: str) -> str:
     """Normalise punctuation and whitespace the way our emails require."""
     t = (text or "").strip().strip('"').strip()
-    t = t.replace("—", " - ").replace("–", " - ").replace("--", " - ")
+    t = t.replace("—", ",").replace("–", ",").replace("--", ",")
     t = re.sub(r"\s+", " ", t)
+    t = re.sub(r"\s+,", ",", t)
     t = re.sub(r"\s+-\s+", " - ", t)
     return t
 
@@ -838,7 +839,9 @@ def rich_sentence(brand: str, phrases: list[str], *, allow_amazon: bool, max_wor
 def collect_facts(lead: dict[str, Any]) -> LeadFacts:
     """StoreLeads category, recipe signal, confirmed Amazon product, scraped phrase."""
 
-    brand = str(lead.get("brand") or lead.get("domain") or "").strip()
+    from outbound_pipeline import clean_brand_name
+
+    brand = clean_brand_name(lead.get("brand") or lead.get("domain") or "")
     amazon_product = ""
     if amazon_confirmed(lead):
         amazon_product = _fact_phrase(_AMAZON_WORD.sub(" ", str(lead.get("amz_product") or "")))

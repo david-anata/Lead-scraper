@@ -22,6 +22,7 @@ import os
 import secrets
 from uuid import uuid4
 from datetime import datetime
+from typing import Any
 from threading import Event, Thread
 from zoneinfo import ZoneInfo
 
@@ -38,9 +39,115 @@ router = APIRouter(prefix="/api/jobs/outbound-morning", tags=["outbound-jobs"])
 _TZ = "America/Denver"
 _MARKER = "__morning_run__"             # recipe name used purely as a daily marker
 _RUN_HOUR = 7                           # before the working day, so it is ready
+_morning_state: dict = {"running": False, "last_status": "", "last_reason": ""}
 _SCAN_PER_DAY = 12                      # ~30 min of Amazon checks, then it stops
 _DAILY_COMPANY_CAP = 300                # David 2026-10-26: maximize brands pulled
 _PULL_TIME_BUDGET_S = 420              # leave room for the Amazon checks inside 800s
+
+
+# #sales. Same channel id the sales call prep posts to.
+SALES_SLACK_CHANNEL = "CQRMXS339"
+
+
+def morning_is_running() -> bool:
+    return bool(_morning_state.get("running"))
+
+
+def begin_morning_run() -> bool:
+    """Claim the manual pull. False when one is already in this process."""
+
+    if _morning_state.get("running"):
+        return False
+    _morning_state["running"] = True
+    _morning_state["last_status"] = "running"
+    return True
+
+
+def finish_morning_run(result: dict | None) -> None:
+    result = result or {}
+    failed = result.get("ran") is False and bool(result.get("reason"))
+    _morning_state["running"] = False
+    _morning_state["last_status"] = "failed" if failed else "finished"
+    _morning_state["last_reason"] = str(result.get("reason") or "")
+    _morning_state["last"] = result
+
+
+def morning_pull_status(engine, now: datetime) -> dict:
+    """What the Daily Leads button should say, without starting a pull."""
+
+    if morning_is_running():
+        return {"ok": False, "status": "running", "reason": "Today's pull is already running."}
+    today = _today(now)
+    try:
+        from sales_support_agent.services import outbound_batches
+
+        rows, _total = outbound_batches.load_batches(engine, page=1, per_page=30)
+    except Exception:  # noqa: BLE001
+        rows = []
+    match = next((row for row in rows if row.business_date == today), None)
+    if match is not None:
+        held = 0
+        try:
+            import outbound_enrich as enrich
+
+            held = enrich._count_opener_holds(engine)
+        except Exception:  # noqa: BLE001
+            held = 0
+        return {
+            "ok": True,
+            "status": "finished",
+            "already_ran": True,
+            "batch_id": match.id,
+            "unique_companies": match.unique_companies,
+            "scanned": match.scanned,
+            "matched": match.matched,
+            "completed_count": match.completed_count,
+            "recipe_count": match.recipe_count,
+            "held_openers": held,
+            "reason": (
+                f"Already ran today. Finished with {match.unique_companies} companies, "
+                f"scanned {match.scanned}, matched {match.matched}, "
+                f"{match.completed_count} of {match.recipe_count} recipes complete, "
+                f"{held} held contacts."
+            ),
+        }
+    if _morning_state.get("last_status") == "failed" and _morning_state.get("last_reason"):
+        return {"ok": False, "status": "failed", "reason": f"Failed: {_morning_state['last_reason']}"}
+    return {"ok": True, "status": "ready", "reason": "No pull yet today."}
+
+
+def post_sales_alert(batch: Any, recipe_runs: list[dict], *, slack: Any, held: int = 0) -> dict:
+    """Tell #sales when a daily batch delivered nothing or a recipe failed.
+
+    A skipped held recipe is not an error. Slack being unconfigured does not
+    raise. The message names the batch, the recipe, and the reason.
+    """
+
+    failures = [
+        run for run in recipe_runs
+        if str(run.get("status") or "") == "failed"
+    ]
+    companies = int(getattr(batch, "unique_companies", 0) or 0)
+    if companies > 0 and not failures:
+        return {"posted": False, "reason": ""}
+    lines = [
+        f"Daily Leads batch {getattr(batch, 'id', '')} for {getattr(batch, 'business_date', '')} needs a look.",
+    ]
+    if companies == 0:
+        lines.append("Delivered 0 companies.")
+    for run in failures:
+        lines.append(
+            f"Recipe {run.get('recipe_key') or 'unknown'} failed: {run.get('error') or 'no reason recorded'}."
+        )
+    if held:
+        lines.append(f"Held contacts waiting for a shopper-visible opener: {held}.")
+    text = " ".join(lines)
+    try:
+        result = slack.post_message(text=text, channel=SALES_SLACK_CHANNEL)
+    except Exception:  # noqa: BLE001
+        logger.exception("[outbound-jobs] sales alert was not posted")
+        return {"posted": False, "reason": "slack post failed", "text": text}
+    return {"posted": bool(result.get("ok")), "reason": str(result.get("reason") or ""), "text": text}
 
 
 def _today(now: datetime) -> str:
@@ -307,26 +414,27 @@ def run_morning_routine(*, now: datetime | None = None, scan_limit: int = _SCAN_
             daily_remaining = max(0, daily_remaining - recorded)
             out["pulled"] += recorded
             out["recipes"].extend(list(sourced.get("recipes") or []))
-        stages = []
         for item in sourced.get("campaigns") or []:
-            stages.append(
-                f"{item.get('recipe_key')}:recorded={int(item.get('recorded') or 0)}"
-                f"/scanned={int(item.get('scanned') or 0)}"
-                f"/seen={int(item.get('skipped_seen') or 0)}"
-                f"/unfit={int(item.get('skipped_unfit') or 0)}"
-            )
-            if item.get("error"):
-                stages.append(f"{item.get('recipe_key')}:error")
-        if sourced.get("campaigns") or sourced.get("stopped_reason"):
+            recipe_runs.append({
+                "recipe_key": str(item.get("recipe_key") or ""),
+                "recipe_label": str(item.get("recipe_key") or ""),
+                "status": "failed" if item.get("error") else "complete",
+                "fresh": int(item.get("recorded") or 0),
+                "scanned": int(item.get("scanned") or 0),
+                "matched": int(item.get("recorded") or 0),
+                "skipped_seen": int(item.get("skipped_seen") or 0),
+                "error": str(item.get("error") or ""),
+            })
+        if not sourced.get("campaigns") and sourced.get("stopped_reason"):
             recipe_runs.append({
                 "recipe_key": "campaign_filters",
                 "recipe_label": "Signal campaign filters",
-                "status": "complete",
-                "fresh": recorded,
+                "status": "failed",
+                "fresh": 0,
                 "scanned": int(sourced.get("scanned") or 0),
-                "matched": recorded,
+                "matched": 0,
                 "skipped_seen": int(sourced.get("skipped_seen") or 0),
-                "error": (sourced.get("stopped_reason") or "; ".join(stages))[:500],
+                "error": str(sourced.get("stopped_reason") or "")[:500],
             })
         try:
             sales = _source.source_sales_org(
@@ -434,6 +542,25 @@ def run_morning_routine(*, now: datetime | None = None, scan_limit: int = _SCAN_
         engine, batch_id=batch_id, recipe_runs=recipe_runs, leads=all_leads,
         filename=f"anata-daily-leads-{_today(now)}.csv",
     )
+    held_openers = 0
+    if engine is not None:
+        try:
+            import outbound_enrich as _enrich
+
+            held_openers = _enrich._count_opener_holds(engine)
+        except Exception:  # noqa: BLE001
+            logger.exception("[outbound-jobs] could not count held openers")
+    out["held_openers"] = held_openers
+    try:
+        from sales_support_agent.config import load_settings
+        from sales_support_agent.integrations.slack import SlackClient
+
+        alert = post_sales_alert(
+            batch, recipe_runs, slack=SlackClient(load_settings()), held=held_openers,
+        )
+        out["sales_alert"] = alert.get("posted")
+    except Exception:  # noqa: BLE001
+        logger.exception("[outbound-jobs] sales alert failed")
     try:
         from sales_support_agent.services.outbound_delivery import deliver_daily_batch
         delivery = deliver_daily_batch(engine, batch, outbound_batches.load_batch_leads(engine, [batch_id]))

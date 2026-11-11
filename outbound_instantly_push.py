@@ -392,6 +392,12 @@ def api_key() -> str:
     return (os.getenv("INSTANTLY_API_KEY") or os.getenv("INSTANTLY_AI") or "").strip()
 
 
+def _company_name(lead: dict[str, Any]) -> str:
+    from outbound_pipeline import clean_brand_name
+
+    return clean_brand_name(lead.get("brand") or lead.get("domain") or "")
+
+
 def build_lead(contact: dict[str, Any], lead: dict[str, Any], opener: str) -> dict[str, Any]:
     """One Instantly lead. Field names match the sequence variables:
     {{firstName}}, {{companyName}}, {{personalization}}, {{category}}, {{brandAngle}}."""
@@ -401,7 +407,7 @@ def build_lead(contact: dict[str, Any], lead: dict[str, Any], opener: str) -> di
         "email": str(contact.get("email") or "").strip().lower(),
         "first_name": str(contact.get("first_name") or "").strip(),
         "last_name": str(contact.get("last_name") or "").strip(),
-        "company_name": str(lead.get("brand") or lead.get("domain") or "").strip(),
+        "company_name": _company_name(lead),
         "website": str(lead.get("domain") or "").strip(),
         "personalization": opener,
         "custom_variables": {

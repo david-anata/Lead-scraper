@@ -20,7 +20,7 @@ _LEAD_OPS_URL = "https://agent.anatainc.com/admin/outbound/lead-ops"
 
 def summary_text(run: dict[str, Any], *, include_link: bool = True, test: bool = False) -> str:
     status = "cut short" if run.get("partial") else "complete"
-    prefix = "TEST — " if test else ""
+    prefix = "TEST, " if test else ""
     body = (
         f"{prefix}Outbound pull {run.get('recipe') or 'Unknown'} is {status}.\n"
         f"Scanned: {int(run.get('scanned') or 0):,}\n"
@@ -97,7 +97,7 @@ def deliver_daily_batch(engine, batch: Any, leads: list[dict[str, Any]], *,
     if not force and not prefs["enabled"]:
         return result
     settings = load_settings()
-    prefix = "TEST — " if test else ""
+    prefix = "TEST, " if test else ""
     text = (
         f"{prefix}Daily Leads for {batch.business_date}\n"
         f"Unique companies: {batch.unique_companies:,}\n"
@@ -119,7 +119,7 @@ def deliver_daily_batch(engine, batch: Any, leads: list[dict[str, Any]], *,
         for recipient in recipients:
             ok = notify._send(
                 settings, to_email=recipient,
-                subject=f"{prefix}Daily Leads: {batch.unique_companies} companies — {batch.business_date}",
+                subject=f"{prefix}Daily Leads: {batch.unique_companies} companies, {batch.business_date}",
                 text=text, attachments=attachments,
             )
             sent += 1 if ok else 0
@@ -134,7 +134,7 @@ def deliver_daily_batch(engine, batch: Any, leads: list[dict[str, Any]], *,
             client = SlackClient(settings)
             response = client.upload_file(
                 content=attachments[0]["content"],
-                filename=filename, title=f"Daily Leads — {batch.business_date}",
+                filename=filename, title=f"Daily Leads, {batch.business_date}",
                 initial_comment=text, channel=channel,
             )
             result["slack"] = "delivered" if response.get("ok") else "failed"

@@ -16,7 +16,7 @@ CONTACT = {"email": "Ann@Huppy.com", "first_name": "Ann", "last_name": "Lee", "t
 
 def test_clean_replaces_dashes_with_hyphens():
     assert "—" not in op.clean("Nice work — really")
-    assert op.clean("Nice work — really") == "Nice work - really"
+    assert op.clean("Nice work — really") == "Nice work, really"
 
 
 def test_validate_rejects_numbers_links_cliches_and_length():

@@ -165,6 +165,43 @@ _DAILY_CSS = """
 """
 
 
+def daily_run_control() -> str:
+    """The manual pull control. It confirms, then calls the morning endpoint."""
+
+    return """
+      <div class="daily-callout">
+        <button type="button" class="daily-btn" id="daily-run-now">Run today's pull now</button>
+        <p id="daily-run-status" class="daily-muted" role="status"></p>
+      </div>
+      <script>
+        (function(){
+          var button = document.getElementById('daily-run-now');
+          var status = document.getElementById('daily-run-status');
+          if (!button || !status) return;
+          function show(data){
+            var label = data.status || '';
+            if (label === 'started') label = 'Started';
+            else if (label === 'running') label = 'Running';
+            else if (label === 'finished' || data.already_ran) label = 'Finished';
+            else if (label === 'failed') label = 'Failed';
+            status.textContent = (label ? label + '. ' : '') + (data.reason || '');
+            button.disabled = !!(data.started || data.already_ran || label === 'Running');
+          }
+          fetch('/admin/api/outbound/morning-status').then(function(r){return r.json();}).then(show).catch(function(){});
+          button.addEventListener('click', function(){
+            if (!window.confirm("Run today's pull now? This is the same morning job, and it will not start twice.")) return;
+            button.disabled = true;
+            status.textContent = 'Started.';
+            fetch('/admin/api/outbound/run-morning', {method: 'POST'})
+              .then(function(r){return r.json().then(function(d){d._ok = r.ok; return d;});})
+              .then(show)
+              .catch(function(){ status.textContent = 'Failed. Could not reach the server.'; button.disabled = false; });
+          });
+        })();
+      </script>
+    """
+
+
 @router.get("/admin/outbound/daily", response_class=HTMLResponse)
 def outbound_daily(request: Request, page: int = 1) -> Response:
     """The operator home: one durable file per business day."""
@@ -210,6 +247,7 @@ def outbound_daily(request: Request, page: int = 1) -> Response:
     pages = max(1, (total + 9) // 10)
     body = f"""
       <div class='daily-head'><div><h1>Daily Leads</h1><p class='sub'>Your morning company file, pulled automatically, deduplicated once, and ready for Clay.</p></div><span class='daily-status' id='daily-status'>Weekdays · {_pull_clock_label(pull_hour)} Denver <button type='button' class='daily-pencil' id='daily-time-edit' aria-label='Edit automatic pull time'>Edit</button></span></div>
+      {daily_run_control()}
       {missing_today_html}
       <dialog class='daily-dialog' id='daily-time-dialog' aria-labelledby='daily-time-title'>
         <form id='daily-time-form'>
@@ -842,7 +880,7 @@ _AMAZON_SCAN_CONTROL = """
           runB.disabled=true; m.textContent='Starting the full run...';
           fetch('/admin/api/outbound/run-morning',{method:'POST'})
             .then(function(r){return r.json();})
-            .then(function(d){ m.textContent=d.reason||''; if(d.ok){ poll(); } else { runB.disabled=false; } })
+            .then(function(d){ m.textContent=d.reason||''; if(d.started){ poll(); } else { runB.disabled=false; } })
             .catch(function(){ m.textContent='Could not reach the server.'; runB.disabled=false; });
         });
         if(mailB) mailB.addEventListener('click', function(){
@@ -2343,6 +2381,23 @@ async def outbound_set_video_url(request: Request) -> JSONResponse:
                   "and the brand has to be one we already hold."})
 
 
+@router.get("/admin/api/outbound/morning-status", response_class=JSONResponse)
+async def outbound_morning_status(request: Request) -> Response:
+    """Read today's pull state. This does not start a pull."""
+
+    from zoneinfo import ZoneInfo
+
+    from sales_support_agent.api import outbound_jobs as _jobs
+    from sales_support_agent.models.database import get_engine
+
+    try:
+        engine = get_engine()
+    except Exception:  # noqa: BLE001
+        return JSONResponse(status_code=503, content={"ok": False, "status": "failed", "reason": "Failed: no database."})
+    now = datetime.now(ZoneInfo("America/Denver"))
+    return JSONResponse(content=_jobs.morning_pull_status(engine, now))
+
+
 @router.post("/admin/api/outbound/run-morning", response_class=JSONResponse)
 async def outbound_run_morning(request: Request) -> Response:
     """Run the whole morning routine now: pull, check Amazon, email the batch.
@@ -2350,15 +2405,31 @@ async def outbound_run_morning(request: Request) -> Response:
     Backgrounded, because a full run is roughly half an hour of Amazon checks
     and would never return inside a request. The same routine the 7am schedule
     calls, so testing it here tests the real thing rather than a copy.
+    A second click while it is running, or after today's batch exists, does
+    not start another pull.
     """
+    from zoneinfo import ZoneInfo
+
     from starlette.background import BackgroundTask
 
     from sales_support_agent.api import outbound_jobs as _jobs
+    from sales_support_agent.models.database import get_engine
 
-    if _AMAZON_SCAN.get("running"):
+    if _AMAZON_SCAN.get("running") or _jobs.morning_is_running():
         return JSONResponse(status_code=409, content={
-            "ok": False,
-            "reason": f"A scan is already running ({_AMAZON_SCAN.get('done', 0)} of {_AMAZON_SCAN.get('total', 0)} done)."})
+            "ok": False, "status": "running",
+            "reason": "Today's pull is already running."})
+    try:
+        engine = get_engine()
+    except Exception:  # noqa: BLE001
+        return JSONResponse(status_code=503, content={"ok": False, "status": "failed", "reason": "Failed: no database."})
+    now = datetime.now(ZoneInfo("America/Denver"))
+    current = _jobs.morning_pull_status(engine, now)
+    if current.get("already_ran") or current.get("status") == "running":
+        return JSONResponse(status_code=200 if current.get("already_ran") else 409, content=current)
+    if not _jobs.begin_morning_run():
+        return JSONResponse(status_code=409, content={
+            "ok": False, "status": "running", "reason": "Today's pull is already running."})
 
     _AMAZON_SCAN.update(running=True, done=0, total=_jobs._SCAN_PER_DAY,
                         started=datetime.now(timezone.utc).isoformat(timespec="seconds"),
@@ -2366,14 +2437,16 @@ async def outbound_run_morning(request: Request) -> Response:
 
     def _go() -> None:
         try:
-            _jobs.run_morning_routine()
+            result = _jobs.run_morning_routine()
+            _jobs.finish_morning_run(result)
+        except Exception as exc:  # noqa: BLE001
+            _jobs.finish_morning_run({"ran": False, "reason": str(exc)})
         finally:
-            _AMAZON_SCAN.update(running=False, last="Morning routine finished. Check your email.")
+            _AMAZON_SCAN.update(running=False, last="Morning routine finished.")
 
     return JSONResponse(
-        content={"ok": True, "started": True,
-                 "reason": "Running now: pulling brands, checking Amazon, then emailing you. "
-                           "Roughly 30 minutes. You can close this."},
+        content={"ok": True, "started": True, "status": "started",
+                 "reason": "Started. Pulling brands, then checking Amazon."},
         background=BackgroundTask(_go),
     )
 
