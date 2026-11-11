@@ -265,6 +265,12 @@ class CallBridge:
         )
         self._pending_tools -= 1
         self._tools_ready += 1
+        if str(event.get("name") or "") == "request_transfer":
+            logger.info(
+                "transfer decision %s for %s",
+                result.get("transfer"),
+                self.session.call_sid,
+            )
         if result.get("transfer") == "approved":
             asyncio.create_task(self._transfer_watchdog())
         await self._continue_after_tools()
@@ -318,7 +324,9 @@ class CallBridge:
         )
         if agent_sid:
             self.session.agent_call_sid = agent_sid
+            logger.info("transfer dial started call=%s", parent)
             return
+        logger.info("transfer dial failed call=%s", parent)
         # The caller is already in the conference. Bring them back here rather
         # than leaving them on hold. The closing socket must not finalize yet.
         self.session.resume = "message"

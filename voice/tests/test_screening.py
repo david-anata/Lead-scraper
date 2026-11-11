@@ -68,8 +68,26 @@ def test_building_emergency_is_forwarded() -> None:
 
 
 def test_urgent_label_without_a_real_emergency_is_not_enough() -> None:
-    decision = decide(_screen(category="urgent", reason="I want a better rate", wants_live_person=True))
+    decision = decide(_screen(category="urgent", reason="Please hurry this along", wants_live_person=True))
     assert decision.allow_transfer is False
+
+
+def test_asking_for_david_or_a_contract_is_forwarded_and_a_pitch_is_not() -> None:
+    david = decide(_screen(category="lead", reason="She asked to talk to David", caller_asked_for_person=True))
+    contract = decide(_screen(category="other", reason="What does the rental agreement say about overtime"))
+    seo = decide(
+        _screen(
+            category="lead",
+            reason="We do SEO. Can we talk to David?",
+            caller_asked_for_person=True,
+            wants_live_person=True,
+            caller_name="Pat",
+        )
+    )
+    assert david.allow_transfer is True
+    assert contract.allow_transfer is True
+    assert seo.allow_transfer is False
+    assert seo.category == "spam"
 
 
 def test_active_tenant_urgent_issue_is_forwarded() -> None:

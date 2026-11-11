@@ -56,6 +56,35 @@ AGENCY_SHARED_PHRASES = frozenset(
 )
 AGENCY_LINES = frozenset({"agency", "fulfillment", "software"})
 
+# A caller who asks for a person is not a pitch. Spam is still checked first.
+PERSON_PHRASES = (
+    "david",
+    "the owner",
+    "your owner",
+    "a person",
+    "real person",
+    "live person",
+    "talk to someone",
+    "speak to someone",
+    "speak with someone",
+    "transfer me",
+    "transfer us",
+    "connect me",
+)
+
+# Questions this line should hand to a person instead of improvising.
+HANDOFF_PHRASES = (
+    "contract",
+    "rental agreement",
+    "the agreement",
+    "pricing exception",
+    "price exception",
+    "discount",
+    "better rate",
+    "better price",
+    "legal question",
+)
+
 EMERGENCY_PHRASES = (
     "fire",
     "flood",
@@ -114,6 +143,7 @@ class ScreenInput:
     known_numbers: frozenset[str] = frozenset()
     forward_configured: bool = True
     business_line: str = ""
+    caller_asked_for_person: bool = False
 
 
 @dataclass(frozen=True)
@@ -150,6 +180,16 @@ def looks_like_solicitation(text: str, *, agency_lead: bool = False) -> bool:
         else SOLICITATION_PHRASES
     )
     return any(phrase in haystack for phrase in phrases)
+
+
+def looks_like_person_request(text: str) -> bool:
+    haystack = f" {text.casefold()} "
+    return any(phrase in haystack for phrase in PERSON_PHRASES)
+
+
+def looks_like_handoff(text: str) -> bool:
+    haystack = f" {text.casefold()} "
+    return any(phrase in haystack for phrase in HANDOFF_PHRASES)
 
 
 def looks_like_emergency(text: str) -> bool:
@@ -216,6 +256,12 @@ def decide(screen: ScreenInput) -> ScreenDecision:
         tenant_urgent = screen.is_current_tenant and real_emergency
         if real_emergency or tenant_urgent:
             return _approved("urgent" if not screen.is_current_tenant else "tenant")
+
+    # Asking for a person, David, a contract, or a price exception is a transfer.
+    # Solicitors are already refused above, so "talk to David about SEO" stays blocked.
+    if screen.caller_asked_for_person or looks_like_person_request(text) or looks_like_handoff(text):
+        logged = category if category in {"lead", "tenant", "other", "urgent"} else "other"
+        return _approved(logged)
 
     number = _normalize_known(screen.caller_number)
     known = screen.is_known_customer or (bool(number) and number in screen.known_numbers)

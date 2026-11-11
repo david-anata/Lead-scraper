@@ -96,7 +96,7 @@ TOOLS: list[dict[str, Any]] = [
     {
         "type": "function",
         "name": "request_transfer",
-        "description": "Ask to connect the caller to a person. The server may decline. Use only for emergencies, urgent tenant issues, known customers who need someone now, or qualified event, workspace, agency, or fulfillment prospects who want to talk now.",
+        "description": "Ask to connect the caller to a person. The server may decline sales pitches. Use when they ask for a person, the owner, or David, when they have a contract or price-exception question you cannot answer, for a building emergency, or when a real prospect wants to talk now.",
         "parameters": {
             "type": "object",
             "properties": {
@@ -107,6 +107,10 @@ TOOLS: list[dict[str, Any]] = [
                 "reason": {"type": "string"},
                 "notes": {"type": "string"},
                 "wants_live_person": {"type": "boolean"},
+                "caller_asked_for_person": {
+                    "type": "boolean",
+                    "description": "True when they asked for a person, the owner, David, a contract answer you cannot give, or a pricing exception.",
+                },
                 "is_building_emergency": {"type": "boolean"},
                 "is_current_tenant": {"type": "boolean"},
                 "is_known_customer": {"type": "boolean"},
@@ -230,6 +234,7 @@ def _transfer(
             reason=str(args.get("reason") or session.reason),
             notes=str(args.get("notes") or session.notes),
             wants_live_person=bool(args.get("wants_live_person")),
+            caller_asked_for_person=bool(args.get("caller_asked_for_person")),
             is_building_emergency=bool(args.get("is_building_emergency")),
             is_current_tenant=bool(args.get("is_current_tenant")),
             is_known_customer=bool(args.get("is_known_customer")),
@@ -318,7 +323,11 @@ def session_update_event(settings: Settings, instructions: str) -> dict[str, Any
                         ],
                     },
                 },
-                "output": {"format": {"type": "audio/pcmu"}},
+                "output": {
+                    "format": {"type": "audio/pcmu"},
+                    # Slightly under 1.0 so the front desk does not rush.
+                    "speed": 0.95,
+                },
             },
             "tools": TOOLS,
         },

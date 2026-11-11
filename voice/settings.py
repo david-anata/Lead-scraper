@@ -70,7 +70,7 @@ class Settings:
         return cls(
             xai_api_key=_text("XAI_API_KEY"),
             xai_model=_text("XAI_VOICE_MODEL", "grok-voice-latest"),
-            xai_voice=_text("XAI_VOICE", "eve"),
+            xai_voice=_text("XAI_VOICE", "ara"),
             xai_realtime_url=_text(
                 "XAI_REALTIME_URL", "wss://api.x.ai/v1/realtime"
             ),

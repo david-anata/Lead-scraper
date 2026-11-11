@@ -120,7 +120,7 @@ Optional:
 | `LINE_CONTEXTS_JSON` | default Anata line | Per-number greeting context. |
 | `KNOWN_CALLER_NUMBERS` | empty | Comma-separated E.164 numbers that count as known customers for transfer. |
 | `XAI_VOICE_MODEL` | `grok-voice-latest` | Realtime model. |
-| `XAI_VOICE` | `eve` | Voice id. |
+| `XAI_VOICE` | `ara` | Voice id. `ara` is the warm front-desk voice. Speech plays at 0.95 speed. |
 | `XAI_REALTIME_URL` | `wss://api.x.ai/v1/realtime` | Override only if xAI changes the endpoint. |
 | `VOICE_EVENTS_CALENDAR_ID` | the Anata events calendar | Google calendar id. `BUILDING_GOOGLE_CALENDAR_ID` is also read. |
 | `GOOGLE_CALENDAR_SERVICE_ACCOUNT_JSON` | empty | Service account JSON. The calendar must be shared with that account. `BUILDING_GOOGLE_CALENDAR_SERVICE_ACCOUNT_JSON` is also read. |
@@ -277,9 +277,10 @@ These decisions are code, not a prompt:
 - A known customer who wants a person now can be forwarded. "Known" means the
   caller number is in `KNOWN_CALLER_NUMBERS`, or the model marks them as a
   known customer. There is no tenant directory yet.
-- A sales transfer needs a name, one concrete interest (date, guest count,
-  event type, or company), a qualified event or lease reason, and the caller
-  has to want to talk now.
+- A caller who asks for a person, the owner, or David is transferred, as is
+  a contract question, a pricing exception, or anything the line cannot answer.
+- A sales transfer can also happen when a prospect has a name, one concrete
+  interest (date, guest count, event type, or company), and wants to talk now.
 - If `FORWARD_TO_NUMBER` is empty, every transfer becomes a message.
 
 ## Limits

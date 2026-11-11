@@ -124,6 +124,10 @@ def test_prompt_names_both_businesses_and_the_line_id() -> None:
     assert "security_preference" in prompt
     assert "Security is never required" in prompt
     assert "in mind for security" not in prompt
+    assert "Great question" in prompt
+    assert "one question at a time" in prompt
+    assert "rental agreement" in prompt.casefold()
+    assert "rental agreement" in KNOWLEDGE_PATH.read_text(encoding="utf-8").casefold()
     assert PUBLISHED_PHONE == "(385) 336-3562"
     assert "(385) 336-3562" in anata_inc_facts()["contact"]
     assert "(385) 336-3562" in FRONT_DESK_PATH.read_text(encoding="utf-8")
@@ -294,6 +298,7 @@ def test_realtime_session_uses_native_mulaw() -> None:
     assert audio["input"]["format"]["type"] == "audio/pcmu"
     assert audio["output"]["format"]["type"] == "audio/pcmu"
     assert "language_hint" not in audio["input"]["transcription"]
+    assert audio["output"]["speed"] == 0.95
     assert "rate" not in audio["input"]["format"]
     names = [tool["name"] for tool in event["session"]["tools"]]
     assert "request_transfer" in names

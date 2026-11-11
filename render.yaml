@@ -445,7 +445,7 @@ services:
       - key: XAI_VOICE_MODEL
         value: grok-voice-latest
       - key: XAI_VOICE
-        value: eve
+        value: ara
       - key: SMS_AUTOREPLY
         value: "false"
       - key: RECORDING_ENABLED
