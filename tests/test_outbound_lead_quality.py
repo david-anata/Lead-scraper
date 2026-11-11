@@ -315,7 +315,7 @@ def test_a_lone_product_is_kept_and_a_review_app_is_not_called_reviews(monkeypat
     facts = openers.collect_facts(product_only)
     assert "Cedar Soap" in facts.rich_phrases[0]
     assert source == "fallback"
-    assert "Cedar Soap" in line and "October" not in line
+    assert "cedar soap" in line.lower() and "October" not in line
     assert "amazon" not in line.lower()
     assert angle and angle != line
 

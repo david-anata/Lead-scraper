@@ -1075,7 +1075,16 @@ _STORE_WORDS = re.compile(
     re.I,
 )
 _TRAILING_STORE = re.compile(r"(?:,|\s)+\b(?:shop|store)\b\.?$", re.I)
+_COUNTRY_SUFFIX = re.compile(
+    r"(?:,|\s)+\b(?:us|usa|u\.s\.a\.?|united states)\b\.?$",
+    re.I,
+)
 _BRAND_TLD = re.compile(r"\.(?:com|net|org|io|co|shop|store|us)$", re.I)
+_GENERIC_BRAND = frozenset({
+    "water", "home", "shop", "store", "beauty", "health", "food", "apparel",
+    "brand", "official", "sale", "the", "co", "inc", "llc", "io", "us", "usa",
+    "online", "new", "best",
+})
 _TRAILING_TAG = re.compile(r"\s*[|]\s*.*$|\s+[–—-]\s+.+$")
 
 
@@ -1111,36 +1120,70 @@ def _brand_token(part: str) -> str:
     return part[:1].upper() + part[1:].lower()
 
 
-def clean_brand_name(value: Any) -> str:
+def _shape_brand_case(text: str) -> str:
+    """Title-case ordinary words. A 2 or 3 letter acronym stays in caps."""
+
+    if re.fullmatch(r"[A-Z]{2,3}", text):
+        return text
+    original = text.split(" ")
+    if text.isupper() or text.islower():
+        shaped = []
+        for part in original:
+            if re.fullmatch(r"[A-Z]{2,3}", part):
+                shaped.append(part)
+            elif part:
+                shaped.append(part[:1].upper() + part[1:].lower())
+        text = " ".join(shaped)
+    return " ".join(_brand_token(part) for part in text.split(" ") if part)
+
+
+def _brand_is_usable(text: str) -> bool:
+    folded = re.sub(r"[^a-z0-9]+", " ", text.lower()).strip()
+    if not folded or len(folded) < 3:
+        return False
+    if folded in _GENERIC_BRAND:
+        return False
+    if re.search(r"\d", text):
+        return False
+    return True
+
+
+def clean_brand_name(value: Any, *, display_name: Any = "") -> str:
     """A company name safe to put in an opener or an Instantly field.
 
-    Web addresses, legal suffixes, store words, a trailing TLD, and a tagline
-    after a separator come off. ALL CAPS and all-lowercase names are
-    title-cased. A short acronym such as REV and a clean stylization such as
-    MyBevi stay. Odd mixed case such as JANGEORGe is title-cased.
+    Web addresses, legal suffixes, country suffixes (US, USA), store words,
+    and a tagline after a separator come off. A 2 or 3 letter acronym stays
+    in caps. A generic or tiny result falls back to ``display_name``. An
+    unusable name is empty so the lead can be held.
     """
 
-    text = " ".join(str(value or "").replace("—", " ").replace("–", " ").split())
-    text = _TRAILING_TAG.sub("", text).strip(" ,.")
-    web = _label_from_web_address(text)
-    if web:
-        text = web
-    if not text:
-        return ""
-    changed = True
-    while changed and text:
-        changed = False
-        for pattern in (_LEGAL_SUFFIX, _STORE_WORDS, _TRAILING_STORE, _BRAND_TLD):
-            nxt = pattern.sub("", text).strip(" ,.")
-            if nxt and nxt != text:
-                text = nxt
-                changed = True
-    if text.isupper() or text.islower():
-        text = " ".join(
-            (part[:1].upper() + part[1:].lower()) if part else ""
-            for part in text.split(" ")
-        )
-    return " ".join(_brand_token(part) for part in text.split(" ") if part)
+    def once(raw: Any) -> str:
+        text = " ".join(str(raw or "").replace("—", " ").replace("–", " ").split())
+        text = _TRAILING_TAG.sub("", text).strip(" ,.")
+        web = _label_from_web_address(text)
+        if web:
+            text = web
+        if not text:
+            return ""
+        changed = True
+        while changed and text:
+            changed = False
+            for pattern in (
+                _LEGAL_SUFFIX, _COUNTRY_SUFFIX, _STORE_WORDS, _TRAILING_STORE, _BRAND_TLD,
+            ):
+                nxt = pattern.sub("", text).strip(" ,.")
+                if nxt and nxt != text:
+                    text = nxt
+                    changed = True
+        return _shape_brand_case(text)
+
+    primary = once(value)
+    if _brand_is_usable(primary):
+        return primary
+    fallback = once(display_name)
+    if fallback and fallback != primary and _brand_is_usable(fallback):
+        return fallback
+    return ""
 
 
 def to_clay_lead(store: dict[str, Any], *, now: Optional[datetime] = None,
@@ -1636,6 +1679,8 @@ def run_storeleads_to_clay(
                 lead["signals"] = [reason] + [
                     s for s in lead.get("signals", []) if s != reason
                 ]
+                import outbound_recipes as _recipes
+                _recipes.annotate_trial_signal(lead, store, now=now, settings=settings)
             # Amazon last, so a real finding about their own listings wins over
             # the recipe's guess at why now.
             if amazon_check is not None:

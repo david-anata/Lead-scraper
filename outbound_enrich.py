@@ -918,11 +918,20 @@ def push_pending(engine, campaign_id: str, *, dry_run: bool = True, limit: int =
         if status == "blocked":
             held += 1
             continue
-        if status != "routed" or not target or _push._closed_to_new_leads(target):
+        trial_signal = ""
+        for item in signals:
+            text = str(item or "").strip()
+            if text.startswith("trial_offer:"):
+                trial_signal = text.split(":", 1)[1].strip()
+        qualified_trial = route_name == "trial_offer" and bool(trial_signal)
+        if status != "routed" or not target or (
+            _push._closed_to_new_leads(target) and not qualified_trial
+        ):
             queued += 1
             continue
         lead = {"domain": person["domain"], "brand": person["brand"], "categories": person["category"],
-                "recipe": route_name or recipe_name, "tier": person["tier"]}
+                "recipe": route_name or recipe_name, "tier": person["tier"],
+                "trial_signal": trial_signal}
         body = _push.build_lead(person, lead, person["opener"])
         if route_name and route_name != recipe_name:
             body["custom_variables"]["source_recipe"] = recipe_name

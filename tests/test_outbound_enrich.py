@@ -526,7 +526,7 @@ def test_category_filler_is_held_and_retried_when_a_product_fact_exists(engine, 
     }]) == 1
     again = oe.push_pending(engine, "camp", dry_run=False, push=capture)
     assert again["pushed"] == 1
-    assert sent and "Green Chile Salsa" in sent[-1][0]
+    assert sent and "green chile salsa" in sent[-1][0].lower()
     assert "http" not in sent[-1][0].lower() and "www." not in sent[-1][0].lower()
     assert "shopify" not in sent[-1][0].lower()
     with engine.connect() as conn:

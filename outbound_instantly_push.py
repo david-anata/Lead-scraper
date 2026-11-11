@@ -315,17 +315,28 @@ def resolve_recipe_campaign(
         chosen = specific[0]
     else:
         amazon = [item for item in matches if item in {"amz_on", "amz_off"}]
-        if len(set(amazon)) != 1:
-            if name in blocked_names:
-                return "", "blocked", ""
+        if len(set(amazon)) == 1:
+            chosen = amazon[0]
+        else:
+            chosen = ""
+    if chosen:
+        if chosen in blocked_names:
+            return "", "blocked", ""
+        target = campaign_for_recipe(chosen, campaign_map=campaign_map)
+        if not target:
             return "", "queued", ""
-        chosen = amazon[0]
-    if chosen in blocked_names:
+        return target, "routed", chosen
+    trial_signal = ""
+    for item in signals or []:
+        text = str(item or "").strip()
+        if text.startswith("trial_offer:"):
+            trial_signal = text.split(":", 1)[1].strip()
+            break
+    if trial_signal in {"churned_tool", "category", "sold_through_retailers"}:
+        return LEGACY_TRIAL_CAMPAIGN_ID, "routed", "trial_offer"
+    if name in blocked_names:
         return "", "blocked", ""
-    target = campaign_for_recipe(chosen, campaign_map=campaign_map)
-    if not target:
-        return "", "queued", ""
-    return target, "routed", chosen
+    return "", "queued", ""
 
 
 def dry_run_route_plan(
@@ -353,7 +364,7 @@ def dry_run_route_plan(
         if status not in by_status:
             status = "queued"
         by_status[status] += 1
-        if _closed_to_new_leads(campaign_id):
+        if _closed_to_new_leads(campaign_id) and _route != "trial_offer":
             legacy_or_hold += 1
         elif status == "routed" and campaign_id:
             routed[campaign_id] = routed.get(campaign_id, 0) + 1
@@ -415,6 +426,16 @@ def build_lead(contact: dict[str, Any], lead: dict[str, Any], opener: str) -> di
     first_name, last_name = split_person_name(
         contact.get("first_name") or "", contact.get("last_name") or "",
     )
+    variables = {
+        "category": category,
+        "signal": str(lead.get("recipe") or "").strip(),
+        "tier": str(lead.get("tier") or "").strip(),
+        "contact_title": str(contact.get("title") or "").strip(),
+        "brandAngle": angle,
+    }
+    trial_signal = str(lead.get("trial_signal") or "").strip()
+    if trial_signal:
+        variables["trial_signal"] = trial_signal
     return {
         "email": str(contact.get("email") or "").strip().lower(),
         "first_name": first_name,
@@ -422,13 +443,8 @@ def build_lead(contact: dict[str, Any], lead: dict[str, Any], opener: str) -> di
         "company_name": _company_name(lead),
         "website": str(lead.get("domain") or "").strip(),
         "personalization": opener,
-        "custom_variables": {
-            "category": category,
-            "signal": str(lead.get("recipe") or "").strip(),
-            "tier": str(lead.get("tier") or "").strip(),
-            "contact_title": str(contact.get("title") or "").strip(),
-            "brandAngle": angle,
-        },
+        "custom_variables": variables,
+        "trial_signal": trial_signal,
     }
 
 
@@ -448,6 +464,20 @@ class PushOutcome:
         return f"Instantly accepted {self.created}, skipped {self.skipped} of {self.attempted}."
 
 
+def _qualified_trial_batch(leads: list[dict[str, Any]], campaign_id: str) -> bool:
+    """True when every lead was qualified for Trial Offer by one recorded signal."""
+
+    if not is_legacy_trial_campaign(campaign_id) or not leads:
+        return False
+    allowed = {"churned_tool", "category", "sold_through_retailers"}
+    for lead in leads:
+        variables = lead.get("custom_variables") if isinstance(lead.get("custom_variables"), dict) else {}
+        signal = str(lead.get("trial_signal") or variables.get("trial_signal") or "").strip()
+        if signal not in allowed:
+            return False
+    return True
+
+
 def push_leads(
     leads: list[dict[str, Any]],
     campaign_id: str,
@@ -463,7 +493,7 @@ def push_leads(
     if not campaign_id:
         out.reason = "No campaign id."
         return out
-    if _closed_to_new_leads(campaign_id):
+    if _closed_to_new_leads(campaign_id) and not _qualified_trial_batch(leads, campaign_id):
         out.reason = TRIAL_CLOSED_REASON
         return out
     if campaign_id in protected_campaigns():

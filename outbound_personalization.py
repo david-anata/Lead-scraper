@@ -58,7 +58,7 @@ amz_on. Opener: Lovevery's Play Kits are easy to picture, and a small age-based 
 Angle: A tighter set of images around Play Kits would make Lovevery easier to choose on Amazon.
 
 Trial Offer. Opener: Happy Viking's plant-based shake is easy to picture, and a small set around it would give a new shopper one clear way to try it.
-Angle: A plant-based shake set could give new Amazon shoppers an easy way to try Happy Viking.
+Angle: A plant-based shake set could give new shoppers an easy way to try Happy Viking.
 
 plan_upgrade. Opener: Joybees is already in retail stores, so a small set of the same shoes would make a first order simple.
 Angle: Shoppers who already see Joybees in stores need one easy set to start with.
@@ -363,9 +363,7 @@ def style_violation(
     if role == "angle" and raw.lower().startswith("anata helps"):
         return "anata helps"
     trial = trial_offer or trial_offer_lead({"recipe": recipe})
-    if trial and _AMAZON_WORD.search(raw) and (role != "angle" or trial_amazon_claim(raw)):
-        return "claims the brand already sells on Amazon"
-    if trial and trial_amazon_claim(raw):
+    if trial and (_AMAZON_WORD.search(raw) or trial_amazon_claim(raw)):
         return "claims the brand already sells on Amazon"
     if (
         not trial
@@ -396,11 +394,10 @@ def _prompt(sheet: FactSheet) -> str:
     category = plain_category(sheet.category) or "unknown"
     if sheet.trial_offer:
         amazon_rule = (
-            "This is a Trial Offer. The opener must not mention Amazon and must not "
-            "claim the brand already sells on Amazon. Never write 'on Amazon', 'your Amazon store', "
-            "'your listings', or 'already on Amazon'. The angle may mention Amazon only "
-            "as an opportunity for new Amazon shoppers, and must not say the brand is "
-            "already there. "
+            "This is a Trial Offer. The opener and the angle must not mention Amazon "
+            "and must not claim the brand already sells on Amazon. Never write "
+            "'on Amazon', 'your Amazon store', 'your listings', or 'already on Amazon'. "
+            "Say new shoppers. "
         )
     elif sheet.recipe == "amz_on":
         amazon_rule = (

@@ -192,15 +192,21 @@ def test_trial_offer_never_claims_or_assumes_amazon():
     prompt = personalization._prompt(sheet)
     assert "Trial Offer" in prompt
     assert "already sells on Amazon" in prompt
-    assert "new Amazon shoppers" in prompt
+    assert "new Amazon shoppers" not in prompt
+    assert "new shoppers" in prompt
     assert "your Amazon store" in prompt and "your listings" in prompt
     assert "already on Amazon" in prompt
-    assert "new Amazon shoppers" in op._ANGLE_SYSTEM
+    assert "new Amazon shoppers" not in op._ANGLE_SYSTEM
+    assert "new shoppers" in op._ANGLE_SYSTEM
     opportunity = (
-        "A milk and nut butter bundle could give new Amazon shoppers an easy way to try both."
+        "A milk and nut butter bundle could give new shoppers an easy way to try both."
     )
     assert op.validate(
         opportunity, max_words=op.ANGLE_MAX_WORDS, trial_offer=True, role="angle",
+    )[0]
+    assert not op.validate(
+        "A bundle could give new Amazon shoppers an easy way to try both.",
+        max_words=op.ANGLE_MAX_WORDS, trial_offer=True, role="angle",
     )[0]
     assert personalization.style_violation(opportunity, role="angle", recipe="trial_offer") == ""
     assert op.angle_hold_reason(opportunity, trial) == ""
@@ -238,9 +244,9 @@ def test_trial_offer_never_claims_or_assumes_amazon():
     angle, angle_source = op.write_brand_angle(
         {**trial, "domain": "trial-angle.example"},
         CONTACT,
-        llm=lambda _prompt: "A bundle could give new Amazon shoppers an easy way to try oral care.",
+        llm=lambda _prompt: "A bundle could give new shoppers an easy way to try oral care.",
     )
-    assert angle_source == "ai" and "Amazon" in angle and "already" not in angle.lower()
+    assert angle_source == "ai" and "amazon" not in angle.lower() and "shoppers" in angle.lower()
 
     confirmed, confirmed_source = op.write_opener(
         {

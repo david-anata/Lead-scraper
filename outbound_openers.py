@@ -14,8 +14,8 @@ Hard rules, enforced in code not just in the prompt:
   * No links, no email addresses, no cliches, no questions.
   * No category slugs, no "stood out" template, no raw category codes.
   * Only the amz_on segment may say the brand is on Amazon.
-  * A Trial Offer opener must not mention Amazon. Its angle may mention
-    new Amazon shoppers only as an opportunity, never as a store they have.
+  * A Trial Offer opener and angle must not mention Amazon. The angle says
+    new shoppers.
   * No backend or consultant language: app installs, automation, bids,
     direct-to-consumer, platform names or moves, plan upgrades, pixels,
     or change dates.
@@ -144,9 +144,9 @@ _ANGLE_SYSTEM = (
     "specific idea from a shopper-visible fact. Use only those facts. Aim for "
     "about 15 words and never more than 20. Do not start with 'Anata helps'. "
     "Only say the brand is on Amazon when the facts say the segment is amz_on. "
-    "A Trial Offer angle may mention new Amazon shoppers as an opportunity and "
-    "must not say the brand is already on Amazon. Never write 'your Amazon store', "
-    "'your listings', 'on Amazon', or 'already on Amazon' for a Trial Offer. "
+    "A Trial Offer angle says new shoppers and does not mention Amazon. "
+    "Never write 'your Amazon store', 'your listings', 'on Amazon', or "
+    "'already on Amazon' for a Trial Offer. "
     "Never mention app installs, automation, bids, direct-to-consumer, platform "
     "names, platform moves, plan upgrades, pixels, or change dates. "
     "No numbers. No links. No questions. No em dashes. No spaced hyphens. "
@@ -237,7 +237,7 @@ def validate(
         return False, "question"
     if BACKEND_LANGUAGE.search(raw):
         return False, "backend language"
-    if trial_offer and _AMAZON_WORD.search(raw) and (role != "angle" or trial_amazon_claim(raw)):
+    if trial_offer and _AMAZON_WORD.search(raw):
         return False, "claims the brand already sells on Amazon"
     if not trial_offer and not allow_amazon and _AMAZON_WORD.search(raw):
         return False, "claims Amazon without a confirmed match"
@@ -1178,114 +1178,178 @@ def _social_network(facts: list[str]) -> str:
     return ""
 
 
+def plain_product_phrase(text: str, brand: str) -> str:
+    """Lowercase product words, or empty when the text is a menu or a fragment.
+
+    A comma or a pipe means two labels. The phrase is kept whole or not used.
+    It is never cut off at a comma.
+    """
+
+    import html as html_lib
+
+    raw = html_lib.unescape(str(text or ""))
+    for mark in ("®", "™", "©", "+", "|"):
+        raw = raw.replace(mark, " ")
+    raw = " ".join(raw.replace("&amp;", " and ").split())
+    if not raw or "," in raw or "|" in str(text or ""):
+        return ""
+    if BACKEND_LANGUAGE.search(raw) or _SLUG.search(raw):
+        return ""
+    if re.search(
+        r"\b(?:wines?|alcohol|beer|spirits|liquor|cannabis|marijuana|cbd|cbda|thc|tobacco|vapes?)\b",
+        raw, re.I,
+    ):
+        return ""
+    if re.search(r"[àâäéèêëïîôùûüçñ]", raw, re.I):
+        return ""
+    # A comma separates two labels. Use one complete side, never a cut ending in a comma.
+    if "," in raw or "|" in str(text or ""):
+        sides = [part.strip() for part in re.split(r"[,|]", raw) if part.strip()]
+        if len(sides) != 2:
+            return ""
+        left, right = sides
+        if len(left.split()) <= 2 and any(w.lower() in {"and", "with", "for"} for w in right.split()):
+            raw = right
+        else:
+            return ""
+    brand_words = set(re.findall(r"[a-z0-9]+", brand.lower()))
+    display = str(brand or "")
+    skip = brand_words | {
+        "best", "award", "winning", "award-winning", "official", "homepage",
+        "site", "free", "new", "the", "co", "inc", "llc", "usa", "us", "io",
+        "s", "and", "for", "with", "from", "your", "our", "you", "help",
+    }
+    words: list[str] = []
+    for word in re.findall(r"[A-Za-z0-9][A-Za-z0-9'-]*", raw):
+        low = word.lower().strip("'")
+        if not low or low in skip or len(low) < 3:
+            continue
+        if re.fullmatch(r"[A-Z]{2,3}", word):
+            words.append(word)
+        else:
+            words.append(low)
+    phrase = " ".join(words)
+    folded = re.sub(r"[^a-z0-9]+", " ", phrase).strip()
+    brand_folded = re.sub(r"[^a-z0-9]+", " ", display.lower()).strip()
+    if not folded or folded == brand_folded or brand_folded.startswith(folded):
+        return ""
+    if len(words) < 2 or len(words) > 8:
+        return ""
+    return phrase
+
+
+def idea_decision(lead: dict[str, Any]) -> tuple[str, str, str]:
+    """Return ``(opener, angle, hold_reason)``.
+
+    The angle talks about the listing or the ad. It does not restate the
+    opener. A Trial Offer angle says new shoppers and does not mention Amazon.
+    """
+
+    import hashlib
+
+    from outbound_personalization import fact_sheet
+    from outbound_pipeline import clean_brand_name
+
+    sheet = fact_sheet(lead)
+    if sheet.blocked == "restricted category":
+        return "", "", "restricted category"
+    if sheet.blocked == "multi-brand retailer":
+        return "", "", "multi-brand retailer"
+    brand = clean_brand_name(
+        lead.get("brand") or sheet.brand,
+        display_name=lead.get("display_brand") or "",
+    )
+    if not brand:
+        return "", "", "no recognizable brand"
+    trial = bool(sheet.trial_offer or trial_offer_lead(lead))
+    allow_amazon = amazon_presence_allowed(lead)
+    facts = list(sheet.facts)
+    phrase = plain_product_phrase(
+        _product_title(lead, facts, brand) or _story_phrase(facts, brand),
+        brand,
+    )
+    display_folded = re.sub(
+        r"[^a-z0-9]+", " ", str(lead.get("display_brand") or "").lower(),
+    ).strip()
+    if phrase and display_folded and phrase == display_folded:
+        phrase = ""
+    stem = re.sub(r"[^a-z0-9]+", "", str(lead.get("domain") or "").split(".")[0].lower())
+    if phrase and stem and re.sub(r"[^a-z0-9]+", "", phrase) == stem:
+        phrase = ""
+    category = ""
+    trial_signal = str(lead.get("trial_signal") or "")
+    if not phrase and trial_signal in {"category", "churned_tool"}:
+        from outbound_instantly_push import friendly_category
+
+        category = friendly_category(lead.get("categories") or lead.get("category") or sheet.category)
+        category = plain_product_phrase(category, brand)
+    retail = any(fact.lower() in {
+        "has a store locator", "sold through retailers", "sold in stores",
+    } for fact in facts)
+    social = _social_network(facts)
+    if not phrase and not category and not retail and not social:
+        return "", "", "no shopper-visible fact"
+
+    domain = str(lead.get("domain") or brand)
+    def choose(options: list[str], salt: str) -> str:
+        digest = hashlib.sha256(f"{domain}|{salt}".encode()).hexdigest()
+        return options[int(digest[:8], 16) % len(options)]
+
+    if phrase and allow_amazon:
+        opener = choose([
+            f"{brand} already sells {phrase} on Amazon, and the listing should lead with it.",
+            f"{phrase} is already on Amazon from {brand}, so the listing should open on it.",
+            f"On Amazon, {phrase} is the {brand} product a new shopper should see first.",
+        ], "amz-opener")
+    elif phrase:
+        opener = choose([
+            f"{brand} makes {phrase}, which is an easy first product for a new shopper.",
+            f"Someone shopping for {phrase} should meet {brand} through one clear product.",
+            f"{phrase} is the clearest offer from {brand}, and it belongs in the first image.",
+            f"The simplest way into {brand} is {phrase}, shown on its own.",
+        ], "product-opener")
+    elif category:
+        opener = choose([
+            f"{brand} is a {category} brand, and one product should be the first impression.",
+            f"For a {category} brand like {brand}, one product should do the introducing.",
+        ], "category-opener")
+    elif retail:
+        opener = f"{brand} is already in retail stores, which is proof a new shopper can see."
+    else:
+        opener = f"{brand} already shows up on {social}, where a new shopper can see the products."
+
+    shoppers = "a new shopper"
+    angles = [
+        f"The listing should open on one product so {shoppers} knows what {brand} is for.",
+        f"An ad for {brand} works when one product is the whole message.",
+        f"{shoppers.capitalize()} needs one obvious product from {brand} before anything else.",
+        f"Put one {brand} product in front, and let the listing explain the rest.",
+    ]
+    angle = choose(angles, "angle")
+    if _repeats(angle, opener):
+        angle = angles[(angles.index(angle) + 1) % len(angles)]
+
+    opener_text = _fit_line(
+        opener, max_words=MAX_WORDS, allow_amazon=allow_amazon, trial=trial, role="opener",
+    )
+    angle_text = _fit_line(
+        angle, max_words=ANGLE_MAX_WORDS, allow_amazon=False, trial=trial, role="angle",
+    )
+    if not opener_text:
+        return "", "", "no shopper-visible fact"
+    return opener_text, angle_text, ""
+
+
 def idea_lines(lead: dict[str, Any]) -> tuple[str, str]:
     """One opener and one angle from a shopper-visible fact.
 
     Both strings are empty when the record has no product, story, review,
     retail store, or social presence. Category codes and backend signals
-    are not enough.
+    are not enough. ``idea_decision`` also returns why a lead was held.
     """
 
-    from outbound_personalization import fact_sheet
-
-    sheet = fact_sheet(lead)
-    if sheet.blocked in {"restricted category", "multi-brand retailer"}:
-        return "", ""
-    brand = _named(str(lead.get("brand") or sheet.brand or ""))
-    if not brand or brand == "This brand":
-        brand = _named(sheet.brand)
-    if not brand or brand == "This brand":
-        return "", ""
-    trial = bool(sheet.trial_offer or trial_offer_lead(lead))
-    allow_amazon = amazon_presence_allowed(lead)
-    facts = list(sheet.facts)
-    product = _product_title(lead, facts, brand)
-    story = "" if product else _story_phrase(facts, brand)
-    reviews = any("reviews average" in fact.lower() or fact.lower().startswith("reviews ") for fact in facts)
-    retail = any(fact.lower() in {
-        "has a store locator", "sold through retailers", "sold in stores",
-    } for fact in facts)
-    social = _social_network(facts)
-    on_amazon = allow_amazon and bool(product)
-
-    def pair(opener: str, angle: str) -> tuple[str, str]:
-        opener_line_text = _fit_line(
-            opener, max_words=MAX_WORDS, allow_amazon=allow_amazon or on_amazon,
-            trial=trial, role="opener",
-        )
-        angle_line = _fit_line(
-            angle, max_words=ANGLE_MAX_WORDS, allow_amazon=allow_amazon,
-            trial=trial, role="angle",
-        )
-        if angle_line and opener_line_text and angle_line.lower() == opener_line_text.lower():
-            angle_line = ""
-        return opener_line_text, angle_line
-
-    if product:
-        short = _clip_words(product, 4) or product
-        shorter = _clip_words(product, 3) or short
-        subject = _subject(brand, short)
-        if on_amazon:
-            opener = (
-                f"{subject} is already on Amazon, and a small set around it "
-                "would make the first choice obvious."
-            )
-            angle = f"A tighter set of images around {shorter} would make {brand} easier to choose."
-        else:
-            opener = (
-                f"{subject} could be sold as a small set, so a new shopper "
-                "has one clear way to try it."
-            )
-            if trial:
-                angle = (
-                    f"A {shorter} set could give new Amazon shoppers an easy way to try {brand}."
-                )
-            else:
-                angle = (
-                    f"Leading with {shorter} would give a new shopper a concrete reason to try {brand}."
-                )
-        opener_text, angle_text = pair(opener, angle)
-        if opener_text:
-            return opener_text, angle_text
-        tiny = _clip_words(product, 2) or shorter
-        opener = f"{_subject(brand, tiny)} could be sold as a small set a new shopper can try."
-        angle = f"Leading with {tiny} would give a new shopper a reason to try {brand}."
-        return pair(opener, angle)
-    if story:
-        short = _clip_words(story, 6)
-        opener = (
-            f"{brand} is known for {short}, and that detail gives a new shopper "
-            "something concrete to picture."
-        )
-        angle = f"Leading with { _clip_words(story, 4) } would give a new shopper a concrete reason to try {brand}."
-        opener_text, angle_text = pair(opener, angle)
-        if opener_text:
-            return opener_text, angle_text
-        opener = f"{brand} is known for {_clip_words(story, 3)}, which a new shopper can picture."
-        angle = f"That detail gives a new shopper a concrete reason to try {brand}."
-        return pair(opener, angle)
-    if reviews:
-        opener = (
-            f"{_possessive(brand)} reviews already tell the product story, and putting "
-            "that proof first would help a new shopper decide."
-        )
-        angle = f"Those reviews give a new shopper a reason to trust {brand} before the first order."
-        return pair(opener, angle)
-    if retail:
-        opener = (
-            f"{brand} is already in retail stores, so a small set of the same products "
-            "would make a first order simple."
-        )
-        angle = f"Shoppers who already see {brand} in stores need one easy set to start with."
-        return pair(opener, angle)
-    if social:
-        opener = (
-            f"{brand} already shows up on {social}, and a short clip of the product "
-            "would make that story easy to buy."
-        )
-        angle = f"The {social} audience already knows {brand}, so one clear product would meet them there."
-        return pair(opener, angle)
-    return "", ""
+    opener, angle, _reason = idea_decision(lead)
+    return opener, angle
 
 
 def opener_line(facts: LeadFacts) -> str:
@@ -1362,11 +1426,10 @@ def _build_prompt(facts: LeadFacts, *, closing: str) -> str:
     lines = [f"Brand: {facts.brand or 'This brand'}"]
     if facts.trial_offer:
         lines.append(
-            "Trial Offer: the opener must not mention Amazon and must not claim "
-            "the brand already sells on Amazon. "
+            "Trial Offer: the opener and the angle must not mention Amazon and must "
+            "not claim the brand already sells on Amazon. "
             "Never write 'on Amazon', 'your Amazon store', 'your listings', or "
-            "'already on Amazon'. The angle may mention new Amazon shoppers only "
-            "as an opportunity."
+            "'already on Amazon'. Say new shoppers."
         )
     elif facts.amazon_product:
         lines.append("Segment: amz_on. The line may say this product is on Amazon.")

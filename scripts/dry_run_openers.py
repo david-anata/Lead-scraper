@@ -46,6 +46,11 @@ _META_DESC = re.compile(
     r"""|<meta[^>]+content=["']([^"']+)["'][^>]+name=["']description["']""",
     re.I,
 )
+_OG_SITE = re.compile(
+    r"""<meta[^>]+property=["']og:site_name["'][^>]+content=["']([^"']+)["']"""
+    r"""|<meta[^>]+content=["']([^"']+)["'][^>]+property=["']og:site_name["']""",
+    re.I,
+)
 
 
 def _database_url() -> str:
@@ -173,11 +178,14 @@ def fetch_public_fact(domain: str, *, timeout: float = 8.0) -> dict[str, str]:
     html = response.text or ""
     title = _meta(html, _OG_TITLE)
     description = _meta(html, _META_DESC)
+    site_name = _meta(html, _OG_SITE)
     out: dict[str, str] = {}
     if description and len(description.split()) >= 3:
         out["description"] = description[:300]
     if title and len(title.split()) >= 2:
         out["title"] = title[:160]
+    if site_name:
+        out["site_name"] = site_name[:120]
     return out
 
 
@@ -197,6 +205,7 @@ def lead_for(row: dict[str, Any], *, public: Optional[dict[str, str]] = None) ->
     )
     return {
         "brand": row.get("brand") or "",
+        "display_brand": (public or {}).get("site_name") or row.get("display_brand") or "",
         "domain": row.get("domain") or "",
         "recipe": recipe,
         "categories": row.get("category") or row.get("categories") or "",
@@ -212,12 +221,15 @@ def render_row(row: dict[str, Any], *, public: Optional[dict[str, str]] = None) 
     openers._ANGLES_BY_DOMAIN.clear()
     lead = lead_for(row, public=public)
     first, last = split_person_name(row.get("first_name") or "", row.get("last_name") or "")
-    company = clean_brand_name(lead.get("brand") or lead.get("domain") or "")
-    opener, angle = openers.idea_lines({**lead, "brand": company or lead.get("brand") or ""})
-    hold = openers.opener_hold_reason(opener, lead) if opener else "no shopper-visible fact"
+    company = clean_brand_name(
+        lead.get("brand") or "",
+        display_name=lead.get("display_brand") or "",
+    )
+    opener, angle, reason = openers.idea_decision(lead)
+    hold = "" if opener else (reason or "no shopper-visible fact")
     return {
         "segment": str(row.get("segment") or _segment(row)),
-        "company": company,
+        "company": company or "(no recognizable brand)",
         "first_name": first,
         "last_name": last,
         "domain": str(row.get("domain") or ""),
@@ -239,6 +251,13 @@ def render_report(rows: list[dict[str, str]]) -> str:
         else:
             lines.append(f"Opener: (held) {row['hold']}")
         lines.append("")
+    held = [row for row in rows if row.get("hold")]
+    lines.append(f"Held {len(held)} of {len(rows)}.")
+    counts: dict[str, int] = {}
+    for row in held:
+        counts[row["hold"]] = counts.get(row["hold"], 0) + 1
+    for reason, count in sorted(counts.items(), key=lambda item: (-item[1], item[0])):
+        lines.append(f"- {reason}: {count}")
     return "\n".join(lines).rstrip() + "\n"
 
 

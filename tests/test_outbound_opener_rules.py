@@ -62,10 +62,11 @@ def test_trial_offer_never_says_the_brand_is_on_amazon_and_amz_on_may():
         "Performance Kitchen's meals are already on Amazon and ready for a small set.",
         trial_offer=True,
     )[0]
-    assert op.validate(
+    assert not op.validate(
         "A vegetable meal set could give new Amazon shoppers an easy way to try Performance Kitchen.",
         trial_offer=True, role="angle", max_words=op.ANGLE_MAX_WORDS,
     )[0]
+    assert "amazon" not in (angle or "").lower()
 
     other = _lead("plan_upgrade")
     plan_opener, plan_angle = op.idea_lines(other)
@@ -79,7 +80,7 @@ def test_trial_offer_never_says_the_brand_is_on_amazon_and_amz_on_may():
         amz_confidence="high",
     )
     amz_opener, _amz_angle = op.idea_lines(amz)
-    assert "on Amazon" in amz_opener
+    assert "on amazon" in amz_opener.lower()
     assert op.opener_hold_reason(amz_opener, amz) == ""
 
 
@@ -121,6 +122,12 @@ def test_stood_out_template_raw_codes_and_questions_are_rejected():
 
 
 def test_company_and_first_names_are_cleaned_before_instantly():
+    assert pipeline.clean_brand_name("RSL") == "RSL"
+    assert pipeline.clean_brand_name("GLO USA LLC") == "GLO"
+    assert pipeline.clean_brand_name("Ananda Elixirs US") == "Ananda Elixirs"
+    assert pipeline.clean_brand_name("COLORUSH US") == "Colorush"
+    assert pipeline.clean_brand_name("Water.io") == ""
+    assert pipeline.clean_brand_name("Water.io", display_name="Water.io Smart Bottle") == "Water.io Smart Bottle" or pipeline.clean_brand_name("Water.io", display_name="Hydration Bottle") == "Hydration Bottle"
     assert pipeline.clean_brand_name("www.osgoodemarley.com") == "Osgoodemarley"
     assert pipeline.clean_brand_name("https://osgoodemarley.com/shop") == "Osgoodemarley"
     assert pipeline.clean_brand_name("Acme, LLC") == "Acme"
