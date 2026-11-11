@@ -57,11 +57,20 @@ _GENERIC_DETAIL = {
     "soap", "bar", "set", "piece", "kit", "serum", "oil",
 }
 _INVENTED = re.compile(
-    r"\bi (?:just )?(?:bought|tried|ordered|added)\b"
+    r"\bi (?:just )?(?:bought|tried|ordered|added|used)\b"
+    r"|\bi added\b"
     r"|\badded\b.*\bto my cart\b"
     r"|\bmy cart\b"
+    r"|\bpicked up\b"
+    r"|\blets me\b"
+    r"|\bmy (?:skin|hips|hair|face)\b"
     r"|\b(?:bought|ordered|tried)\b.{0,80}\bon amazon\b"
     r"|\bon amazon\b.{0,40}\b(?:bought|ordered|cart)\b",
+    re.I,
+)
+_BENEFIT_LIST = re.compile(
+    r"\b(?:firming|elasticity|wrinkles?|fine lines?|reduce frizz|manageability|"
+    r"enhance shine|anti-aging|anti aging)\b",
     re.I,
 )
 _HYPE = re.compile(r"\b(?:perfect|amazing|obsessed)\b", re.I)
@@ -236,6 +245,29 @@ def _kind_for(text: str, product_words: set[str]) -> str:
     return "detail"
 
 
+def _sentences(text: str) -> list[str]:
+    """Clauses from a description. Domains stay intact. Bullets become sentences."""
+
+    raw = str(text or "")
+    raw = re.sub(r"[\U0001F300-\U0001FAFF\u2600-\u27BF\uFE0F🟦▪•●✅✨]", "\n", raw)
+    raw = re.sub(r"(?m)^\s*[-*]+\s*", "", raw)
+    raw = re.sub(r"\([^)]*\)", " ", raw)
+    raw = re.sub(r"\[[^\]]*\]", " ", raw)
+    raw = re.sub(
+        r"\b([A-Za-z0-9-]+)\.(?=[A-Za-z])",
+        lambda match: match.group(1) + "\u0000",
+        raw,
+    )
+    raw = raw.replace("\n", ". ")
+    found: list[str] = []
+    for part in re.split(r"[.!?;]+", raw):
+        clause = " ".join(part.replace("\u0000", ".").split()).strip(" -,")
+        if not clause or clause.startswith("(") or clause.startswith("["):
+            continue
+        found.append(clause)
+    return found
+
+
 def _plain_clause(text: str) -> str:
     raw = re.sub(r"[\U0001F300-\U0001FAFF\u2600-\u27BF\uFE0F\u200d]", " ", str(text or ""))
     raw = re.sub(r"[🟦▪•●✅✨]", " ", raw)
@@ -248,32 +280,49 @@ def _score_clause(clause: str, product_words: set[str]) -> int:
 
     if not clause or _MARKETING_OPEN.search(clause) or _SIZE_DETAIL.search(clause):
         return 0
+    concrete = bool(
+        _HOW_USED.search(clause)
+        or _find_phrase(clause, _MATERIALS)
+        or _find_phrase(clause, _FLAVORS)
+    )
+    if _BENEFIT_LIST.search(clause) and not concrete:
+        return 0
     novel = _novel_words(clause, product_words)
     if not novel:
         return 0
     score = len(novel)
-    if _HOW_USED.search(clause):
+    if concrete:
         score += 6
-    if _find_phrase(clause, _MATERIALS) or _find_phrase(clause, _FLAVORS):
-        score += 4
     return score
 
 
 def _detail_from_text(text: str, product_words: set[str]) -> str:
     """One short phrase from the body. Not a size, a slogan, or two clauses joined."""
 
-    text = _plain_clause(text)
     if not text or _keyword_blob(text):
         return ""
     best = ""
     best_score = 0
-    for part in re.split(r"[.!?;]", text):
-        clause = " ".join(part.strip(" -,").split())
+    for clause in _sentences(text):
         score = _score_clause(clause, product_words)
         if score > best_score:
             best = clause
             best_score = score
     return best if best_score else ""
+
+
+def detail_sentences(text: str, product_words: set[str]) -> list[str]:
+    """Every usable sentence, best first."""
+
+    if not text or _keyword_blob(text):
+        return []
+    ranked = [
+        ( _score_clause(clause, product_words), clause)
+        for clause in _sentences(text)
+    ]
+    ranked = [(score, clause) for score, clause in ranked if score]
+    ranked.sort(key=lambda item: item[0], reverse=True)
+    return [clause for _score, clause in ranked]
 
 
 def extract_detail(
@@ -368,6 +417,43 @@ def reseller_catalog(products: list[dict[str, Any]], brand: str) -> bool:
     return matches / len(vendors) < 0.5
 
 
+def line_fact_candidates(
+    products: list[dict[str, Any]],
+    *,
+    brand: str,
+    recipe: str = "",
+    vendors: Optional[list[str]] = None,
+) -> list[LineFacts]:
+    """Detail sentences in best-seller order. A near-duplicate retry can use the next one."""
+
+    catalog = [item for item in products if isinstance(item, dict) and item.get("title")]
+    vendor_rows = [{"vendor": vendor} for vendor in (vendors or [])] or catalog
+    if custom_catalog(catalog, brand) or custom_catalog(vendor_rows, brand):
+        return [LineFacts(brand=brand, recipe=recipe, skip="custom")]
+    if reseller_catalog(vendor_rows, brand):
+        return [LineFacts(brand=brand, recipe=recipe, skip="reseller")]
+    from outbound_product_facts import product_drug_claim, product_pain_claim, spare_part
+
+    found: list[LineFacts] = []
+    for item in catalog:
+        if product_pain_claim(item) or spare_part(item):
+            continue
+        if product_drug_claim(item):
+            return [LineFacts(brand=brand, recipe=recipe, skip="blocked_category")]
+        product = shopper_name(str(item.get("title") or ""))
+        sentences = detail_sentences(str(item.get("body") or ""), _known_words(product, brand))
+        for detail in sentences[:2]:
+            facts = LineFacts(
+                brand=brand, product=product, detail=detail,
+                detail_kind=_kind_for(detail, _known_words(product, brand)), recipe=recipe,
+            )
+            facts.summary = facts.as_text()
+            found.append(facts)
+            if len(found) >= 4:
+                return found
+    return found or [LineFacts(brand=brand, recipe=recipe, skip="no_product_detail")]
+
+
 def pick_line_facts(
     products: list[dict[str, Any]],
     *,
@@ -377,32 +463,7 @@ def pick_line_facts(
 ) -> LineFacts:
     """The first real product that has one concrete detail, or a skip."""
 
-    catalog = [item for item in products if isinstance(item, dict) and item.get("title")]
-    vendor_rows = [{"vendor": vendor} for vendor in (vendors or [])] or catalog
-    if custom_catalog(catalog, brand) or custom_catalog(vendor_rows, brand):
-        return LineFacts(brand=brand, recipe=recipe, skip="custom")
-    if reseller_catalog(vendor_rows, brand):
-        return LineFacts(brand=brand, recipe=recipe, skip="reseller")
-    for item in catalog:
-        from outbound_product_facts import product_drug_claim, product_pain_claim, spare_part
-
-        if product_pain_claim(item) or spare_part(item):
-            continue
-        if product_drug_claim(item):
-            return LineFacts(brand=brand, recipe=recipe, skip="blocked_category")
-        product, detail, kind = extract_detail(
-            str(item.get("title") or ""),
-            str(item.get("body") or ""),
-            item.get("options") if isinstance(item.get("options"), list) else [],
-            brand=brand,
-        )
-        if product and detail:
-            facts = LineFacts(
-                brand=brand, product=product, detail=detail, detail_kind=kind, recipe=recipe,
-            )
-            facts.summary = facts.as_text()
-            return facts
-    return LineFacts(brand=brand, recipe=recipe, skip="no_product_detail")
+    return line_fact_candidates(products, brand=brand, recipe=recipe, vendors=vendors)[0]
 
 
 def main_nouns(product: str, brand: str = "") -> list[str]:
@@ -433,6 +494,8 @@ def hard_reason(line: str, facts: LineFacts) -> str:
     raw = " ".join((line or "").split())
     if not raw:
         return "empty"
+    if len(raw.split()) > 22:
+        return "too long"
     needed = main_nouns(facts.product, facts.brand)
     low = raw.lower()
     if needed and not all(token in low for token in needed):
@@ -504,8 +567,9 @@ def writer_prompt(facts: LineFacts, *, rejection: str = "", previous: str = "") 
         f"Product: {facts.product}\n"
         f"Detail: {facts.detail} ({facts.detail_kind})\n"
         f"{campaign}\n"
-        "Write one sentence a person would send after looking at this product. "
-        "Use the product name and the detail. Plain and specific. "
+        "Say one specific thing plainly, in about 20 words. "
+        "Use the product name and one detail. Do not restate the catalog sentence "
+        "and do not list several benefits. "
         "Do not guess what shoppers will do, do not critique the store, and do not invent a benefit.\n"
         f"Examples of the voice, each a different shape:\n{_EXAMPLES}\n"
         f"{extra}"
@@ -515,9 +579,12 @@ def writer_prompt(facts: LineFacts, *, rejection: str = "", previous: str = "") 
 
 def grader_prompt(facts: LineFacts, line: str) -> str:
     return (
-        "Grade this cold-email line. Every claim in the line must be supported "
-        "by the source sentence. Fail a specific the source does not state, "
-        "and fail a detail attributed to the wrong ingredient.\n"
+        "Grade this cold-email line. Brand and product name are known facts. "
+        "Do not fail because those names are missing from the source. "
+        "Check only that the detail claim is supported by the source sentence. "
+        "Fail a made-up specific, a detail pinned on the wrong ingredient, "
+        "a catalog copy, and a long line that stacks several claims.\n"
+        f"Brand: {facts.brand}\n"
         f"Product: {facts.product}\n"
         f"Source: {facts.detail}\n"
         f"Line: {line}\n"
@@ -555,11 +622,22 @@ def parse_grade(raw: str) -> tuple[bool, str]:
     return bool(payload.get("pass")), reason or ("pass" if payload.get("pass") else "fail")
 
 
+def _similar(left: str, right: str) -> float:
+    import difflib
+
+    folded = lambda text: " ".join(re.sub(r"[^a-z0-9]+", " ", (text or "").lower()).split())
+    a, b = folded(left), folded(right)
+    if not a or not b:
+        return 0.0
+    return difflib.SequenceMatcher(None, a, b).ratio()
+
+
 def compose_line(
     facts: LineFacts,
     *,
     writer: Callable[[str], str],
     grader: Callable[[str], str],
+    alternatives: Optional[list[LineFacts]] = None,
 ) -> LineResult:
     """Write, grade, and rewrite once. No template line on the way out."""
 
@@ -567,10 +645,15 @@ def compose_line(
     if facts.skip:
         result.source = f"skipped:{facts.skip}"
         return result
+    queue = [facts] + [item for item in (alternatives or []) if item is not facts]
+    hard = {
+        "grounding", "invented action", "hype", "flavor", "backend", "url",
+        "health claim", "amazon presence", "too long", "model_timeout", "model_error",
+    }
 
-    def _one(rejection: str, previous: str = "") -> tuple[str, str]:
+    def _attempt(candidate: LineFacts, rejection: str, previous: str) -> tuple[str, str]:
         try:
-            line = writer(writer_prompt(facts, rejection=rejection, previous=previous)) or ""
+            line = writer(writer_prompt(candidate, rejection=rejection, previous=previous)) or ""
             line = re.sub(r"[®™]", "", line)
             line = " ".join(line.split())
         except Exception as exc:  # noqa: BLE001
@@ -579,13 +662,12 @@ def compose_line(
                 return "", "model_timeout"
             return "", "model_error"
         result.calls.append("writer")
-        why = hard_reason(line, facts)
+        why = hard_reason(line, candidate)
         if why:
             return line, why
-        why = "model_error"
         for attempt in range(2):
             try:
-                passed, reason = parse_grade(grader(grader_prompt(facts, line)))
+                passed, reason = parse_grade(grader(grader_prompt(candidate, line)))
             except Exception as exc:  # noqa: BLE001
                 name = exc.__class__.__name__
                 timed_out = "timeout" in name.lower() or "timeout" in str(exc).lower()
@@ -596,45 +678,42 @@ def compose_line(
             result.calls.append("grader")
             if passed:
                 return line, ""
-            why = reason or "grader"
-            break
-        return line, why
+            return line, reason or "grader"
+        return line, "model_error"
 
-    line, why = _one("")
-    if not why:
-        result.line = line
-        result.source = "ai"
-        result.grader_pass = True
-        result.grader_reason = "pass"
-        return result
-    if why in {"model_timeout", "model_error"}:
-        result.source = f"skipped:{why}"
-        result.grader_reason = why
-        return result
-    retry, why = _one(why, line)
-    same = " ".join(re.sub(r"[^a-z0-9]+", " ", (retry or "").lower()).split()) == " ".join(
-        re.sub(r"[^a-z0-9]+", " ", line.lower()).split()
-    )
-    if same and why not in {
-        "grounding", "invented action", "hype", "flavor", "backend", "url",
-        "health claim", "amazon presence", "model_timeout", "model_error",
-    }:
-        why = "identical"
-    line = retry
-    if not why:
-        result.line = line
-        result.source = "ai"
-        result.grader_pass = True
-        result.grader_reason = "pass"
+    last_why = "empty"
+    for candidate in queue:
+        result.facts = candidate.as_text()
+        line, why = _attempt(candidate, "", "")
+        if not why:
+            result.line = line
+            result.source = "ai"
+            result.grader_pass = True
+            result.grader_reason = "pass"
+            return result
+        if why in {"model_timeout", "model_error"}:
+            result.line = ""
+            result.source = f"skipped:{why}"
+            result.grader_reason = why
+            return result
+        retry, why = _attempt(candidate, why, line)
+        if retry and _similar(retry, line) > 0.85 and why not in hard:
+            last_why = "identical"
+            continue
+        if not why:
+            result.line = retry
+            result.source = "ai"
+            result.grader_pass = True
+            result.grader_reason = "pass"
+            return result
+        last_why = why
+        result.line = ""
+        result.grader_pass = False
+        result.grader_reason = last_why
+        result.source = f"skipped:{last_why}" if last_why in hard else "skipped:grader"
         return result
     result.line = ""
     result.grader_pass = False
-    result.grader_reason = why
-    kept = {
-        "grounding", "reseller", "custom", "health claim", "amazon presence",
-        "backend", "url", "invented action", "hype", "flavor",
-    }
-    result.source = "skipped:model_timeout" if why == "model_timeout" else (
-        f"skipped:{why}" if why in kept else "skipped:grader"
-    )
+    result.grader_reason = last_why
+    result.source = "skipped:grader"
     return result

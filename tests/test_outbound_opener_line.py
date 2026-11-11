@@ -7,6 +7,7 @@ from outbound_opener_line import (
     LineFacts,
     compose_line,
     extract_detail,
+    grader_prompt,
     hard_reason,
     pick_line_facts,
 )
@@ -437,6 +438,122 @@ def test_water_io_is_not_renamed_this_brand():
     })
     assert sheet.brand == "Water.io"
     assert sheet.brand != "This brand"
+
+
+def test_the_grader_treats_the_brand_as_known_and_the_line_stays_short():
+    facts = LineFacts(
+        brand="Autumn Sons Baking",
+        product="Chocolate Chunk Cookie Mix",
+        detail="The only ingredients you need are a small amount of water and oil.",
+        recipe="amz_on",
+    )
+    prompt = grader_prompt(facts, "This Chocolate Chunk Cookie Mix from Autumn Sons Baking only needs a small amount of water and oil.")
+    assert "Brand: Autumn Sons Baking" in prompt
+    assert "known" in prompt.lower()
+    assert "check only" in prompt.lower()
+    assert hard_reason(
+        "This shampoo-style keratin treatment helps reduce frizz control volume improve manageability and enhance shine while allowing same-day rinse and same-day color service today.",
+        LineFacts(brand="Inova", product="Keratin Treatment", detail="reduces frizz", recipe="trial_offer"),
+    ) == "too long"
+
+
+def test_personal_use_is_rejected_and_an_opinion_is_kept():
+    facts = LineFacts(
+        brand="I Wanna Sleep", product="SnowTouch Pillow",
+        detail="Add or remove fill until your hips and shoulders line up.",
+        recipe="trial_offer",
+    )
+    assert hard_reason("The SnowTouch pillow lets me add or remove fill.", facts) == "invented action"
+    assert hard_reason("I picked up the SnowTouch pillow yesterday.", facts) == "invented action"
+    assert hard_reason("Love that the SnowTouch pillow lets you add or remove fill.", facts) == ""
+    cola = LineFacts(brand="Perfy", product="Cherry Cola", detail="turmeric", recipe="trial_offer")
+    assert hard_reason("I like the cherry cola.", cola) == ""
+
+
+def test_a_near_duplicate_retry_moves_to_the_next_detail():
+    first = LineFacts(brand="Perfy", product="Cherry Cola", detail="blood orange yuzu", recipe="trial_offer")
+    second = LineFacts(brand="Perfy", product="Variety Pack", detail="fruit punch and tropical citrus", recipe="trial_offer")
+    seen = {"n": 0}
+
+    def writer(prompt):
+        seen["n"] += 1
+        if "Variety Pack" in prompt:
+            return "The variety pack includes fruit punch and tropical citrus."
+        return "The cherry cola includes blood orange yuzu."
+
+    def grader(prompt):
+        if "Variety Pack" in prompt or "fruit punch" in prompt:
+            return json.dumps({"pass": True, "reason": "specific"})
+        return json.dumps({"pass": False, "reason": "catalog copy"})
+
+    result = compose_line(first, writer=writer, grader=grader, alternatives=[second])
+    assert result.source == "ai"
+    assert "variety pack" in result.line.lower()
+    assert seen["n"] >= 3
+
+
+def test_domains_stay_whole_bullets_split_and_benefits_lose():
+    _product, detail, _kind = extract_detail(
+        "Daily+",
+        "Water.io is a smart bottle.",
+        brand="Water.io",
+    )
+    assert "water.io" in detail.lower()
+    assert not detail.lower().startswith("io")
+    _product, detail, _kind = extract_detail(
+        "superCerum",
+        "Skin firming and elasticity. Made with GHK and collagen.",
+        brand="Pure & Cimple",
+    )
+    assert "ghk" in detail.lower() or "collagen" in detail.lower()
+    assert "firming" not in detail.lower()
+    _product, detail, _kind = extract_detail(
+        "Pixel Art Kit",
+        "Insert the pegs into the panel. (You will have plenty left over.)",
+        brand="Pix Perfect",
+    )
+    assert "pegs" in detail.lower()
+    assert "plenty" not in detail.lower()
+
+
+def test_brush_covers_are_spares_and_an_all_accessory_list_is_labeled():
+    from outbound_product_facts import collect_product_facts, spare_part
+
+    assert spare_part({"title": "D10 Plus Main Brush Cover", "product_type": "Parts"})
+    vacuum = {"title": "L10s Ultra Robot Vacuum", "body": "The robot maps the room before it starts."}
+    cover = {"title": "D10 Plus Main Brush Cover", "product_type": "Parts", "body": "A cover for the brush."}
+    picked = pick_line_facts([cover, vacuum], brand="Dreame")
+    assert "Vacuum" in picked.product
+
+    class Response:
+        def __init__(self, status, payload):
+            self.status_code = status
+            self._payload = payload
+            self.text = payload if isinstance(payload, str) else ""
+
+        def json(self):
+            return self._payload
+
+    plates = {"products": [
+        {"title": "Carrara Switch Plate", "handle": "carrara", "product_type": "Accessories",
+         "tags": ["Accessories"], "body_html": "A marble plate.", "variants": [{"available": True}],
+         "vendor": "American Tile Depot"},
+        {"title": "Sample Plate", "handle": "sample-plate", "product_type": "Accessories",
+         "tags": ["Accessories"], "body_html": "A sample plate.", "variants": [{"available": True}],
+         "vendor": "American Tile Depot"},
+    ]}
+
+    def get(url, timeout=5, headers=None, allow_redirects=True):
+        if "best-sellers" in url or "bestsellers" in url:
+            return Response(200, plates)
+        return Response(404, {})
+
+    facts = collect_product_facts(
+        "tile.example", brand="American Tile Depot", allow_storeleads=False,
+        get=get, sleep=lambda _s: None, guard=lambda url: url, homepage_html="<html></html>",
+    )
+    assert facts["catalog_skip"] == "no_bestseller_product"
+    assert facts["products"] == []
 
 
 def test_the_default_model_is_the_fast_non_reasoning_grok():

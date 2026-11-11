@@ -185,7 +185,9 @@ _DRUG_SUBJECT = re.compile(
 )
 _PAIN_CLAIM = re.compile(r"\bpain\b", re.I)
 _SPARE_PART = re.compile(
-    r"\b(?:replacement|refill|spare|accessor(?:y|ies)|side brush(?:es)?|mop pads?)\b",
+    r"\b(?:replacement|refill|spare|accessor(?:y|ies)|parts|"
+    r"side brush(?:es)?|main brush(?:es)?|roller brush(?:es)?|brush covers?|"
+    r"filters?|cleaning solutions?|mop pads?)\b",
     re.I,
 )
 _PRINT_DESIGN = re.compile(
@@ -680,6 +682,7 @@ def fetch_shopify_path(
     min_interval: float = MIN_INTERVAL,
     accept: str = "application/json",
     attempts: int = 2,
+    stop_after_handles: int = 20,
 ) -> Any:
     """One public Shopify URL, or None on 404, 401, or a non-Shopify response.
 
@@ -740,7 +743,7 @@ def fetch_shopify_path(
                     return response.json()
                 except Exception:  # noqa: BLE001
                     return None
-            return _html_text(response, max_bytes=3_000_000, stop_after_handles=15)
+            return _html_text(response, max_bytes=3_000_000, stop_after_handles=stop_after_handles)
         finally:
             close = getattr(response, "close", None)
             if callable(close):
@@ -1078,7 +1081,7 @@ def products_for_handles(
     get: Optional[Callable[..., Any]] = None,
     sleep: Callable[[float], None] = time.sleep,
     guard: Optional[Callable[[str], str]] = None,
-    limit: int = 8,
+    limit: int = 20,
 ) -> list[dict[str, Any]]:
     """Real product records for the best-selling handles, in that order.
 
@@ -1287,7 +1290,7 @@ def collect_product_facts(
             domain, "/collections/all?sort_by=best-selling",
             get=get, sleep=sleep, guard=guard, accept="text/html", timeout=15, attempts=1,
         )
-        handles = handles_from_html(page if isinstance(page, str) else "")
+        handles = handles_from_html(page if isinstance(page, str) else "", limit=20)
         direct = products_for_handles(
             domain, handles, get=get, sleep=sleep, guard=guard,
         )
@@ -1322,6 +1325,8 @@ def collect_product_facts(
             catalog_skip = "custom"
         elif not blocked and reseller_catalog(checked, brand):
             catalog_skip = "reseller"
+        elif not blocked and pick == "best-selling" and json_rows and not catalog:
+            catalog_skip = "no_bestseller_product"
         vendor_rows = checked
         return {
             "source": "products.json" if catalog and not blocked and not catalog_skip else "",

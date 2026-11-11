@@ -676,7 +676,7 @@ def generate(
     ``batch``, ``angles``, and ``allow_retry`` are ignored. Variety is not scored.
     """
 
-    from outbound_opener_line import compose_line, pick_line_facts
+    from outbound_opener_line import compose_line, line_fact_candidates
 
     sheet = fact_sheet(lead)
     if sheet.blocked:
@@ -691,12 +691,13 @@ def generate(
     products = list(sheet.catalog)
     if not products and sheet.product:
         products = [{"title": sheet.product, "body": sheet.product}]
-    facts = pick_line_facts(
+    candidates = line_fact_candidates(
         products,
         brand=sheet.brand,
         recipe=sheet.recipe,
         vendors=store.get("vendors") if isinstance(store.get("vendors"), list) else None,
     )
+    facts = candidates[0]
     lead["opener_facts"] = facts.as_text()
     if facts.skip:
         lead["grader_reason"] = facts.skip
@@ -709,7 +710,9 @@ def generate(
             writer = lambda text: _call_model(text, api_key)  # noqa: E731
     if writer is None:
         return "", "", "skipped:no_model"
-    result = compose_line(facts, writer=writer, grader=grader or writer)
+    result = compose_line(
+        facts, writer=writer, grader=grader or writer, alternatives=candidates[1:],
+    )
     lead["opener_facts"] = result.facts
     lead["grader_pass"] = result.grader_pass
     lead["grader_reason"] = result.grader_reason
