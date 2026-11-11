@@ -6,7 +6,8 @@ shopper-visible fact sheet from the StoreLeads record and the examples
 below. The code then checks the lines. A thin record, a restricted
 category such as wine, or a high vendor count (a multi-brand retailer)
 gets no lines and is flagged. If the model line fails a check, the
-fallback is a plain category sentence, or nothing when that is not safe.
+fallback is a short category sentence, or nothing when that is not safe.
+A line over the hard word max is not replaced. It is left empty and the lead is held.
 
 The StoreLeads key the code reads is `STORELEADS_API_KEY`. It is not set
 on the Vercel project anata-agent-staging. Do not invent another name.
@@ -28,8 +29,10 @@ estimated_sales, visits, rank, and employee_count never appear in the copy.
 
 ## Rules
 
-- Opener: one or two natural sentences in Abby's voice that tie a specific real fact to why Amazon matters.
-- brandAngle: one sentence with a specific Amazon idea. It does not repeat the opener and never starts with "Anata helps".
+- Opener (`{{personalization}}`): one sentence of about 20 words, never more than 25. A longer line is regenerated once, then the lead is held.
+- brandAngle: one sentence of about 15 words, never more than 20. Same regenerate-once-then-hold rule. It does not repeat the opener and never starts with "Anata helps".
+- Only mention Amazon when a fact says the brand sells there. A Trial Offer line never mentions Amazon and never assumes the brand sells there.
+- The examples below show voice. Live lines stay inside the word caps above.
 - No digits. Write numbers as words.
 - No em dashes, no URLs, and nothing that is not in the fact sheet.
 - No negative lead, such as "does not sell on Amazon".

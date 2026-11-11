@@ -884,8 +884,12 @@ def push_pending(engine, campaign_id: str, *, dry_run: bool = True, limit: int =
             "brand": person.get("brand"),
             "categories": person.get("category"),
             "recipe": person.get("recipe"),
+            "campaign_id": person.get("campaign_id"),
+            "campaign_name": person.get("campaign_name"),
         }
-        copy_reason = _openers.opener_hold_reason(str(person.get("opener") or ""), copy_lead)
+        copy_reason = _openers.opener_hold_reason(
+            str(person.get("opener") or ""), copy_lead,
+        ) or _openers.angle_hold_reason(str(person.get("brand_angle") or ""), copy_lead)
         if copy_reason:
             held_copy += 1
             logger.info(

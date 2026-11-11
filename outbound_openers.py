@@ -15,7 +15,10 @@ Hard rules, enforced in code not just in the prompt:
   * A confirmed Amazon product can be named. A rich line may also name Amazon
     as the marketplace opportunity when a positive StoreLeads fact supports it.
     Never use "does not sell on Amazon" as the hook.
-  * One or two short sentences, capped by length.
+  * A Trial Offer line never mentions Amazon and never assumes the brand sells there.
+  * One sentence. The opener aims for about 20 words and never passes 25.
+    The brand angle aims for about 15 words and never passes 20.
+    A line over that hard max is regenerated once, then the lead is held.
 """
 
 from __future__ import annotations
@@ -29,8 +32,12 @@ from typing import Any, Callable, Optional
 logger = logging.getLogger(__name__)
 
 MODEL = "claude-haiku-4-5-20251001"
-MAX_WORDS = 34
-ANGLE_MAX_WORDS = 22
+# {{personalization}} aims for about 20 words. 25 is the hard max.
+MAX_WORDS = 25
+# {{brandAngle}} aims for about 15 words. 20 is the hard max.
+ANGLE_MAX_WORDS = 20
+# "Anata // Trial Offer // Oct 2026". Same id as the Instantly push constant.
+TRIAL_OFFER_CAMPAIGN_ID = "e5f5046b-07e4-41ad-a395-79cf8766ccd0"
 
 BANNED_PHRASES = (
     "hope this finds you", "hope you're well", "hope you are well", "game-changing",
@@ -81,26 +88,55 @@ _ANGLE_AFTER = {
 _SYSTEM = (
     "You write the first line of a cold email from Abby at Anata to a founder or "
     "marketing lead at a consumer brand. Anata Intelligence builds a brand's Amazon "
-    "strategy and runs the ad actions automatically. Write ONE short statement, not a "
-    "question, under 30 words. Ground it in one real fact from the list: the Amazon "
-    "product, a recent platform move, a recent app install, or a recent plan upgrade. "
-    "If a plain category is given, you may say they sell that. Only mention Amazon "
-    "when an 'Amazon product' fact is listed; otherwise never say or imply they sell "
-    "on Amazon. Never print a slug with "
-    "underscores. Do not claim social momentum, growth, or anything that is not in the "
-    "facts. Do not start with 'I noticed' or 'We noticed'. Never use the words "
-    "'curious', 'special', 'building something', or 'ideal customer profile'. "
-    "No numbers. No links. No em dashes. No greeting, no sign-off."
+    "strategy and runs the ad actions automatically. Write ONE sentence, not a "
+    "question, of about 20 words and never more than 25 words. Ground it in one real "
+    "fact from the list: the Amazon product, a recent platform move, a recent app "
+    "install, or a recent plan upgrade. If a plain category is given, you may say "
+    "they sell that. Only mention Amazon when an 'Amazon product' fact is listed; "
+    "otherwise never say or imply they sell on Amazon. If the facts say this is a "
+    "Trial Offer, never mention Amazon and never assume the brand sells on Amazon. "
+    "Never print a slug with underscores. Do not claim social momentum, growth, or "
+    "anything that is not in the facts. Do not start with 'I noticed' or 'We noticed'. "
+    "Never use the words 'curious', 'special', 'building something', or 'ideal customer "
+    "profile'. No numbers. No links. No em dashes. No greeting, no sign-off."
 )
 
 _ANGLE_SYSTEM = (
-    "You write one short line for a cold email from Abby at Anata. Anata helps "
+    "You write one sentence for a cold email from Abby at Anata. Anata helps "
     "a consumer brand grow. Tie the line to one fact from the list and to how "
-    "Anata helps that brand grow. Use only those facts. Only mention Amazon when "
-    "an 'Amazon product' fact is listed; otherwise never say or imply they sell "
-    "on Amazon. One statement, under 20 words. No numbers. No links. No questions. "
-    "No em dashes. No greeting, no sign-off."
+    "Anata helps that brand grow. Use only those facts. Aim for about 15 words "
+    "and never more than 20 words. Only mention Amazon when an 'Amazon product' "
+    "fact is listed; otherwise never say or imply they sell on Amazon. If the facts "
+    "say this is a Trial Offer, never mention Amazon and never assume the brand sells "
+    "on Amazon. No numbers. No links. No questions. No em dashes. No greeting, no sign-off."
 )
+
+
+def sentence_count(text: str) -> int:
+    """How many sentences a line contains. A blank line counts as zero."""
+
+    return sum(1 for part in re.split(r"[.!?]+", text or "") if part.strip())
+
+
+def trial_offer_lead(lead: Optional[dict[str, Any]]) -> bool:
+    """True when the line is for the Trial Offer sequence.
+
+    Those openers must not claim or assume the brand sells on Amazon, even
+    when a product match is on the lead. Other recipes keep the confirmed-product rule.
+    """
+
+    if not lead:
+        return False
+    recipe = str(lead.get("recipe") or "").strip().lower().replace("-", " ").replace("_", " ")
+    if recipe in {"trial", "trial offer", "trial offer oct"} or recipe.startswith("trial offer"):
+        return True
+    for key in ("campaign_id", "campaign", "instantly_campaign_id"):
+        if str(lead.get(key) or "").strip() == TRIAL_OFFER_CAMPAIGN_ID:
+            return True
+    blob = " ".join(
+        str(lead.get(key) or "") for key in ("campaign_name", "sequence", "sequence_name")
+    ).lower()
+    return "trial offer" in blob
 
 
 def clean(text: str) -> str:
@@ -135,6 +171,8 @@ def validate(text: str, *, allow_amazon: bool = True, max_words: int = MAX_WORDS
         return False, "empty"
     if len(t.split()) > max_words or len(t) > 220:
         return False, "too long"
+    if sentence_count(t) > 1:
+        return False, "more than one sentence"
     if re.search(r"\d", t):
         return False, "contains a number"
     if re.search(r"https?://|www\.|@", t):
@@ -243,6 +281,7 @@ class LeadFacts:
     rich_phrases: tuple[str, ...] = ()
     rich_opener: str = ""
     rich_angle: str = ""
+    trial_offer: bool = False
 
     @property
     def solid(self) -> bool:
@@ -867,6 +906,7 @@ def collect_facts(lead: dict[str, Any]) -> LeadFacts:
         rich = tuple(sheet.facts)
     return LeadFacts(
         brand, amazon_product, product, category, signal, extras, rich, rich_opener, rich_angle,
+        trial_offer_lead(lead),
     )
 
 
@@ -898,12 +938,16 @@ def opener_line(facts: LeadFacts) -> str:
     brand = _named(facts.brand)
     if facts.rich_opener:
         return facts.rich_opener
-    if facts.amazon_product:
+    allow_name_amazon = bool(facts.amazon_product) and not facts.trial_offer
+    if allow_name_amazon:
         line = _usable(f"{brand} lists {facts.amazon_product} on Amazon.", allow_amazon=True)
         if line:
             return line
     if facts.rich_phrases:
-        allow_amazon = any("amazon" in phrase.lower() for phrase in facts.rich_phrases)
+        allow_amazon = (
+            not facts.trial_offer
+            and any("amazon" in phrase.lower() for phrase in facts.rich_phrases)
+        )
         line = rich_sentence(brand, list(facts.rich_phrases), allow_amazon=allow_amazon)
         if line:
             return line
@@ -928,7 +972,8 @@ def brand_angle_line(facts: LeadFacts) -> str:
     brand = _named(facts.brand)
     if facts.rich_angle:
         return facts.rich_angle
-    if facts.amazon_product:
+    allow_name_amazon = bool(facts.amazon_product) and not facts.trial_offer
+    if allow_name_amazon:
         line = _usable(
             f"Anata helps {brand} grow {facts.amazon_product} on Amazon.",
             allow_amazon=True, max_words=ANGLE_MAX_WORDS,
@@ -936,7 +981,10 @@ def brand_angle_line(facts: LeadFacts) -> str:
         if line:
             return line
     if facts.rich_phrases:
-        allow_amazon = any("amazon" in phrase.lower() for phrase in facts.rich_phrases)
+        allow_amazon = (
+            not facts.trial_offer
+            and any("amazon" in phrase.lower() for phrase in facts.rich_phrases)
+        )
         line = _usable(
             f"Anata helps {brand} grow. The brand {facts.rich_phrases[0]}.",
             allow_amazon=allow_amazon, max_words=ANGLE_MAX_WORDS,
@@ -995,7 +1043,13 @@ def fallback_line(
 
 def _build_prompt(facts: LeadFacts, *, closing: str) -> str:
     lines = [f"Brand: {facts.brand or 'This brand'}"]
-    if facts.amazon_product:
+    if facts.trial_offer:
+        lines.append(
+            "Trial Offer: never mention Amazon and never assume this brand sells on Amazon."
+        )
+        if facts.amazon_product:
+            lines.append(f"Product: {facts.amazon_product}")
+    elif facts.amazon_product:
         lines.append(f"Amazon product: {facts.amazon_product}")
     if facts.product:
         lines.append(f"Product: {facts.product}")
@@ -1069,7 +1123,7 @@ def _from_model(
     anchors: list[str],
     max_words: int,
 ) -> tuple[str, str]:
-    """Return a clean line, or ('', reason) after two rejects."""
+    """Return a clean line, or ('', reason) after one regeneration."""
 
     why = ""
     for _attempt in range(2):
@@ -1119,14 +1173,23 @@ def write_opener(
         return finish(facts.rich_opener, "fallback")
     model = _resolve_llm(llm, api_key, system=_SYSTEM)
     if model is not None:
-        prompt = _build_prompt(facts, closing="Write the opening statement now.")
+        prompt = _build_prompt(
+            facts,
+            closing=(
+                "Write one sentence of about 20 words, never more than 25. "
+                "Write the opening statement now."
+            ),
+        )
         try:
-            line, _why = _from_model(
-                model, prompt, allow_amazon=bool(facts.amazon_product),
+            line, why = _from_model(
+                model, prompt,
+                allow_amazon=bool(facts.amazon_product) and not facts.trial_offer,
                 anchors=_anchors(facts), max_words=MAX_WORDS,
             )
             if line:
                 return finish(line, "ai")
+            if why == "too long":
+                return finish("", "none")
         except Exception:  # noqa: BLE001 - never block a lead on the AI
             logger.exception("[outbound-openers] AI call failed, using fallback")
     line = opener_line(facts)
@@ -1167,14 +1230,23 @@ def write_brand_angle(
         return finish(facts.rich_angle, "fallback")
     model = _resolve_llm(llm, api_key, system=_ANGLE_SYSTEM)
     if model is not None:
-        prompt = _build_prompt(facts, closing="Write the growth line now.")
+        prompt = _build_prompt(
+            facts,
+            closing=(
+                "Write one sentence of about 15 words, never more than 20. "
+                "Write the growth line now."
+            ),
+        )
         try:
-            line, _why = _from_model(
-                model, prompt, allow_amazon=bool(facts.amazon_product),
+            line, why = _from_model(
+                model, prompt,
+                allow_amazon=bool(facts.amazon_product) and not facts.trial_offer,
                 anchors=_anchors(facts), max_words=ANGLE_MAX_WORDS,
             )
             if line:
                 return finish(line, "ai")
+            if why == "too long":
+                return finish("", "none")
         except Exception:  # noqa: BLE001 - never block a lead on the AI
             logger.exception("[outbound-openers] brand angle AI call failed, using fallback")
     line = brand_angle_line(facts)
@@ -1250,6 +1322,27 @@ def opener_hold_reason(opener: str, lead: Optional[dict[str, Any]] = None) -> st
     sold = _normalized_sale(text)
     if sold and sold in _category_phrases(lead or {}):
         return "opener is a category filler with no shopper-visible fact"
+    if len(text.split()) > MAX_WORDS:
+        return "opener is longer than 25 words"
+    if trial_offer_lead(lead) and _AMAZON_WORD.search(text):
+        return "trial offer opener assumes the brand sells on Amazon"
+    return ""
+
+
+def angle_hold_reason(angle: str, lead: Optional[dict[str, Any]] = None) -> str:
+    """Why this brand angle must not be sent. Empty when it can, or when it is blank.
+
+    A line over 20 words is held. A short category slogan is still blanked by
+    ``angle_is_filler`` and does not hold the contact by itself.
+    """
+
+    text = (angle or "").strip()
+    if not text:
+        return ""
+    if len(text.split()) > ANGLE_MAX_WORDS:
+        return "brand angle is longer than 20 words"
+    if trial_offer_lead(lead) and _AMAZON_WORD.search(text):
+        return "trial offer angle assumes the brand sells on Amazon"
     return ""
 
 
