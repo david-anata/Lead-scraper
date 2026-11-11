@@ -235,11 +235,21 @@ def model_timeout_seconds() -> float:
 def lead_budget_seconds() -> float:
     """Wall clock for one lead, including catalog reads and the model retry."""
 
-    raw = (os.getenv("OUTBOUND_OPENER_LEAD_BUDGET") or "25").strip()
+    raw = (os.getenv("OUTBOUND_OPENER_LEAD_BUDGET") or "35").strip()
     try:
         return max(5.0, float(raw))
     except ValueError:
-        return 25.0
+        return 35.0
+
+
+def first_call_seconds() -> float:
+    """Cap for the first model call. Default 22s. Override with OUTBOUND_OPENER_FIRST_CALL."""
+
+    raw = (os.getenv("OUTBOUND_OPENER_FIRST_CALL") or "22").strip()
+    try:
+        return max(1.0, float(raw))
+    except ValueError:
+        return 22.0
 
 
 def compatible_llm():
@@ -346,7 +356,7 @@ def render_row(
                 remaining = model_timeout_seconds() if deadline is None else deadline - time.monotonic()
                 if remaining < 0.5:
                     raise personalization.ModelTimeout("lead budget")
-                cap = 15.0 if calls["n"] == 1 else remaining
+                cap = first_call_seconds() if calls["n"] == 1 else remaining
                 return _llm(prompt, timeout_s=min(model_timeout_seconds(), cap, remaining))
 
         opener, angle, source = personalization.generate(

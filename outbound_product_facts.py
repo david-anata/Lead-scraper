@@ -88,9 +88,17 @@ def _non_english(text: str) -> bool:
 
 
 _BLOCKED_CATEGORY = re.compile(
-    r"\b(?:cbd|cbda|hemp|kratom|microdos\w*|psilocybin|psychedelic|"
+    r"\b(?:cbd|cbda|kratom|microdos\w*|psilocybin|psychedelic|"
     r"bpc-?157|semaglutide|tirzepatide|research use only|nicotine|vapes?|vaping|"
     r"lion'?s?\s*mane|lions?\s*mane|chaga|reishi|cordyceps|turkey\s*tail|amanita)\b",
+    re.I,
+)
+_HEMP_WORD = re.compile(r"\bhemp\b", re.I)
+_HEMP_COLOR_OR_FABRIC = re.compile(
+    r"\b(?:colou?rs?|shades?|swatches?|comfort colors|fabric|cord|twine|canvas|thread|yarn)\b"
+    r".{0,30}\bhemp\b"
+    r"|\bhemp\b.{0,20}\b(?:colou?r|shade|swatch|fabric|cord|twine|canvas|thread|yarn)\b"
+    r"|\bhemp\s+(?:cord|twine|fabric|canvas|thread|yarn)\b",
     re.I,
 )
 _MUSHROOM = re.compile(r"\bmushrooms?\b", re.I)
@@ -120,11 +128,28 @@ _GROUND_STOP = {
 }
 
 
+def hemp_is_product(*parts: Any) -> bool:
+    """True when hemp is the product or an ingredient, not a color or fabric.
+
+    A Comfort Colors swatch named Hemp, or a title like ``hemp cord``, is not
+    a hemp product. Hemp oil, hemp extract, and a brand named for hemp are.
+    Variant option values are not passed in here.
+    """
+
+    text = " ".join(str(part or "") for part in parts)
+    if not _HEMP_WORD.search(text):
+        return False
+    if _HEMP_COLOR_OR_FABRIC.search(text):
+        return False
+    return True
+
+
 def blocked_category_reason(*parts: Any) -> str:
     """A hard skip for drug, hemp, and research-peptide catalogs.
 
     A copper peptide serum is cosmetic and is not blocked. A research peptide,
-    CBD or hemp product, kratom, nicotine, or a disease claim is.
+    CBD product, kratom, nicotine, or a disease claim is. Hemp is not matched
+    here; ``hemp_is_product`` checks a product title, type, and description.
     """
 
     text = " ".join(str(part or "") for part in parts)
@@ -200,6 +225,10 @@ def _off_core(title: str, product_type: str, core: str) -> bool:
     if re.search(r"\b(?:it|me|my)\b", title, re.I) and len(title.split()) >= 4:
         return True
     if _ADDON.search(blob) and not _ADDON.search(core or ""):
+        return True
+    if re.search(r"\b(?:upsells?|add-?ons?|lens only)\b", blob, re.I):
+        return True
+    if re.search(r"[-–—]\s*(?:benefithub|abenity)\s*$", title, re.I):
         return True
     return False
 
@@ -654,7 +683,14 @@ def _html_text(response: Any, *, max_bytes: int, stop_after_handles: int) -> str
         except Exception:  # noqa: BLE001
             if parts:
                 return "".join(parts)[:max_bytes]
-    return (getattr(response, "text", "") or "")[:max_bytes]
+        if parts:
+            # The stream ended before 15 handles. response.text is already
+            # consumed and raises if read again.
+            return "".join(parts)[:max_bytes]
+    try:
+        return (getattr(response, "text", "") or "")[:max_bytes]
+    except Exception:  # noqa: BLE001
+        return ""
 
 
 def fetch_shopify_catalog(
@@ -950,11 +986,28 @@ def _products_by_handle(
     return ordered, found
 
 
+def _hemp_in_catalog(products: list[dict[str, Any]], brand: str = "") -> bool:
+    """Hemp as a product or ingredient in the brand or a product record.
+
+    Homepage text, tags, and variant colors are not consulted.
+    """
+
+    if hemp_is_product(brand):
+        return True
+    for item in products:
+        if not isinstance(item, dict):
+            continue
+        if hemp_is_product(item.get("title"), item.get("product_type"), item.get("body")):
+            return True
+    return False
+
+
 def _catalog_rows(products: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Up to five real products, titles left as the shop wrote them."""
 
     core = _core_type(products)
     kept: list[dict[str, Any]] = []
+    seen_titles: set[str] = set()
     for item in products:
         title = str(item.get("title") or "").strip()
         kind = str(item.get("product_type") or "").strip()
@@ -962,6 +1015,10 @@ def _catalog_rows(products: list[dict[str, Any]]) -> list[dict[str, Any]]:
             continue
         if _non_english(title) or _FOREIGN_WORD.search(title):
             continue
+        key = title.casefold()
+        if key in seen_titles:
+            continue
+        seen_titles.add(key)
         tags = item.get("tags") if isinstance(item.get("tags"), list) else []
         kept.append({
             "title": title,
@@ -1057,6 +1114,8 @@ def collect_product_facts(
             *(str(item.get("body") or "") for item in checked),
             *(" ".join(str(tag) for tag in (item.get("tags") or [])) for item in checked),
         )
+        if not blocked and _hemp_in_catalog(checked, brand):
+            blocked = "blocked_category"
         return {
             "source": "products.json" if catalog and not blocked else "",
             "pick": pick if catalog and not blocked else "",

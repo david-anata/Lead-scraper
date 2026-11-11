@@ -100,6 +100,10 @@ def variety_clash(
         shape = opening_words(angle, 4)
         if shape and sum(1 for old in angles if opening_words(old, 4) == shape) >= 2:
             return "repeats an angle"
+        low = angle.lower()
+        for motif in ("main image", "clear product", "center on", "focus on", "clear enough"):
+            if motif in low and sum(1 for old in angles if motif in old.lower()) >= 2:
+                return "repeats an angle"
     return ""
 
 

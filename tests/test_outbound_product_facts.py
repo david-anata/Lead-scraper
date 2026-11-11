@@ -9,6 +9,7 @@ from outbound_product_facts import (
     fetch_storeleads_record,
     domain_brand_mismatch,
     natural_product_phrase,
+    hemp_is_product,
     phrase_is_grounded,
     phrase_is_natural,
     parse_shopify_products,
@@ -232,6 +233,42 @@ def test_blocked_categories_skip_and_a_copper_peptide_serum_passes():
         "Saw the chips at Whole Foods while walking past.",
         retail=True,
     ) == ""
+    assert personalization.style_violation(
+        "Marine extract capsules could support total body health over time.",
+    ) == "health claim"
+    assert personalization.style_violation(
+        "The chips seem like a plain snack made from the fruit.",
+    ) == "put-down"
+    assert personalization.style_violation(
+        "The chess set is enough of a product to build the ad around.",
+    ) == "put-down"
+    assert personalization.style_violation(
+        "The chess set has that single piece of wood look today.",
+    ) == "garbled phrase"
+    assert personalization.style_violation(
+        "Blood Orange Yuzu looks like a nice change from the usual cola.",
+        product_phrase="Blood Orange Yuzu",
+    ) == "bare product title"
+    assert personalization.style_violation(
+        "The pillow looks like it would cool a hot neck fast.",
+        catalog_text="Cooling pillow for side sleepers",
+    ) == "guessed benefit"
+    assert personalization.style_violation(
+        "The bracelet should lead an Amazon listing for the brand.",
+        role="angle", recipe="replatform",
+    ) == "claims the brand already sells on Amazon"
+    assert personalization.style_violation(
+        "Launching the bracelet on Amazon gives the photo a home.",
+        role="angle", recipe="amz_off",
+    ) == ""
+    assert openers.variety_clash(
+        "", [],
+        angle="The capsules would work as the main image in a listing.",
+        angles=[
+            "The cookie mix would work as the main image on an ad.",
+            "The serum would work as the main image for the brand.",
+        ],
+    ) == "repeats an angle"
     assert blocked_category_reason("Copper peptide serum", "Skincare") == ""
     assert phrase_is_natural("24 hour gold keratin treatment")
     assert phrase_is_natural("the Amara necklace")
@@ -311,6 +348,137 @@ def test_full_catalog_blocks_cbd_even_when_the_title_is_plain():
     )
     assert facts["blocked"] == "blocked_category"
     assert facts["products"] == []
+
+
+class _StreamedPage:
+    """A response whose body can be read once, the way requests streams it."""
+
+    def __init__(self, html: str):
+        self.status_code = 200
+        self._html = html
+        self.text_reads = 0
+
+    def iter_content(self, _size: int = 65536):
+        yield self._html
+
+    @property
+    def text(self) -> str:
+        self.text_reads += 1
+        raise RuntimeError("The content for this response was already consumed")
+
+
+def test_a_short_streamed_page_is_kept_and_the_us_check_still_runs():
+    import outbound_pipeline as pipeline
+    from outbound_product_facts import _html_text
+
+    page = (
+        '<html lang="en">Shopify.currency = {"active":"EUR","rate":"1.0"} '
+        '<a href="/products/shoe">Bera</a></html>'
+    )
+    streamed = _StreamedPage(page)
+    assert _html_text(streamed, max_bytes=3_000_000, stop_after_handles=15) == page
+    assert streamed.text_reads == 0
+
+    def get(url, timeout=5, headers=None, allow_redirects=True, stream=False):
+        if url.rstrip("/").endswith("glo.example"):
+            return _StreamedPage(page)
+        return _Response(404, {})
+
+    facts = collect_product_facts(
+        "glo.example", brand="GLO", allow_storeleads=False,
+        get=get, sleep=lambda _s: None, guard=lambda url: url,
+    )
+    assert facts["currency_code"] == "EUR"
+    assert pipeline.copy_country_reason({
+        "name": "glo.example",
+        "merchant_name": "GLO",
+        "country_code": "US",
+        "currency_code": facts["currency_code"],
+        "language_code": facts["language_code"],
+    }) == "non_us"
+
+
+def test_hemp_color_is_kept_and_a_hemp_product_is_blocked():
+    assert hemp_is_product("Comfort Colors 1717", "Shirts", "Colors: Hemp, Ivory, Pepper") is False
+    assert hemp_is_product("Hemp cord bracelet", "Jewelry", "") is False
+    assert hemp_is_product("Organic Hemp Seed Oil", "Oils", "Cold pressed hemp oil") is True
+    assert hemp_is_product("Nesa's Hemp") is True
+
+    html = "<html><button>Hemp</button><button>Ivory</button></html>"
+    catalog = {"products": [{
+        "title": "Comfort Colors Heavyweight Tee",
+        "handle": "cc-1717",
+        "product_type": "Shirts",
+        "tags": ["Hemp"],
+        "body_html": "<p>A heavyweight cotton tee.</p>",
+        "options": [{"name": "Color", "values": ["Hemp", "Ivory"]}],
+        "variants": [{"available": True, "option1": "Hemp"}],
+    }]}
+
+    def get(url, timeout=5, headers=None, allow_redirects=True):
+        if "sort_by=best-selling" in url:
+            return _Response(200, '<a href="/products/cc-1717">Quick view</a>')
+        if "/products.json" in url:
+            return _Response(200, catalog)
+        if "best-sellers" in url or "bestsellers" in url:
+            return _Response(200, {"products": []})
+        return _Response(200, html)
+
+    facts = collect_product_facts(
+        "htv.example", brand="American HTV", allow_storeleads=False,
+        get=get, sleep=lambda _s: None, guard=lambda url: url, homepage_html=html,
+    )
+    assert facts["blocked"] == ""
+    assert facts["products"]
+
+    hemp = {"products": [{
+        "title": "CBDA Extract",
+        "handle": "cbda",
+        "product_type": "Extract",
+        "tags": [],
+        "body_html": "<p>Organic hemp extract.</p>",
+        "variants": [{"available": True}],
+    }]}
+
+    def hemp_get(url, timeout=5, headers=None, allow_redirects=True):
+        if "/products.json" in url:
+            return _Response(200, hemp)
+        if "best-sellers" in url or "bestsellers" in url or "sort_by" in url:
+            return _Response(200, {"products": []} if "json" in url else "")
+        return _Response(200, "<html></html>")
+
+    blocked = collect_product_facts(
+        "nesa.example", brand="Nesa's Hemp", allow_storeleads=False,
+        get=hemp_get, sleep=lambda _s: None, guard=lambda url: url, homepage_html="<html></html>",
+    )
+    assert blocked["blocked"] == "blocked_category"
+
+
+def test_upsell_partner_and_duplicate_titles_are_dropped():
+    catalog = {"products": [
+        {"title": "Lens Only - Hip Care", "handle": "lens", "product_type": "Upsell",
+         "tags": [], "body_html": "", "variants": [{"available": True}]},
+        {"title": "Lewis", "handle": "lewis-1", "product_type": "Frames",
+         "tags": [], "body_html": "<p>An acetate frame.</p>", "variants": [{"available": True}]},
+        {"title": "Lewis", "handle": "lewis-2", "product_type": "Frames",
+         "tags": [], "body_html": "<p>An acetate frame.</p>", "variants": [{"available": True}]},
+        {"title": "Smart Bottle - Benefithub", "handle": "bottle", "product_type": "Bottle",
+         "tags": [], "body_html": "", "variants": [{"available": True}]},
+        {"title": "Day Pass - Abenity", "handle": "pass", "product_type": "Pass",
+         "tags": [], "body_html": "", "variants": [{"available": True}]},
+    ]}
+
+    def get(url, timeout=5, headers=None, allow_redirects=True):
+        if "/collections/best-sellers/" in url or "/collections/bestsellers/" in url:
+            return _Response(200, catalog)
+        return _Response(404, {})
+
+    facts = collect_product_facts(
+        "hip.example", brand="Hip Optical", allow_storeleads=False,
+        get=get, sleep=lambda _s: None, guard=lambda url: url, homepage_html="<html></html>",
+    )
+    titles = [item["title"] for item in facts["products"]]
+    assert titles == ["Lewis"]
 
 
 def test_homepage_currency_is_read_before_copy():

@@ -303,6 +303,10 @@ def test_the_first_dry_run_call_is_capped_and_a_timeout_is_not_a_missing_product
     )
     dry = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(dry)
+    import os
+    os.environ.pop("OUTBOUND_OPENER_LEAD_BUDGET", None)
+    os.environ.pop("OUTBOUND_OPENER_FIRST_CALL", None)
+    os.environ.pop("OUTBOUND_OPENER_TIMEOUT", None)
     seen = []
 
     def llm(_prompt, timeout_s=30):
@@ -313,7 +317,38 @@ def test_the_first_dry_run_call_is_capped_and_a_timeout_is_not_a_missing_product
         {"domain": "huppy.com", "brand": "Huppy", "first_name": "Ann", "recipe": "amz_on"},
         facts={"source": "products.json", "products": [{"title": "Tooth Tabs", "product_type": "Tabs"}]},
         llm=llm,
-        deadline=time.monotonic() + 25,
+        deadline=time.monotonic() + 35,
     )
-    assert seen and seen[0] <= 15
+    assert seen and seen[0] == dry.first_call_seconds()
     assert row["hold"] == "skipped:model_timeout"
+    assert dry.lead_budget_seconds() == 35
+
+
+def test_a_rejected_line_is_retried_when_twelve_seconds_remain():
+    calls = {"n": 0}
+
+    def llm(_prompt):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return json.dumps({
+                "product_phrase": "keratin treatment",
+                "opener": "The keratin treatment is the one I would tell a friend about today.",
+                "angle": "New shoppers can picture the treatment in one photo.",
+            })
+        return json.dumps({
+            "product_phrase": "keratin treatment",
+            "opener": "The keratin treatment is the one I would tell a friend about today.",
+            "angle": "I would use one photo of the treatment and leave the rest alone.",
+        })
+
+    lead = {
+        **LEAD,
+        "brand": "Inova",
+        "recipe": "trial_offer",
+        "catalog_products": [{"title": "Kera Quik Keratin Treatment", "product_type": "Treatment", "body": ""}],
+    }
+    opener, angle, source = personalization.generate(lead, llm=llm, allow_retry=lambda: True)
+    assert calls["n"] == 2
+    assert source == "ai"
+    assert "picture" not in angle.lower()
+    assert opener

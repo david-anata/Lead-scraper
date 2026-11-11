@@ -65,7 +65,7 @@ Opener: The chocolate chunk cookie mix is the one I would come back for.
 Angle: The cookie mix is what I would put in the ad.
 
 Opener: Love that Perfy does flavors like blood orange yuzu instead of another plain cola.
-Angle: On Amazon, show that flavor before any other can.
+Angle: Show that flavor before any other can.
 
 Opener: Inova's clarifying shampoo is the one I would tell a friend about.
 Angle: A shopper can understand the shampoo from a single listing image.
@@ -74,7 +74,7 @@ Opener: RSL's shave cream is a specific thing, not a general grooming line.
 Angle: The cream is a concrete product for the first listing.
 
 Opener: Biggs and Featherbelle's bar soap has a scent a shopper can name.
-Angle: That bar soap is enough of a product to build the ad around.
+Angle: That bar soap is what I would build the ad around.
 """.strip()
 
 
@@ -263,7 +263,7 @@ def fact_sheet(lead: dict[str, Any]) -> FactSheet:
         catalog = lead.get("catalog_products") if isinstance(lead.get("catalog_products"), list) else []
     catalog = [item for item in catalog if isinstance(item, dict) and item.get("title")]
     if catalog:
-        from outbound_product_facts import blocked_category_reason
+        from outbound_product_facts import _hemp_in_catalog, blocked_category_reason
 
         blocked = blocked_category_reason(
             category,
@@ -271,6 +271,8 @@ def fact_sheet(lead: dict[str, Any]) -> FactSheet:
             *(str(item.get("product_type") or "") for item in catalog),
             *(str(item.get("body") or "") for item in catalog),
         )
+        if not blocked and _hemp_in_catalog(catalog, brand):
+            blocked = "blocked_category"
         if blocked:
             sheet.blocked = blocked
             return sheet
@@ -351,6 +353,33 @@ def fact_sheet(lead: dict[str, Any]) -> FactSheet:
     return sheet
 
 
+def _bare_product_opening(text: str, phrase: str) -> bool:
+    """True when the opener starts on the raw product title."""
+
+    raw = (text or "").strip()
+    named = " ".join((phrase or "").split())
+    if not raw or not named:
+        return False
+    if re.match(r"^(?:the|a|an|i|i'd|i’d|your|love)\b", raw, re.I):
+        return False
+    return raw.lower().startswith(named.lower())
+
+
+def _ungrounded_benefit(text: str, catalog_text: str) -> bool:
+    """True when the line claims an effect the catalog text does not say."""
+
+    blob = (catalog_text or "").lower()
+    for word in re.findall(
+        r"\b(?:cool|cools|soothe|soothes|heal|heals|relieve|relieves|boost|boosts|"
+        r"fast|instantly|overnight)\b",
+        text or "",
+        re.I,
+    ):
+        if re.search(rf"\b{re.escape(word.lower())}\b", blob) is None:
+            return True
+    return False
+
+
 def style_violation(
     text: str,
     *,
@@ -359,6 +388,8 @@ def style_violation(
     high_rating: bool = False,
     trial_offer: bool = False,
     retail: bool = False,
+    catalog_text: str = "",
+    product_phrase: str = "",
 ) -> str:
     """Empty when the line is allowed. Otherwise a short reason."""
 
@@ -402,13 +433,17 @@ def style_violation(
     if role == "angle" and raw.lower().startswith("anata helps"):
         return "anata helps"
     trial = trial_offer or trial_offer_lead({"recipe": recipe})
+    recipe_key = (recipe or "").strip().lower().replace("-", " ").replace("_", " ")
     if trial and (_AMAZON_WORD.search(raw) or trial_amazon_claim(raw)):
         return "claims the brand already sells on Amazon"
-    if (
-        not trial
-        and recipe not in {"amz_on", "amz on"}
-        and _AMAZON_WORD.search(raw)
-    ):
+    if recipe_key == "amz off":
+        if re.search(
+            r"\balready (?:on amazon|sells? on amazon|selling on amazon)\b"
+            r"|\byour amazon\b|\btheir amazon\b|\blive on amazon\b|\bsells on amazon\b",
+            raw, re.I,
+        ):
+            return "claims the brand already sells on Amazon"
+    elif recipe_key != "amz on" and (_AMAZON_WORD.search(raw) or trial_amazon_claim(raw)):
         return "claims the brand already sells on Amazon"
     words = raw.split()
     limit = ANGLE_MAX_WORDS if role == "angle" else OPENER_MAX_WORDS
@@ -421,10 +456,25 @@ def style_violation(
         return "more than two sentences" if role == "opener" else "more than one sentence"
     if re.search(
         r"\bpick up right away\b|\bshoppers will\b|\bwill love\b|\bguaranteed to\b|"
-        r"\bnew shoppers can\b|\bshoppers can spot\b",
+        r"\bnew shoppers can\b|\bshoppers can (?:spot|picture)\b|\bcan picture\b",
         raw, re.I,
     ):
         return "guesses what shoppers will do"
+    if re.search(
+        r"\b(?:support|supports|improve|improves|relief|relieve|relieves)\w*\b.{0,40}"
+        r"\b(?:health|wellness|pain|body)\b"
+        r"|\btotal body health\b",
+        raw, re.I,
+    ):
+        return "health claim"
+    if re.search(r"\bplain snack\b|\benough of a product\b", raw, re.I):
+        return "put-down"
+    if re.search(r"\bhas that\b.{0,60}\blook\b", raw, re.I):
+        return "garbled phrase"
+    if _bare_product_opening(raw, product_phrase):
+        return "bare product title"
+    if catalog_text and _ungrounded_benefit(raw, catalog_text):
+        return "guessed benefit"
     if re.search(r"\bthis brand\b|\blineup\b", raw, re.I):
         return "generic brand or category label"
     if re.search(r"\bin the snack aisle\b|\bon the shelf\b|\bat the store\b", raw, re.I):
@@ -473,16 +523,24 @@ def _prompt(sheet: FactSheet) -> str:
             "This is a Trial Offer. The opener and the angle must not mention Amazon "
             "and must not claim the brand already sells on Amazon. Never write "
             "'on Amazon', 'your Amazon store', 'your listings', or 'already on Amazon'. "
-            "Say new shoppers. "
+            "The angle talks about the listing, a product image, or an ad, without naming Amazon. "
+            "Say new shoppers, and do not guess what they can see or do. "
         )
-    elif sheet.recipe == "amz_on":
+    elif sheet.recipe in {"amz_on", "amz on"}:
         amazon_rule = (
             "This brand is in the amz_on segment, so the line may say it is on Amazon "
-            "when a fact supports that. Never assume a product that is not in the facts. "
+            "when a fact supports that. The angle may mention Amazon listings, images, or ads. "
+            "Never assume a product that is not in the facts. "
+        )
+    elif sheet.recipe in {"amz_off", "amz off"}:
+        amazon_rule = (
+            "This brand is not on Amazon yet. The angle may talk about launching on Amazon. "
+            "Do not claim they already sell there. "
         )
     else:
         amazon_rule = (
-            "Do not mention Amazon. Never assume they sell there. "
+            "Do not mention Amazon. The angle talks about the listing, a product image, "
+            "or an ad, without naming Amazon. "
         )
     return (
         f"Brand: {sheet.brand}\n"
@@ -514,13 +572,16 @@ def _prompt(sheet: FactSheet) -> str:
         "Say one plain thing a person would say after looking at that product. "
         "Do not say recent, newest, I noticed, small set, easy to picture, "
         "one clear start, or simple place to start. "
-        "Do not start every opener with 'The'. "
-        "The angle must not copy one shape. Do not write 'an ad can stay on X so the photo carries the message'. "
+        "Do not start the opener on the raw product title. Start with 'The', 'Your', or a short human line. "
+        "Do not claim a health benefit, relief, or an effect the catalog text does not state. "
+        "Do not put the product down. Never write 'plain snack' or 'enough of a product'. "
+        "Do not twist a phrase from the site into broken English. "
+        "The angle must not copy one shape. Do not repeat 'main image' or 'clear product to center on'. "
+        "Do not write 'an ad can stay on X so the photo carries the message'. "
         "Sound like a person who looked at their store. Plain and warm. "
         f"{amazon_rule}"
         "Opener: one or two short sentences, about 25 words max, and at least 6 words. "
         "Angle: one sentence of about 15 words, never more than 20, and at least 6 words. "
-        "The angle ties the brand to Amazon listings, images, or ads. "
         "It must not restate the opener, must not start with Anata helps, "
         "and must not tell them what their first image should be or critique the store. "
         "No digits, no em dashes, no spaced hyphens, no URLs, no hype, no questions, "
@@ -663,14 +724,18 @@ def generate(
                 token in " ".join(sheet.facts).lower()
                 for token in ("store locator", "sold through retailers", "sold in stores")
             )
+            catalog_text = " ".join(
+                f"{item.get('title') or ''} {item.get('product_type') or ''} {item.get('body') or ''}"
+                for item in sheet.catalog
+            )
             why = why or style_violation(
                 opener, role="opener", recipe=sheet.recipe,
                 high_rating=sheet.high_rating, trial_offer=sheet.trial_offer,
-                retail=retail,
+                retail=retail, catalog_text=catalog_text, product_phrase=phrase,
             ) or style_violation(
                 angle, role="angle", recipe=sheet.recipe,
                 high_rating=sheet.high_rating, trial_offer=sheet.trial_offer,
-                retail=retail,
+                retail=retail, catalog_text=catalog_text, product_phrase=phrase,
             ) or variety_clash(opener, batch or [], angle=angle, angles=angles)
             if brand_named_twice(opener, angle, sheet.brand):
                 why = why or "brand named twice"
