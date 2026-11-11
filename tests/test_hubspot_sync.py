@@ -249,7 +249,7 @@ class TestAutoSyncAmount(unittest.TestCase):
     def _client_with_zero_amount(self):
         """Fake client with one open deal at $0 and a line item totalling $500."""
         client = FakeHubSpotClient()
-        client.deals = [_deal("z1", "ZeroAmountCo", "0", "appointmentscheduled", "2026-09-01")]
+        client.deals = [_deal("z1", "ZeroAmountCo", "0", "appointmentscheduled", "2027-09-01")]
         client.assoc = {
             ("z1", "companies"): [],
             ("z1", "contacts"): [],

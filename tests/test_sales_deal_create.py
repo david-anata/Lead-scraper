@@ -73,6 +73,13 @@ class SalesDealCreateRouteTests(unittest.TestCase):
         cls.client.cookies.set(cookie_name, token)
 
     def setUp(self) -> None:
+        from sales_support_agent.models import database as db
+
+        # Deal creation mirrors on the app factory, then links the rate sheet
+        # through the process-wide engine. Keep those on the same live file.
+        bind = app.state.session_factory.kw.get("bind")
+        if bind is not None:
+            db.engine = bind
         self.settings = app.state.agent_settings
         self._original_token = self.settings.hubspot_api_token
         self._original_portal = self.settings.hubspot_portal_id

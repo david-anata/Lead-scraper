@@ -300,6 +300,11 @@ class PreviewRouteTests(unittest.TestCase):
         except ModuleNotFoundError:  # pragma: no cover - dependency guard
             raise unittest.SkipTest("fastapi required")
         cls.app = app
+        db_path = os.path.join(tempfile.mkdtemp(prefix="hr_payroll_preview_"), "preview.db")
+        from sales_support_agent.models.database import create_session_factory, init_database
+        factory = create_session_factory("sqlite:///" + db_path)
+        init_database(factory)
+        app.state.session_factory = factory
         cls.client = TestClient(app)
         settings = app.state.agent_settings
         cls.cookie = (

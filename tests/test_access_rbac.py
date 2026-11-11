@@ -1377,9 +1377,9 @@ class NavAccessSafetyTests(unittest.TestCase):
             hr_section="dashboard",
             permissions={"hr.access", "hr.payroll"},
         )
-        for label in ("Today", "People", "Time &amp; Leave", "Payroll", "Compliance", "Manage"):
+        for label in ("Today", "People", "Time &amp; Leave", "Payroll", "Compliance", "Setup", "Manage"):
             self.assertIn(f">{label}</a>", nav)
-        for implementation_page in ("Setup", "Teams", "Contractors", "Offboarding"):
+        for implementation_page in ("Teams", "Contractors", "Offboarding"):
             self.assertNotIn(f">{implementation_page}</a>", nav)
 
     def test_superadmin_only_advertising_subpage_is_hidden_from_non_superadmins(self) -> None:

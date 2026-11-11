@@ -14,12 +14,15 @@ from pathlib import Path
 from sales_support_agent.services.cashflow.cash_calendar import (
     _date_label,
     _next_week_headline,
+    _operator_today,
     _paydown_block,
     build_cash_calendar,
 )
 from sales_support_agent.services.cashflow.overview import _money
 
-TODAY = date.today()
+# Paydown labels compare against the Finance operator date (America/Denver),
+# which is not the same calendar day as UTC for part of the evening.
+TODAY = _operator_today()
 NEXT_MONDAY = TODAY + timedelta(days=(7 - TODAY.weekday()))
 
 

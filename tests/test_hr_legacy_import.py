@@ -153,6 +153,12 @@ def _archive(email: str, suffix: str) -> bytes:
 
 @unittest.skipUnless(DEPS, "SQLAlchemy required")
 class LegacyHRImportTests(unittest.TestCase):
+    def setUp(self):
+        from sales_support_agent.models.database import create_session_factory, init_database
+
+        path = os.path.join(tempfile.mkdtemp(prefix="hr_legacy_"), "legacy.db")
+        init_database(create_session_factory("sqlite:///" + path))
+
     def test_preview_and_import_are_guarded_and_idempotent(self):
         suffix = uuid.uuid4().hex[:10]
         email = f"recovery-{suffix}@anatainc.com"

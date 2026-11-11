@@ -42,27 +42,33 @@ _EXPECTED_TABLES = {
 @unittest.skipUnless(DEPS, "fastapi + sqlalchemy required")
 class HRSchemaTests(unittest.TestCase):
     def test_all_hr_tables_created(self) -> None:
-        names = set(inspect(db.get_engine()).get_table_names())
+        # Inspect a private file. The process-wide engine is often a deleted
+        # pytest tmp database or an empty :memory: connection by this point.
+        path = os.path.join(tempfile.mkdtemp(prefix="hr_schema_"), "schema.db")
+        factory = db.create_session_factory("sqlite:///" + path)
+        db.init_database(factory)
+        engine = factory.kw["bind"]
+        names = set(inspect(engine).get_table_names())
         self.assertTrue(_EXPECTED_TABLES.issubset(names),
                         f"missing HR tables: {_EXPECTED_TABLES - names}")
         self.assertIn("app_email_login_tokens", names)
         liability_columns = {
-            row["name"] for row in inspect(db.get_engine()).get_columns("hr_tax_liabilities")
+            row["name"] for row in inspect(engine).get_columns("hr_tax_liabilities")
         }
         self.assertIn("confirmed_amount_cents", liability_columns)
         self.assertIn("filing_confirmation_number", liability_columns)
         time_columns = {
-            row["name"] for row in inspect(db.get_engine()).get_columns("hr_time_entries")
+            row["name"] for row in inspect(engine).get_columns("hr_time_entries")
         }
         self.assertIn("elapsed_seconds", time_columns)
         input_columns = {
-            row["name"] for row in inspect(db.get_engine()).get_columns("hr_payroll_inputs")
+            row["name"] for row in inspect(engine).get_columns("hr_payroll_inputs")
         }
         self.assertTrue({
             "source_reference", "recurring", "recurrence_key"
         }.issubset(input_columns))
         contractor_columns = {
-            row["name"] for row in inspect(db.get_engine()).get_columns(
+            row["name"] for row in inspect(engine).get_columns(
                 "hr_contractor_profiles"
             )
         }
@@ -72,7 +78,7 @@ class HRSchemaTests(unittest.TestCase):
             "status",
         }.issubset(contractor_columns))
         offboarding_columns = {
-            row["name"] for row in inspect(db.get_engine()).get_columns(
+            row["name"] for row in inspect(engine).get_columns(
                 "hr_offboarding_checklists"
             )
         }
@@ -80,13 +86,13 @@ class HRSchemaTests(unittest.TestCase):
             "final_pay_reference", "final_pay_evidence_note"
         }.issubset(offboarding_columns))
         company_columns = {
-            row["name"] for row in inspect(db.get_engine()).get_columns(
+            row["name"] for row in inspect(engine).get_columns(
                 "hr_company_profiles"
             )
         }
         self.assertIn("final_approver_email", company_columns)
         check_columns = {
-            row["name"] for row in inspect(db.get_engine()).get_columns(
+            row["name"] for row in inspect(engine).get_columns(
                 "hr_printed_checks"
             )
         }
