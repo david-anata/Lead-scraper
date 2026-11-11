@@ -33,6 +33,8 @@ import re
 from dataclasses import dataclass
 from typing import Any, Callable, Optional
 
+from outbound_product_facts import natural_product_phrase, stuffed_copy_reason
+
 logger = logging.getLogger(__name__)
 
 MODEL = "claude-haiku-4-5-20251001"
@@ -247,6 +249,9 @@ def validate(
         return False, "anata helps"
     if re.search(r"https?://|www\.|@", raw):
         return False, "contains a link or address"
+    stuffed = stuffed_copy_reason(raw)
+    if stuffed:
+        return False, stuffed
     t = clean(raw)
     if not t:
         return False, "empty"
@@ -1265,26 +1270,53 @@ def idea_decision(lead: dict[str, Any]) -> tuple[str, str, str]:
     allow_amazon = amazon_presence_allowed(lead)
     facts = list(sheet.facts)
 
-    def _usable_phrase(text: str) -> str:
-        picked = plain_product_phrase(text, brand)
+    def _reject_brand_echo(picked: str) -> str:
+        if not picked:
+            return ""
         display_folded = re.sub(
             r"[^a-z0-9]+", " ", str(lead.get("display_brand") or "").lower(),
         ).strip()
-        if picked and display_folded and picked == display_folded:
+        bare = picked[4:] if picked.startswith("the ") else picked
+        if display_folded and bare == display_folded:
             return ""
         stem = re.sub(r"[^a-z0-9]+", "", str(lead.get("domain") or "").split(".")[0].lower())
-        if picked and stem and re.sub(r"[^a-z0-9]+", "", picked) == stem:
+        if stem and re.sub(r"[^a-z0-9]+", "", bare) == stem:
             return ""
         return picked
 
+    # A catalog product is a name a shopper can buy. The homepage title is not.
     # Only the confirmed Amazon listing may be described as on Amazon.
-    # A newer website product is a shopper fact, not proof of that listing.
+    profile = lead.get("store_profile") if isinstance(lead.get("store_profile"), dict) else {}
+    catalog_phrase = str(profile.get("product_phrase") or lead.get("product_phrase") or "").strip()
+    if catalog_phrase and not catalog_phrase.startswith("the "):
+        catalog_phrase = natural_product_phrase(catalog_phrase, brand)
+    if not catalog_phrase:
+        for item in profile.get("representative_products") or []:
+            if not isinstance(item, dict):
+                continue
+            catalog_phrase = str(item.get("phrase") or "") or natural_product_phrase(
+                str(item.get("title") or ""), brand,
+            )
+            if catalog_phrase:
+                break
     amazon_phrase = ""
     if allow_amazon and amazon_confirmed(lead):
-        amazon_phrase = _usable_phrase(str(lead.get("amz_product") or ""))
-    phrase = amazon_phrase or _usable_phrase(
-        _product_title(lead, facts, brand) or _story_phrase(facts, brand)
+        amazon_phrase = _reject_brand_echo(
+            natural_product_phrase(str(lead.get("amz_product") or ""), brand)
+        )
+    catalog_phrase = _reject_brand_echo(catalog_phrase)
+    phrase = amazon_phrase or catalog_phrase or _reject_brand_echo(
+        natural_product_phrase(_product_title(lead, facts, brand), brand)
     )
+    if not phrase:
+        from outbound_product_facts import phrase_from_description
+
+        for fact in facts:
+            if fact.lower().startswith("recent product:"):
+                continue
+            phrase = _reject_brand_echo(phrase_from_description(fact, brand))
+            if phrase:
+                break
     category = ""
     trial_signal = str(lead.get("trial_signal") or "")
     if not phrase and trial_signal in {"category", "churned_tool"}:
@@ -1307,15 +1339,15 @@ def idea_decision(lead: dict[str, Any]) -> tuple[str, str, str]:
     if amazon_phrase:
         opener = choose([
             f"{brand} already sells {amazon_phrase} on Amazon, and the listing should lead with it.",
-            f"{amazon_phrase} is already on Amazon from {brand}, so the listing should open on it.",
-            f"On Amazon, {amazon_phrase} is the {brand} product a new shopper should see first.",
+            f"On Amazon, {amazon_phrase} should be the first {brand} product a new shopper sees.",
+            f"{brand} sells {amazon_phrase} on Amazon, and the listing should open on it.",
         ], "amz-opener")
     elif phrase:
         opener = choose([
-            f"{brand} makes {phrase}, which is an easy first product for a new shopper.",
-            f"Someone shopping for {phrase} should meet {brand} through one clear product.",
-            f"{phrase} is the clearest offer from {brand}, and it belongs in the first image.",
-            f"The simplest way into {brand} is {phrase}, shown on its own.",
+            f"{brand} makes {phrase}, and that should be the first thing a new shopper sees.",
+            f"A new shopper should meet {brand} through {phrase}.",
+            f"The first image for {brand} should be {phrase}.",
+            f"The simplest way into {brand} is {phrase}.",
         ], "product-opener")
     elif category:
         opener = choose([
@@ -1329,10 +1361,10 @@ def idea_decision(lead: dict[str, Any]) -> tuple[str, str, str]:
 
     shoppers = "a new shopper"
     angles = [
-        f"The listing should open on one product so {shoppers} knows what {brand} is for.",
-        f"An ad for {brand} works when one product is the whole message.",
-        f"{shoppers.capitalize()} needs one obvious product from {brand} before anything else.",
-        f"Put one {brand} product in front, and let the listing explain the rest.",
+        f"The listing photos should show one {brand} product on its own.",
+        f"An ad for {brand} works when that product is the whole message.",
+        f"The first image should make one {brand} product obvious to {shoppers}.",
+        f"A listing for {brand} should lead with one product and let the photos explain it.",
     ]
     angle = choose(angles, "angle")
     if _repeats(angle, opener):
@@ -1344,6 +1376,8 @@ def idea_decision(lead: dict[str, Any]) -> tuple[str, str, str]:
     angle_text = _fit_line(
         angle, max_words=ANGLE_MAX_WORDS, allow_amazon=False, trial=trial, role="angle",
     )
+    if stuffed_copy_reason(opener):
+        return "", "", stuffed_copy_reason(opener)
     if not opener_text:
         return "", "", "no shopper-visible fact"
     return opener_text, angle_text, ""
@@ -1736,6 +1770,9 @@ def opener_hold_reason(opener: str, lead: Optional[dict[str, Any]] = None) -> st
     sold = _normalized_sale(text)
     if sold and sold in _category_phrases(lead or {}):
         return "opener is a category filler with no shopper-visible fact"
+    stuffed = stuffed_copy_reason(text)
+    if stuffed:
+        return stuffed
     if len(text.split()) > MAX_WORDS:
         return "opener is longer than 25 words"
     if trial_offer_lead(lead) and _AMAZON_WORD.search(text):

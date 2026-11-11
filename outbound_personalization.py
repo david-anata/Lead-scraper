@@ -246,16 +246,30 @@ def fact_sheet(lead: dict[str, Any]) -> FactSheet:
         return sheet
 
     facts: list[str] = []
-    for key in ("description", "title"):
-        blurb = _clean_blurb(as_text(store.get(key)), brand)
-        if blurb:
-            facts.append(blurb)
+    representatives = store.get("representative_products")
+    if not isinstance(representatives, list):
+        representatives = []
+    catalog_title = ""
+    for item in representatives:
+        if isinstance(item, dict) and as_text(item.get("title")):
+            catalog_title = as_text(item.get("title"))
             break
-    product = store.get("most_recently_published_product")
-    if isinstance(product, dict):
-        title = _clean_blurb(as_text(product.get("title")), brand)
-        if title:
-            facts.append(f"recent product: {title}")
+    if catalog_title or store.get("product_phrase"):
+        # A catalog product replaces the homepage title. The title is often
+        # an SEO keyword string, not something a shopper buys.
+        if catalog_title:
+            facts.append(f"recent product: {catalog_title}")
+    else:
+        for key in ("description", "title"):
+            blurb = _clean_blurb(as_text(store.get(key)), brand)
+            if blurb:
+                facts.append(blurb)
+                break
+        product = store.get("most_recently_published_product")
+        if isinstance(product, dict):
+            title = _clean_blurb(as_text(product.get("title")), brand)
+            if title:
+                facts.append(f"recent product: {title}")
     # Amazon presence is copy only for the amz_on segment. Other channel
     # names decide who is emailed and stay out of the fact sheet.
     if recipe == "amz_on" and not trial:
@@ -379,6 +393,11 @@ def style_violation(
         return "too short"
     if sentence_count(raw) > 1:
         return "more than one sentence"
+    from outbound_openers import stuffed_copy_reason
+
+    stuffed = stuffed_copy_reason(raw)
+    if stuffed:
+        return stuffed
     if recipe:
         # Every recipe keeps the same ban. plan_upgrade and replatform are
         # the ones David called out; the check is not limited to them.

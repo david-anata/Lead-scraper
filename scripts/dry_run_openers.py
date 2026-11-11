@@ -27,6 +27,7 @@ if str(ROOT) not in sys.path:
 import outbound_openers as openers
 from outbound_contacts import split_person_name
 from outbound_pipeline import clean_brand_name
+from outbound_product_facts import USER_AGENT, apply_product_facts, collect_product_facts
 
 TRIAL_OFFER = "e5f5046b-07e4-41ad-a395-79cf8766ccd0"
 SEGMENTS = (
@@ -157,55 +158,55 @@ def _meta(html: str, pattern: re.Pattern[str]) -> str:
     return " ".join(next(group for group in match.groups() if group).split())
 
 
-def fetch_public_fact(domain: str, *, timeout: float = 8.0) -> dict[str, str]:
-    """og:title and meta description from the public homepage. Read only."""
+def fetch_homepage_html(domain: str, *, timeout: float = 6.0) -> str:
+    """Public homepage HTML. Used only after products.json is not a catalog."""
 
     import requests
 
     host = str(domain or "").strip().lower()
     if not host or " " in host:
-        return {}
+        return ""
     try:
         response = requests.get(
             f"https://{host}",
             timeout=timeout,
-            headers={"User-Agent": "AnataOpenerDryRun/1.0"},
+            headers={"User-Agent": USER_AGENT, "Accept": "text/html"},
         )
     except Exception:
-        return {}
+        return ""
     if response.status_code >= 400:
-        return {}
-    html = response.text or ""
-    title = _meta(html, _OG_TITLE)
-    description = _meta(html, _META_DESC)
+        return ""
+    return response.text or ""
+
+
+def fetch_public_fact(domain: str, *, timeout: float = 8.0) -> dict[str, str]:
+    """Site name from the public homepage. A title is not a product."""
+
+    html = fetch_homepage_html(domain, timeout=timeout)
     site_name = _meta(html, _OG_SITE)
-    out: dict[str, str] = {}
-    if description and len(description.split()) >= 3:
-        out["description"] = description[:300]
-    if title and len(title.split()) >= 2:
-        out["title"] = title[:160]
-    if site_name:
-        out["site_name"] = site_name[:120]
-    return out
+    if not site_name:
+        return {}
+    return {"site_name": site_name[:120]}
 
 
-def lead_for(row: dict[str, Any], *, public: Optional[dict[str, str]] = None) -> dict[str, Any]:
+def lead_for(
+    row: dict[str, Any],
+    *,
+    facts: Optional[dict[str, Any]] = None,
+    display_brand: str = "",
+) -> dict[str, Any]:
     profile = _profile_from_json(row.get("lead_json") or row.get("store_profile") or {})
     if isinstance(row.get("store_profile"), dict):
         profile = {**profile, **row["store_profile"]}
-    public = public or {}
-    if not _useful(profile):
-        if public.get("description"):
-            profile["description"] = public["description"]
-        if public.get("title"):
-            profile["most_recently_published_product"] = {"title": public["title"]}
+    if facts and facts.get("source"):
+        profile = apply_product_facts(profile, facts)
     segment = row.get("segment") or _segment(row)
     recipe = "trial_offer" if segment == "trial_offer" else (
         "replatform" if segment == "replatform" else str(row.get("recipe") or segment)
     )
     return {
         "brand": row.get("brand") or "",
-        "display_brand": (public or {}).get("site_name") or row.get("display_brand") or "",
+        "display_brand": display_brand or (facts or {}).get("vendor") or row.get("display_brand") or "",
         "domain": row.get("domain") or "",
         "recipe": recipe,
         "categories": row.get("category") or row.get("categories") or "",
@@ -214,12 +215,17 @@ def lead_for(row: dict[str, Any], *, public: Optional[dict[str, str]] = None) ->
     }
 
 
-def render_row(row: dict[str, Any], *, public: Optional[dict[str, str]] = None) -> dict[str, str]:
+def render_row(
+    row: dict[str, Any],
+    *,
+    facts: Optional[dict[str, Any]] = None,
+    display_brand: str = "",
+) -> dict[str, str]:
     """One opener pair. Nothing is saved."""
 
     openers._OPENERS_BY_DOMAIN.clear()
     openers._ANGLES_BY_DOMAIN.clear()
-    lead = lead_for(row, public=public)
+    lead = lead_for(row, facts=facts, display_brand=display_brand)
     first, last = split_person_name(row.get("first_name") or "", row.get("last_name") or "")
     company = clean_brand_name(
         lead.get("brand") or "",
@@ -236,6 +242,7 @@ def render_row(row: dict[str, Any], *, public: Optional[dict[str, str]] = None) 
         "opener": opener,
         "angle": angle,
         "hold": "" if opener and not hold else hold,
+        "source": str((facts or {}).get("source") or lead.get("store_profile", {}).get("product_fact_source") or ""),
     }
 
 
@@ -245,6 +252,8 @@ def render_report(rows: list[dict[str, str]]) -> str:
         who = row["first_name"] or "there"
         lines.append(f"### {index}. {row['company']} ({who}), {row['segment']}")
         lines.append(f"Domain: {row['domain']}")
+        source = row.get("source") or "none"
+        lines.append(f"Source: {source}")
         if row["opener"]:
             lines.append(f"Opener: {row['opener']}")
             lines.append(f"Angle: {row['angle'] or '(none)'}")
@@ -280,13 +289,26 @@ def main(argv: Optional[list[str]] = None) -> int:
     for row in rows:
         if len(rendered) >= args.per_segment * len(SEGMENTS):
             break
-        public = None
         profile = _profile_from_json(row.get("lead_json") or row.get("store_profile") or {})
         if isinstance(row.get("store_profile"), dict):
             profile = {**profile, **row["store_profile"]}
-        if not args.no_fetch and not _useful(profile):
-            public = fetch_public_fact(str(row.get("domain") or ""))
-        rendered.append(render_row(row, public=public))
+        facts: dict[str, Any] = {}
+        display = ""
+        already = profile.get("representative_products") or profile.get("product_phrase")
+        if not args.no_fetch and not already:
+            domain = str(row.get("domain") or "")
+            # StoreLeads is skipped here. This environment has no API key, and
+            # the dry run must not call that API.
+            facts = collect_product_facts(
+                domain,
+                brand=str(row.get("brand") or ""),
+                allow_storeleads=False,
+                fetch_homepage=fetch_homepage_html,
+            )
+            display = str(facts.get("vendor") or "")
+            if not display and facts.get("source") != "products.json":
+                display = fetch_public_fact(domain).get("site_name") or ""
+        rendered.append(render_row(row, facts=facts, display_brand=display))
     sys.stdout.write(render_report(rendered))
     return 0
 

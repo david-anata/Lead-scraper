@@ -1,0 +1,193 @@
+"""Catalog product facts, and the gate that rejects keyword-stuffed openers."""
+
+from outbound_product_facts import (
+    apply_product_facts,
+    collect_product_facts,
+    description_is_product,
+    fetch_shopify_catalog,
+    fetch_storeleads_record,
+    natural_product_phrase,
+    parse_shopify_products,
+    pick_representative,
+    stuffed_copy_reason,
+)
+import outbound_openers as openers
+
+
+class _Response:
+    def __init__(self, status, payload):
+        self.status_code = status
+        self._payload = payload
+
+    def json(self):
+        if isinstance(self._payload, Exception):
+            raise self._payload
+        return self._payload
+
+
+def _product(title, product_type, *, available=True, tags=None, body=""):
+    return {
+        "title": title,
+        "product_type": product_type,
+        "tags": tags or [],
+        "body_html": body,
+        "vendor": "ArtisRaw",
+        "variants": [{"available": available}],
+    }
+
+
+def test_shopify_parse_skips_non_products_and_keeps_stock_and_body():
+    payload = {"products": [
+        _product("Olive Wood Serving Board", "Boards", body="<p>Hand carved olive wood.</p>"),
+        _product("Gift Card", "Gift Cards"),
+        _product("Free Sample", "Samples"),
+        _product("Shipping Protection", "Protection"),
+        _product("Extended Warranty", "Warranty"),
+        _product("Test Product", "Test"),
+        _product("Order Fees", "Fees"),
+        _product("Walnut Board", "Boards", available=False),
+        _product("Small Board", "Boards"),
+    ]}
+    parsed = parse_shopify_products(payload)
+    titles = [item["title"] for item in parsed]
+    assert titles == ["Olive Wood Serving Board", "Walnut Board", "Small Board"]
+    assert parsed[0]["in_stock"] is True
+    assert parsed[1]["in_stock"] is False
+    assert parsed[0]["body"] == "Hand carved olive wood."
+    assert parsed[0]["product_type"] == "Boards"
+    chosen = pick_representative(parsed)
+    assert len(chosen) == 2
+    assert all(item["in_stock"] for item in chosen)
+    assert chosen[0]["product_type"] == "Boards"
+
+
+def test_natural_phrase_is_lowercase_with_an_article():
+    assert natural_product_phrase("Olive Wood Serving Boards", "ArtisRaw") == "the olive wood serving boards"
+    assert natural_product_phrase("Olive Wood Board - Large") == "the olive wood board"
+    assert natural_product_phrase("Travel Lifestyle Store") == ""
+    assert natural_product_phrase("Amplifying hip-hop influence") == ""
+    assert natural_product_phrase("Natural Marine Extract Eric Lewis") == ""
+    assert natural_product_phrase("Robot Vacuums, Smart Home") == ""
+    assert natural_product_phrase("Protective Bandages MPB") == "the protective bandages"
+    assert natural_product_phrase("Aardwolf Replacement Rubber Strips rrs") == "the aardwolf replacement rubber strips"
+    assert natural_product_phrase("Pack Chocolate Chunk Cookie Mix") == "the chocolate chunk cookie mix"
+    assert natural_product_phrase("Sirculit comprimidos naturales para piernas") == ""
+    assert natural_product_phrase("Certified Organic CBDA Extract") == ""
+    assert natural_product_phrase("Acci Anticelulítica Global") == ""
+    assert natural_product_phrase("Order Fees") == ""
+
+
+def test_homepage_keyword_strings_are_not_product_descriptions():
+    assert not description_is_product("Travel Lifestyle Store | Official Site")
+    assert not description_is_product("Health Conscious Body Care")
+    assert not description_is_product("Robot Vacuums, Smart Home")
+    assert not description_is_product("Amplifying hip-hop influence across generations.")
+    assert description_is_product("Handmade olive wood serving boards for the table.")
+
+
+def test_keyword_stuffed_lines_are_rejected():
+    assert stuffed_copy_reason(
+        "travel lifestyle store is the clearest offer from Jetset Gear"
+    ) == "store word used as the product"
+    assert stuffed_copy_reason(
+        "Miracle Of The Sea makes natural marine extract eric lewis, which is an easy first product for a new shopper."
+    ) == "person name used as a product"
+    assert stuffed_copy_reason(
+        "amplifying hip-hop influence is the clearest offer from Rock The Bells, and it belongs in the first image."
+    ) == "slogan"
+    assert stuffed_copy_reason(
+        "Inova Professional makes keratin treatments salon hair care, which is an easy first product."
+    ) == "noun pile"
+    assert stuffed_copy_reason("Shop the line | official store") == "keyword string"
+    good = "A new shopper should meet ArtisRaw through the olive wood serving boards."
+    assert stuffed_copy_reason(good) == ""
+    assert openers.validate(good, allow_amazon=False)[0]
+    assert openers.opener_hold_reason(
+        "travel lifestyle store is the clearest offer from Jetset Gear",
+        {"recipe": "trial_offer"},
+    )
+
+
+def test_shopify_404_does_not_retry_and_500_retries_once():
+    calls = {"n": 0}
+
+    def get_404(url, timeout, headers, allow_redirects):
+        calls["n"] += 1
+        assert "products.json" in url
+        assert "Chrome" in headers["User-Agent"]
+        return _Response(404, {})
+
+    assert fetch_shopify_catalog("shop.example", get=get_404, sleep=lambda _s: None, guard=lambda url: url) is None
+    assert calls["n"] == 1
+
+    def get_500(url, timeout, headers, allow_redirects):
+        calls["n"] += 1
+        if calls["n"] == 2:
+            return _Response(500, {})
+        return _Response(200, {"products": [_product("Olive Wood Board", "Boards"), _product("Walnut Board", "Boards")]})
+
+    calls["n"] = 1
+    found = fetch_shopify_catalog("shop.example", get=get_500, sleep=lambda _s: None, guard=lambda url: url)
+    assert calls["n"] == 3
+    assert found and found[0]["title"] == "Olive Wood Board"
+
+
+def test_storeleads_key_stays_in_the_header():
+    seen = {}
+
+    def get(url, headers, timeout):
+        seen["url"] = url
+        seen["headers"] = dict(headers)
+        return _Response(200, {"domain": {
+            "name": "artisraw.com",
+            "description": "Handmade olive wood serving boards for the table.",
+            "most_recently_published_product": {"title": "Olive Wood Serving Board"},
+            "api_key": "secret-key-should-not-leak",
+        }})
+
+    record = fetch_storeleads_record("artisraw.com", api_key="secret-key-should-not-leak", get=get)
+    assert seen["headers"]["Authorization"] == "Bearer secret-key-should-not-leak"
+    assert "secret-key-should-not-leak" not in str(record)
+    assert "api_key" not in record
+    facts = collect_product_facts(
+        "artisraw.com",
+        allow_storeleads=True,
+        api_key="secret-key-should-not-leak",
+        get=lambda url, **kwargs: _Response(404, {}) if "products.json" in url else get(url, **kwargs),
+        sleep=lambda _s: None,
+        guard=lambda url: url,
+    )
+    assert facts["source"] == "storeleads"
+    assert facts["phrase"] == "the olive wood serving board"
+    assert "secret-key" not in str(facts)
+
+
+def test_catalog_product_beats_an_seo_title():
+    lead = {
+        "brand": "ArtisRaw",
+        "domain": "artisraw.com",
+        "recipe": "replatform",
+        "store_profile": apply_product_facts(
+            {"description": "travel lifestyle store", "title": "Amplifying hip-hop influence"},
+            {
+                "source": "products.json",
+                "products": [{
+                    "title": "Olive Wood Serving Board",
+                    "product_type": "Boards",
+                    "tags": ["olive"],
+                    "body": "",
+                    "in_stock": True,
+                    "phrase": "the olive wood serving board",
+                }],
+                "phrase": "the olive wood serving board",
+                "description": "",
+            },
+        ),
+    }
+    opener, angle, reason = openers.idea_decision(lead)
+    assert reason == ""
+    assert "olive wood serving board" in opener.lower()
+    assert "lifestyle" not in opener.lower()
+    assert "amplifying" not in opener.lower()
+    assert "olive" not in (angle or "").lower()
+    assert "amazon" not in opener.lower()
