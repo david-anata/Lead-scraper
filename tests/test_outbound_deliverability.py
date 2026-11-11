@@ -1,6 +1,6 @@
 """Bounce events, suppression sync, and the webhook hook."""
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import create_engine, text
 
@@ -54,11 +54,17 @@ def test_push_match_covers_a_store_host():
     assert suppression.matched_value("a@mybasin.com", "mybasin.com", set(), {"basin.com"}) == ""
 
 
+def _recent_stamp() -> str:
+    """Stay inside bounce_report's short lookback. A fixed October date ages out."""
+    when = datetime.now(timezone.utc) - timedelta(hours=1)
+    return when.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
 def test_webhook_bounce_is_one_row_and_suppresses_the_email():
     eng = engine()
     payload = {
         "event_type": "email_bounced", "lead_email": "A@Brand.com", "campaign_id": "camp",
-        "timestamp": "2026-10-28T18:00:00Z", "email_id": "m1",
+        "timestamp": _recent_stamp(), "email_id": "m1",
     }
     assert bounces.record_webhook(eng, payload)["event_type"] == "hard_bounce"
     bounces.record_webhook(eng, payload)
@@ -71,7 +77,7 @@ def test_webhook_bounce_is_one_row_and_suppresses_the_email():
 
 def test_send_and_bounce_rate_is_per_day_and_campaign():
     eng = engine()
-    when = datetime(2026, 10, 28, 18, 0, tzinfo=timezone.utc)
+    when = datetime.now(timezone.utc) - timedelta(hours=1)
     for n in range(4):
         bounces.record_event(eng, email=f"a{n}@b.com", campaign_id="camp", event_type="sent",
                              occurred_at=when, source="instantly_webhook", detail="",

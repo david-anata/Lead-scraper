@@ -782,7 +782,7 @@ def render_building_page(
           <td>{_esc(item.get("preferred_date") or "—")}</td>
           <td>{_badge(str((item.get("lifecycle") or {}).get("stage") or "new"))}{_badge("overdue") if item.get("response_overdue") else ""}<span class="sub">{_esc(item.get("assigned_owner") or "Unassigned")}</span></td>
           <td>{_esc(item.get("source"))}</td>
-          <td>{inquiry_actions(item)}</td>
+          <td>{tour_handoff_action(item)}{inquiry_actions(item)}</td>
         </tr>
         """
         for item in inquiries

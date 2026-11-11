@@ -28,7 +28,7 @@ def test_rotation_changes_daily_and_covers_all():
 def test_pull_walks_slices_until_cap_and_dedupes():
     calls = []
 
-    def fake_run(*, api_key, clay_webhook_url, processed_domains, max_new, dry_run, recipe, settings):
+    def fake_run(*, api_key, clay_webhook_url, processed_domains, max_new, dry_run, recipe, settings, engine=None):
         p = recipe.params(datetime(2026, 10, 27), settings)
         calls.append(p["f:ermin"])
         r = op.PipelineResult(dry_run=True)

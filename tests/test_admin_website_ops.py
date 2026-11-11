@@ -1039,27 +1039,35 @@ example
             client = TestClient(app)
             unauthorized = client.post("/api/jobs/website-ops/run", json={"mode": "daily"})
             self.assertEqual(unauthorized.status_code, 401)
-            with mock.patch(
-                "sales_support_agent.api.website_ops_jobs_router.run_website_ops",
-                return_value=SimpleNamespace(
-                    ok=True,
-                    message="Daily website ops run completed.",
-                    report={
-                        "run_outcome": {
-                            "status": "production_verified",
-                            "production_delta_count": 1,
-                        }
-                    },
-                ),
-            ) as run:
-                response = client.post(
-                    "/api/jobs/website-ops/run",
-                    headers={"X-Internal-Api-Key": "test-internal-key"},
-                    json={"mode": "daily", "force": True},
-                )
-            self.assertEqual(response.status_code, 200)
-            self.assertEqual(response.json()["details"]["daily"]["status"], "succeeded")
-            run.assert_called_once_with(app.state.settings, mode="daily")
+            # This mount has no database. A previous test may have left the
+            # process-wide engine pointed at a deleted SQLite file.
+            from sales_support_agent.models import database as db
+            previous_engine = db.engine
+            db.engine = None
+            try:
+                with mock.patch(
+                    "sales_support_agent.api.website_ops_jobs_router.run_website_ops",
+                    return_value=SimpleNamespace(
+                        ok=True,
+                        message="Daily website ops run completed.",
+                        report={
+                            "run_outcome": {
+                                "status": "production_verified",
+                                "production_delta_count": 1,
+                            }
+                        },
+                    ),
+                ) as run:
+                    response = client.post(
+                        "/api/jobs/website-ops/run",
+                        headers={"X-Internal-Api-Key": "test-internal-key"},
+                        json={"mode": "daily", "force": True},
+                    )
+                self.assertEqual(response.status_code, 200)
+                self.assertEqual(response.json()["details"]["daily"]["status"], "succeeded")
+                run.assert_called_once_with(app.state.settings, mode="daily")
+            finally:
+                db.engine = previous_engine
 
     def test_forced_daily_run_recovers_a_stale_manual_lease(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

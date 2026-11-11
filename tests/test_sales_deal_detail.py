@@ -50,10 +50,18 @@ class SalesDealDetailTests(unittest.TestCase):
         cls._seed()
 
     def setUp(self) -> None:
-        # Per test, not per class: app.state.settings is a shared global that
-        # other test files replace wholesale, which silently discarded a
-        # setUpClass mutation and made this suite fail only when run after them.
-        object.__setattr__(app.state.settings, "hubspot_portal_id", "999")
+        # The deal page reads agent_settings. Earlier tests replace either
+        # settings object, so put the portal id on the object the route uses.
+        from sales_support_agent.config import Settings as AgentSettings
+        from sales_support_agent.config import load_settings
+
+        agent = getattr(app.state, "agent_settings", None)
+        if not isinstance(agent, AgentSettings):
+            agent = app.state.settings if isinstance(app.state.settings, AgentSettings) else load_settings()
+            app.state.agent_settings = agent
+        object.__setattr__(agent, "hubspot_portal_id", "999")
+        if isinstance(app.state.settings, AgentSettings):
+            object.__setattr__(app.state.settings, "hubspot_portal_id", "999")
 
     @classmethod
     def _seed(cls) -> None:

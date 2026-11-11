@@ -19,3 +19,5 @@ tldextract>=5.1,<6
 urllib3>=2.8.0,<3
 certifi>=2026.10.23
 pyasn1>=0.6.5,<0.7
+# Tests parse rendered admin HTML. Not imported by the runtime.
+beautifulsoup4>=4.12,<5

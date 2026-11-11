@@ -10,6 +10,7 @@ following one to a private or metadata address.
 
 from __future__ import annotations
 
+import dataclasses
 import os
 import sys
 import tempfile
@@ -42,8 +43,19 @@ _BOX = {"length_in": 10, "width_in": 8, "height_in": 6, "weight_lb": 3, "dest_zi
 class ParcelQuoteTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
-        factory = create_session_factory(os.environ["SALES_AGENT_DB_URL"])
+        # A shared /tmp name, or an engine left behind by an earlier test, is
+        # not a database this route can rate-limit against.
+        path = os.path.join(tempfile.mkdtemp(prefix="parcel_quote_"), "quote.db")
+        factory = create_session_factory("sqlite:///" + path)
         init_database(factory)
+        app.state.session_factory = factory
+        settings = app.state.settings
+        if dataclasses.is_dataclass(settings):
+            app.state.settings = dataclasses.replace(
+                settings, marketing_site_intake_key="test-intake-key"
+            )
+        else:
+            settings.marketing_site_intake_key = "test-intake-key"
         cls.client = TestClient(app)
 
     def _post(self, body, headers=_HEADERS):

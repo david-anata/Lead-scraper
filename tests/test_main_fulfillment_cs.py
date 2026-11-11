@@ -41,11 +41,15 @@ class MainFulfillmentCSTests(unittest.TestCase):
         website_ops = ModuleType("sales_support_agent.services.website_ops")
         website_ops.get_website_ops_run_state = lambda settings, mode="daily": {"status": "idle", "mode": mode}
         website_ops.latest_report_entry = lambda settings: None
+        website_ops.render_content_page = lambda settings, **kwargs: "<html>content</html>"
         website_ops.render_dashboard_page = lambda settings, **kwargs: "<html>website ops dashboard</html>"
         website_ops.render_feedback_detail_page = lambda settings, feedback_id, **kwargs: "<html>feedback</html>"
+        website_ops.render_indexing_page = lambda settings, **kwargs: "<html>indexing</html>"
         website_ops.render_queue_page = lambda settings, status_filter="", **kwargs: "<html>queue</html>"
         website_ops.render_report_page = lambda settings, mode, slug, **kwargs: "<html>report</html>"
         website_ops.render_reports_page = lambda settings, **kwargs: "<html>reports</html>"
+        website_ops.render_site_health_page = lambda settings, **kwargs: "<html>site health</html>"
+        website_ops.send_website_ops_failure_email = lambda *args, **kwargs: None
 
         def _review_feedback_record(settings, feedback_id, payload, **kwargs):
             website_ops.last_review_call = {

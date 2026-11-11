@@ -74,7 +74,14 @@ class LeadBuildRevenueRowTests(unittest.TestCase):
                     "linkedin_url": "https://linkedin.com/in/janedoe",
                 }
             ],
-            {},
+            {
+                "domain": "example.com",
+                "people_search_candidates": 1,
+                "enrichment_matches": 1,
+                "candidates_with_any_email": 1,
+                "candidates_with_brand_domain_email": 1,
+                "attempt_status": "ok",
+            },
         )), mock.patch.object(time, "sleep", return_value=None):
             result = build_csv_rows(domains, "2026-03-30", settings)
 

@@ -55,7 +55,7 @@ def test_render_crons_strip_accidental_whitespace_from_internal_key() -> None:
     )
 
     assert raw_header not in blueprint
-    assert blueprint.count(normalized_header) == 9
+    assert blueprint.count(normalized_header) == 12
 
 
 def test_root_production_app_exposes_reliability_probes() -> None:
