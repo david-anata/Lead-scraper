@@ -239,6 +239,7 @@ def test_privilege_probe_requires_the_grants_not_just_the_url() -> None:
         def execute(self, sql: str, params: tuple[object, ...] | None = None) -> None:
             self.sql = sql
             assert params is None
+            assert "has_table_privilege(current_user, 'public.call_log', 'SELECT')" in sql
             assert "has_column_privilege" in sql
             assert "transcript_summary" in sql
             assert "payload_json" in sql

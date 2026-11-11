@@ -148,11 +148,13 @@ table. A lead insert uses the columns the admin already reads: `kind`
 `call_log` only.
 
 `/health` reports `logging_ready` from a live privilege probe when
-`VOICE_DATABASE_URL` is set. The probe uses `has_column_privilege` for the
-call log and inquiry columns this role writes, including `SELECT` on
-`call_log.call_sid`. Table-level `has_table_privilege` is not used: column
-grants leave `UPDATE` on `call_log` and `INSERT` on `building_inquiries`
-false at table level. A present variable with a denied role reports
+`VOICE_DATABASE_URL` is set. The probe requires
+`has_table_privilege(current_user, 'public.call_log', 'SELECT')` plus
+`has_column_privilege` on the columns this role writes. Column `SELECT` on
+`call_sid` alone is not enough for the upsert, so that grant does not make
+`logging_ready` true. Table-level `UPDATE` on `call_log` and table-level
+`INSERT` on `building_inquiries` stay false under these column grants and are
+not part of the probe. A present variable with a denied role reports
 `logging_ready: false` and `logging_probe: denied` or `unreachable`.
 A successful probe is cached for 30 seconds. When only the service-role REST
 pair is set, there is no privilege probe and `logging_probe` is `not_probed`.
@@ -183,7 +185,10 @@ GRANT INSERT, UPDATE (
   sms_notified, building_inquiry_id, updated_at
 ) ON TABLE public.call_log TO voice_logger;
 
-GRANT SELECT (call_sid) ON TABLE public.call_log TO voice_logger;
+-- Table SELECT, not SELECT (call_sid). With row level security on,
+-- INSERT … ON CONFLICT DO UPDATE reads the existing row and raises
+-- "permission denied for table call_log" unless this grant is present.
+GRANT SELECT ON TABLE public.call_log TO voice_logger;
 
 GRANT INSERT (
   id, idempotency_key, kind, source, source_reference, offering_id,
@@ -199,17 +204,21 @@ CREATE POLICY voice_logger_insert_call_log ON public.call_log
   FOR INSERT TO voice_logger WITH CHECK (true);
 CREATE POLICY voice_logger_update_call_log ON public.call_log
   FOR UPDATE TO voice_logger USING (true) WITH CHECK (true);
+CREATE POLICY voice_logger_select_call_log ON public.call_log
+  FOR SELECT TO voice_logger USING (true);
 CREATE POLICY voice_logger_insert_inquiries ON public.building_inquiries
   FOR INSERT TO voice_logger WITH CHECK (source = 'voice');
 CREATE POLICY voice_logger_select_voice_inquiries ON public.building_inquiries
   FOR SELECT TO voice_logger USING (source = 'voice');
 ```
 
-`call_log` SELECT is only `call_sid`, so the status callback and the upsert
-can see the row they are updating. `building_inquiries` is not granted UPDATE.
-Nothing else is granted: not contacts, relationships, audit events, or their
-sequences. The SELECT is only so a repeated call can find the inquiry id
-after `ON CONFLICT DO NOTHING`.
+`call_log` has table-level `SELECT`. Column `SELECT` on `call_sid` is not a
+substitute: the upsert is `INSERT … ON CONFLICT DO UPDATE`, and with row
+level security that command needs table `SELECT` or Postgres denies the
+table. `building_inquiries` is not granted `UPDATE`. Its `SELECT` is only
+`id` and `idempotency_key`, so a repeated call can find the inquiry id after
+`ON CONFLICT DO NOTHING`. Nothing else is granted: not contacts,
+relationships, audit events, or their sequences.
 
 If the calendar credentials are missing, or the calendar call fails, the
 assistant takes the date and says the team will confirm. It does not guess.

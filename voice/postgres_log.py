@@ -109,13 +109,15 @@ _INQUIRY_LOOKUP = (
 _SMS_UPDATE = (
     "UPDATE public.call_log SET sms_notified = %s, updated_at = %s WHERE call_sid = %s"
 )
-# Column privileges, not the presence of VOICE_DATABASE_URL. voice_logger is
-# granted specific columns, and has_table_privilege stays false for UPDATE and
-# for the inquiry INSERT even when those column grants are in place.
+# Column write grants plus table-level SELECT on call_log. With RLS on,
+# INSERT … ON CONFLICT DO UPDATE requires table SELECT. Column SELECT on
+# call_sid still raises permission denied for the table, so a column-only
+# grant must not turn logging_ready green. Table-level UPDATE and inquiry
+# INSERT stay false under these column grants and are not probed.
 _PRIVILEGE_PROBE = """
 SELECT
-  has_column_privilege(current_user, 'public.call_log', 'call_sid', 'INSERT')
-  AND has_column_privilege(current_user, 'public.call_log', 'call_sid', 'SELECT')
+  has_table_privilege(current_user, 'public.call_log', 'SELECT')
+  AND has_column_privilege(current_user, 'public.call_log', 'call_sid', 'INSERT')
   AND has_column_privilege(current_user, 'public.call_log', 'transcript', 'INSERT')
   AND has_column_privilege(current_user, 'public.call_log', 'transcript', 'UPDATE')
   AND has_column_privilege(current_user, 'public.call_log', 'transcript_summary', 'INSERT')

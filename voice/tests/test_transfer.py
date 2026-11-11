@@ -287,6 +287,7 @@ def test_health_logging_ready_comes_from_the_privilege_probe() -> None:
             return self
 
         def execute(self, sql: str, params: object = None) -> None:
+            assert "has_table_privilege(current_user, 'public.call_log', 'SELECT')" in sql
             assert "has_column_privilege" in sql
 
         def fetchone(self) -> tuple[bool]:
