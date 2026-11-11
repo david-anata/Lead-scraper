@@ -55,6 +55,12 @@ ANATA_INTELLIGENCE_PLANS = {
     "trial_days": 14,
 }
 
+RECOMMENDED_SECURITY_LINE = (
+    "For a party this size, we really recommend adding security. "
+    "It's optional, but it helps us approve the event. "
+    "It's the provider's rate plus a 20% coordination fee. Want me to add it?"
+)
+
 ADDON_RATES = {
     "setup_and_reset_up_to_75_guests_usd": 250,
     "setup_and_reset_76_to_150_guests_usd": 400,
@@ -132,9 +138,10 @@ def published_addons() -> dict[str, object]:
             "30 minutes before the event ends. Security is never required for alcohol."
         ),
         "security": (
-            "Security is never required. On a big party, about 100 or more guests, alcohol, "
-            "a late night, or an open bar, offer it once as an optional add-on: staffing at "
-            "the provider's rate plus a 20% coordination fee. Do not pressure. Record "
+            "Security is never required and never mandatory. For a big party or a late night, "
+            "recommend it kindly, as something that helps the event get approved. Say: "
+            + RECOMMENDED_SECURITY_LINE
+            + " If they hesitate, ask once more, gently, then stop. Always save "
             "security_preference as yes, no, or undecided. Do not bring it up for an easy "
             "business event. Do not invent the guard's hourly price."
         ),
@@ -258,7 +265,9 @@ _WEEKEND_LARGE = (
     "8:00 a.m. to midnight. Sunday guest events may run 8:00 a.m. to 10:00 p.m. "
     + _SELF_SERVE
     + " Use the published half-day and full-day rates. Do not offer a weekday evening. "
-    "A big party still goes to the team to review. Security is never required."
+    "A big party still goes to the team to review. Security is never required. "
+    "For a big party or a late night, recommend it: "
+    + RECOMMENDED_SECURITY_LINE
 )
 _BUSINESS_HOURS = (
     "Weekdays are for business events only: meetings, workshops, BNI, and corporate "
@@ -291,8 +300,9 @@ def hours_guidance(on: date, style: str) -> str:
                 "Saturday fits a large event. Guest events may run 8:00 a.m. to midnight. "
                 + _SELF_SERVE
                 + " Use the published party rates. A big party still goes to the team to review. "
-                "Security is never required. Offer it once as an optional add-on at the "
-                "provider's rate plus a 20% coordination fee, and record security_preference "
+                "Security is never required. Recommend it: "
+                + RECOMMENDED_SECURITY_LINE
+                + " If they hesitate, ask once more, gently. Save security_preference "
                 "as yes, no, or undecided."
             )
         if weekday == 6:
@@ -300,8 +310,9 @@ def hours_guidance(on: date, style: str) -> str:
                 "Sunday fits a large event. Guest events may run 8:00 a.m. to 10:00 p.m. "
                 + _SELF_SERVE
                 + " Use the published party rates. A big party still goes to the team to review. "
-                "Security is never required. Offer it once as an optional add-on at the "
-                "provider's rate plus a 20% coordination fee, and record security_preference "
+                "Security is never required. Recommend it: "
+                + RECOMMENDED_SECURITY_LINE
+                + " If they hesitate, ask once more, gently. Save security_preference "
                 "as yes, no, or undecided."
             )
         return (

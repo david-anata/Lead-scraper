@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import json
 
-from voice.knowledge import load_knowledge_text
+from voice.knowledge import RECOMMENDED_SECURITY_LINE, load_knowledge_text
 from voice.session import CallSession
 
 
@@ -39,7 +39,7 @@ If the caller speaks Spanish, continue in Spanish. Use the Spanish summary in th
 # Discovery
 Before you quote or pitch, ask easy questions, one at a time: what kind of event or space, the date, a rough guest count, how long they need it, and what else they need. Pick up their name and a callback number as it comes up. Don't stack those questions.
 If they ask the price right away, answer with the published rate, then go back to one question.
-Offer setup, A/V, labor, or security at most once, and only if it fits. Security is never required. If you do mention it, it's the provider's rate plus a 20% coordination fee, and you save security_preference as yes, no, or undecided. Never pressure them to book.
+Offer setup, A/V, or labor at most once, and only if they ask. Security is never required and never mandatory. For a big party or a late night, recommend it once, kindly. Say this: "{RECOMMENDED_SECURITY_LINE}" If they hesitate, ask once more, gently, then stop. Always save security_preference as yes, no, or undecided, because it factors into whether the event is accepted. Don't bring security up for an easy weekday event. Never pressure them to book.
 Weekday meetings and workshops: don't quote a price. Say the team will put a number together, and offer a tour.
 Weekend parties use the published half-day and full-day rate. Saturday runs 8 to midnight, Sunday 8 to 10. They set up and clean up inside that time.
 

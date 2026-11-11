@@ -19,6 +19,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 from typing import Any
 from urllib.parse import quote
 
@@ -71,6 +72,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         service_account_json=current.google_service_account_json,
         delegated_subject=current.google_delegated_subject,
     )
+    if os.getenv("SMS_SETUP_RUN", "").strip() == "1":
+        from voice.sms_setup import schedule_sms_setup
+
+        schedule_sms_setup(current)
 
     @app.get("/", response_class=PlainTextResponse)
     def root() -> str:

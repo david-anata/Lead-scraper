@@ -33,10 +33,9 @@ HOURS = (
 )
 
 SECURITY = (
-    "Security staffing is optional and never required. "
-    "For a large party Anata can arrange it at the provider's rate plus a 20% coordination fee. "
-    "Reply yes, no, or undecided and the team will follow up. "
-    "This text does not reserve a date."
+    "Security is never required. For a large party or a late night we really recommend it, "
+    "because it helps us approve the event. It's the provider's rate plus a 20% coordination fee. "
+    "Reply yes, no, or undecided. This text does not reserve a date."
 )
 
 PLACE = (

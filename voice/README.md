@@ -114,7 +114,7 @@ Optional:
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
-| `SMS_AUTOREPLY` | `false` | When `false`, inbound texts are forwarded and not answered. Turn on only after A2P 10DLC registration. |
+| `SMS_AUTOREPLY` | `false` in code, `true` on the live service | Inbound texts are answered when this is true. The live service is on because A2P campaign `QE2c6890da8086d771620e9b13fadeba0b` is verified. Summary texts use `TWILIO_MESSAGING_SERVICE_SID`. `sms_notified` becomes true only when the status callback says delivered. |
 | `RECORDING_ENABLED` | `false` | When `true`, the caller hears "This call may be recorded" and Twilio starts a recording. Transcripts are stored either way. |
 | `VOICE_SIGNATURE_VALIDATION` | `true` | Keep this true outside local smoke tests. |
 | `LINE_CONTEXTS_JSON` | default Anata line | Per-number greeting context. |
@@ -302,9 +302,10 @@ These decisions are code, not a prompt:
   for the same reason.
 - Arena events are self-serve. The renter sets up and resets inside the booked
   time. There is no free teardown after Saturday midnight or Sunday 10:00 p.m.
-  Security staffing is never required. On a big party the assistant offers it
-  once as an optional add-on and records `security_preference` as yes, no, or
-  undecided.
+  Security staffing is never required. For a big party or a late night the
+  assistant recommends it, because it helps the event get approved, and may
+  ask once more if the caller hesitates. The answer is stored as
+  `security_preference`: yes, no, or undecided.
 - One Render instance. A restart mid-call drops the in-memory session; the
   caller would need to call back. The durable record is written at the end.
 - Office prices and office availability are not on anatabuilding.com, so the

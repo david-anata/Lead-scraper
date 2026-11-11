@@ -447,7 +447,7 @@ services:
       - key: XAI_VOICE
         value: ara
       - key: SMS_AUTOREPLY
-        value: "false"
+        value: "true"
       - key: RECORDING_ENABLED
         value: "false"
       - key: VOICE_SIGNATURE_VALIDATION
