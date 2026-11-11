@@ -116,16 +116,21 @@ def build_inquiry_row(session: CallSession, *, owner: str) -> dict[str, Any]:
         "line": session.line.label,
         "_lifecycle": {"stage": "new"},
     }
+    if session.security_preference:
+        details["security_preference"] = session.security_preference
     if session.line.source.strip():
         details["source"] = session.line.source.strip()
     details["_follow_up_sequence"] = _follow_up(received)
     if kind == "event":
-        details["_event_interview"] = {
+        interview = {
             "event_format": session.event_or_interest_type,
             "candidate_dates": session.event_date,
             "attendance": session.guest_count,
             "special_requests": session.notes,
         }
+        if session.security_preference:
+            interview["security_preference"] = session.security_preference
+        details["_event_interview"] = interview
         details["_event_interview_meta"] = {
             "source": "voice_receptionist",
             "reviewed": False,
@@ -167,7 +172,7 @@ def build_call_row(session: CallSession, *, inquiry_id: str, sms_notified: bool)
         "started_at": started.isoformat(),
         "ended_at": ended.isoformat(),
         "duration_seconds": session.duration_seconds(ended.timestamp()),
-        "transcript_summary": summary[:2000],
+        "transcript_summary": summary,
         "transcript": session.transcript(),
         "category": session.category if session.category else "other",
         "lead_fields": session.lead_fields(),
@@ -230,8 +235,17 @@ class SupabaseStore:
             logger.warning("Supabase is not configured; call %s was not logged", session.call_sid)
             return {"call_log": "skipped", "inquiry_id": ""}
         inquiry_id = ""
+        inquiry_state = "skipped"
         if should_create_inquiry(session):
-            inquiry_id = self._save_inquiry(session)
+            try:
+                inquiry_id = self._save_inquiry(session)
+            except Exception:
+                logger.exception("Inquiry insert failed for call %s", session.call_sid)
+                inquiry_id = ""
+            else:
+                if not inquiry_id:
+                    logger.error("Inquiry insert failed for call %s", session.call_sid)
+            inquiry_state = "saved" if inquiry_id else "failed"
             session.inquiry_id = inquiry_id
         row = build_call_row(session, inquiry_id=inquiry_id, sms_notified=sms_notified)
         self._request(
@@ -240,7 +254,17 @@ class SupabaseStore:
             row,
             prefer="resolution=merge-duplicates,return=minimal",
         )
-        return {"call_log": "saved", "inquiry_id": inquiry_id}
+        return {"call_log": "saved", "inquiry_id": inquiry_id, "inquiry": inquiry_state}
+
+    def set_sms_notified(self, call_sid: str, notified: bool) -> None:
+        if not self.configured or not call_sid:
+            return
+        self._request(
+            "PATCH",
+            "/rest/v1/call_log?call_sid=eq." + quote(call_sid, safe=""),
+            {"sms_notified": notified, "updated_at": _now().isoformat()},
+            prefer="return=minimal",
+        )
 
     def save_sms(
         self,
@@ -270,8 +294,8 @@ class SupabaseStore:
                 "started_at": now,
                 "ended_at": now,
                 "duration_seconds": 0,
-                "transcript_summary": summary[:2000],
-                "transcript": body[:2000],
+                "transcript_summary": summary,
+                "transcript": body,
                 "category": category,
                 "lead_fields": dict(lead_fields or {}),
                 "action_taken": "sms_forwarded" if sms_notified else "sms_logged",

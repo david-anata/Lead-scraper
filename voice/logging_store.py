@@ -60,3 +60,17 @@ class LoggingStore:
             return
         if self.rest is not None:
             self.rest.save_sms(**kwargs)
+
+    def set_sms_notified(self, call_sid: str, notified: bool) -> None:
+        if self.postgres is not None:
+            self.postgres.set_sms_notified(call_sid, notified)
+            return
+        if self.rest is not None:
+            self.rest.set_sms_notified(call_sid, notified)
+
+    def probe_logging(self) -> bool | None:
+        """Privilege probe when Postgres is the writer. None means REST or unconfigured."""
+
+        if self.postgres is None:
+            return None
+        return self.postgres.probe_privileges()

@@ -96,6 +96,31 @@ def test_lead_is_written_to_call_log_and_building_inquiries() -> None:
     assert result["inquiry_id"]
 
 
+def test_inquiry_permission_error_still_writes_the_call_log() -> None:
+    class _Deny(_Http):
+        def post(self, url: str, *, json: object, headers: dict[str, str], timeout: int) -> _Response:
+            self.calls.append((url, json))
+            if "building_inquiries" in url:
+                return _Response(403, {"message": "permission denied"})
+            return _Response(201, [json] if isinstance(json, dict) else [])
+
+    http = _Deny()
+    store = SupabaseStore("https://example.supabase.co", "service-key", http=http)
+    result = store.save_call(_lead(), sms_notified=False)
+    urls = [url for url, _ in http.calls]
+    assert any("building_inquiries" in url for url in urls)
+    assert any("call_log" in url for url in urls)
+    assert result["call_log"] == "saved"
+    assert result["inquiry_id"] == ""
+    assert result["inquiry"] == "failed"
+    inquiry = next(body for url, body in http.calls if "building_inquiries" in url)
+    logged = next(body for url, body in http.calls if "call_log" in url)
+    assert isinstance(inquiry, dict) and inquiry["source"] == "voice"
+    assert isinstance(logged, dict)
+    assert logged["sms_notified"] is False
+    assert logged["transcript_summary"] == "Asked for a tour."
+
+
 def test_spam_is_logged_and_does_not_create_an_inquiry() -> None:
     http = _Http()
     store = SupabaseStore("https://example.supabase.co", "service-key", http=http)

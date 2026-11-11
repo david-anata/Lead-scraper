@@ -16,6 +16,8 @@ RATES = (
     "two full days $3,500. Weekday business events are priced by the team. "
     "50% reserves the date after the agreement is signed "
     "and the payment clears. 50% is due before the event. No security deposit. "
+    "You set up and reset the room inside the booked time. "
+    "There is no free teardown after Saturday midnight or Sunday 10:00 p.m. "
     "This text does not reserve a date."
 )
 
@@ -26,7 +28,15 @@ HOURS = (
     "Saturday events may run 8:00 a.m. to midnight. "
     "Sunday events may run 8:00 a.m. to 10:00 p.m. "
     "New Year's Eve is allowed on a weekday. "
-    "Setup and teardown fit inside the booked time."
+    "You set up and clean up inside the booked time. "
+    "There are no complimentary hours and no free teardown after close."
+)
+
+SECURITY = (
+    "Security staffing is optional and never required. "
+    "For a large party Anata can arrange it at the provider's rate plus a 20% coordination fee. "
+    "Reply yes, no, or undecided and the team will follow up. "
+    "This text does not reserve a date."
 )
 
 PLACE = (
@@ -59,6 +69,10 @@ def reply_to_sms(body: str) -> str:
             "Thanks. Anata isn't looking for that. "
             f"For the building, email {PUBLISHED_EMAIL}."
         )
+    if ("security" in text and "deposit" not in text) or any(
+        word in text for word in ("guard", "bouncer")
+    ):
+        return SECURITY
     if any(word in text for word in ("price", "cost", "rate", "how much", "pricing")):
         return RATES
     if any(word in text for word in ("hour", "open", "close", "what time")):

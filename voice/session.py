@@ -43,6 +43,11 @@ class CallSession:
     transfer_started: bool = False
     transfer_state: str = ""
     transfer_outcome: str = ""
+    transfer_accepted: bool = False
+    holding_for_transfer: bool = False
+    agent_call_sid: str = ""
+    voicemail_detected: bool = False
+    security_preference: str = ""
     turns: list[str] = field(default_factory=list)
     caller_partials: dict[str, str] = field(default_factory=dict)
     finalized: bool = False
@@ -69,6 +74,9 @@ class CallSession:
             "reason": "reason",
             "summary": "summary",
         }
+        preference = normalize_security_preference(args.get("security_preference"))
+        if preference:
+            self.security_preference = preference
         for source, target in mapping.items():
             value = args.get(source)
             if isinstance(value, str) and value.strip():
@@ -84,15 +92,17 @@ class CallSession:
     def add_turn(self, speaker: str, text: str) -> None:
         cleaned = " ".join(text.split())
         if cleaned:
-            self.turns.append(f"{speaker}: {cleaned}"[:1000])
+            self.turns.append(f"{speaker}: {cleaned}")
 
     def transcript(self) -> str:
+        """Full call transcript. Nothing is cut off to fit a preview."""
+
         lines = list(self.turns)
         for text in self.caller_partials.values():
             cleaned = " ".join(text.split())
             if cleaned and f"Caller: {cleaned}" not in lines:
-                lines.append(f"Caller: {cleaned}"[:1000])
-        return "\n".join(lines)[:20000]
+                lines.append(f"Caller: {cleaned}")
+        return "\n".join(lines)
 
     def lead_fields(self) -> dict[str, str]:
         fields = {
@@ -109,6 +119,8 @@ class CallSession:
             "notes": self.notes,
             "reason": self.reason,
         }
+        if self.security_preference:
+            fields["security_preference"] = self.security_preference
         source = self.line.source.strip()
         if source:
             fields["source"] = source
@@ -117,6 +129,15 @@ class CallSession:
     def duration_seconds(self, now: float | None = None) -> int:
         end = time.time() if now is None else now
         return max(0, int(end - self.started_at))
+
+
+def normalize_security_preference(value: object) -> str:
+    """Caller answer about optional event security: yes, no, or undecided."""
+
+    text = str(value or "").strip().casefold()
+    if text in {"yes", "no", "undecided"}:
+        return text
+    return ""
 
 
 class SessionStore:

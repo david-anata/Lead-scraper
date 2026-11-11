@@ -22,7 +22,7 @@ FRONT_DESK_PATH = DATA_DIR / "front_desk.md"
 # Order matters: the front desk rules refer to the other two.
 KNOWLEDGE_FILES = (FRONT_DESK_PATH, KNOWLEDGE_PATH, INC_KNOWLEDGE_PATH)
 
-PUBLISHED_PHONE = "(801) 386-8104"
+PUBLISHED_PHONE = "(385) 336-3562"
 PUBLISHED_EMAIL = "hello@anatainc.com"
 ADDRESS = "1657 N. State Street, Lehi, Utah 84043"
 
@@ -80,10 +80,10 @@ def published_rates() -> dict[str, object]:
 
     return {
         **RENTAL_RATES,
-        "half_day_means": "Up to 6 hours, including setup and teardown.",
-        "full_day_means": "More than 6 hours, including setup and teardown.",
+        "half_day_means": "Up to 6 hours. The renter sets up and cleans up inside that booked time.",
+        "full_day_means": "More than 6 hours. The renter sets up and cleans up inside that booked time.",
         "security_deposit": "None.",
-        "upfront_cleaning_fee": "None. Extra charges can apply after the event only if cleanup rules are not followed.",
+        "upfront_cleaning_fee": "None. If cleanup rules are missed, Anata bills afterward.",
         "payment": (
             "50% of the venue rental is due to reserve the date. The other 50% is due "
             "before the event. Setup access is not given until that second 50% has cleared."
@@ -104,7 +104,11 @@ def published_rates() -> dict[str, object]:
             "building. Decorations and food they brought must be thrown away or removed "
             "before they leave."
         ),
-        "setup": "Setup and teardown must fit inside the booked time. There are no free extra hours.",
+        "setup": (
+            "Events are self-serve. The renter sets up and cleans up inside the booked time. "
+            "There are no complimentary hours and no free teardown after the posted close: "
+            "Saturday midnight, Sunday 10:00 p.m. If cleanup rules are missed, Anata bills afterward."
+        ),
     }
 
 
@@ -112,17 +116,27 @@ def published_addons() -> dict[str, object]:
     return {
         **ADDON_RATES,
         "included": (
-            "Tables, chairs, stage, microphones, speakers, projector, screens, guest Wi-Fi, "
-            "and the lounge are included, subject to the approved event plan. Customers set "
-            "and reset tables and chairs unless they buy setup service."
+            "Included: tables, chairs, stage, microphones, speakers, projector, screens, "
+            "guest Wi-Fi, and the lounge. You set them up and reset them."
+        ),
+        "optional_addons": (
+            "Setup and reset, an A/V technician, and extra labor are optional. Mention them "
+            "only when the caller asks or the event clearly needs that help."
         ),
         "not_published": (
             "Linens, decor, event lighting, specialty staging, and extra equipment are quoted "
             "separately. Do not invent those prices."
         ),
         "alcohol": (
-            "Alcohol needs written approval and a licensed, insured server. Alcohol events "
-            "require customer-paid security. Service ends 30 minutes before the event ends."
+            "Alcohol needs written approval and a licensed, insured server. Service ends "
+            "30 minutes before the event ends. Security is never required for alcohol."
+        ),
+        "security": (
+            "Security is never required. On a big party, about 100 or more guests, alcohol, "
+            "a late night, or an open bar, offer it once as an optional add-on: staffing at "
+            "the provider's rate plus a 20% coordination fee. Do not pressure. Record "
+            "security_preference as yes, no, or undecided. Do not bring it up for an easy "
+            "business event. Do not invent the guard's hourly price."
         ),
         "insurance": (
             "Anata may require a certificate of insurance for higher-risk events, beginning "
@@ -230,21 +244,27 @@ def anata_inc_facts() -> dict[str, object]:
             "Name, brand and website, marketplaces or stores, rough revenue range, what they "
             "need, timing, email, and callback number. Do not ask for passwords."
         ),
-        "contact": "david@anatainc.com, (801) 386-8104, anatainc.com",
+        "contact": "david@anatainc.com, (385) 336-3562, anatainc.com",
     }
 
 
+_SELF_SERVE = (
+    "The renter sets up and cleans up inside the booked time. There are no complimentary "
+    "hours and no free teardown after the posted close: Saturday midnight, Sunday "
+    "10:00 p.m. If cleanup rules are missed, Anata bills afterward."
+)
 _WEEKEND_LARGE = (
     "Large events and big parties are weekends only. Saturday guest events may run "
-    "8:00 a.m. to midnight, teardown by 2:00 a.m. Sunday guest events may run "
-    "8:00 a.m. to 10:00 p.m., teardown by midnight. Use the published half-day and "
-    "full-day rates. Do not offer a weekday evening. A big party still goes to the "
-    "team to review."
+    "8:00 a.m. to midnight. Sunday guest events may run 8:00 a.m. to 10:00 p.m. "
+    + _SELF_SERVE
+    + " Use the published half-day and full-day rates. Do not offer a weekday evening. "
+    "A big party still goes to the team to review. Security is never required."
 )
 _BUSINESS_HOURS = (
     "Weekdays are for business events only: meetings, workshops, BNI, and corporate "
     "events. Front desk and visitor hours are 9:00 a.m. to 4:00 p.m. Do not quote a "
-    "price. Say the team will put together pricing, collect the details, and offer a tour."
+    "price. Say the team will put together pricing, collect the details, and offer a tour. "
+    "Do not bring up security."
 )
 
 
@@ -268,15 +288,21 @@ def hours_guidance(on: date, style: str) -> str:
             )
         if weekday == 5:
             return (
-                "Saturday fits a large event. Guest events may run 8:00 a.m. to midnight, "
-                "and teardown ends by 2:00 a.m. Use the published party rates. A big party "
-                "still goes to the team to review."
+                "Saturday fits a large event. Guest events may run 8:00 a.m. to midnight. "
+                + _SELF_SERVE
+                + " Use the published party rates. A big party still goes to the team to review. "
+                "Security is never required. Offer it once as an optional add-on at the "
+                "provider's rate plus a 20% coordination fee, and record security_preference "
+                "as yes, no, or undecided."
             )
         if weekday == 6:
             return (
-                "Sunday fits a large event. Guest events may run 8:00 a.m. to 10:00 p.m., "
-                "and teardown ends by midnight. Use the published party rates. A big party "
-                "still goes to the team to review."
+                "Sunday fits a large event. Guest events may run 8:00 a.m. to 10:00 p.m. "
+                + _SELF_SERVE
+                + " Use the published party rates. A big party still goes to the team to review. "
+                "Security is never required. Offer it once as an optional add-on at the "
+                "provider's rate plus a 20% coordination fee, and record security_preference "
+                "as yes, no, or undecided."
             )
         return (
             _WEEKEND_LARGE
@@ -285,13 +311,15 @@ def hours_guidance(on: date, style: str) -> str:
         )
     if weekday == 5:
         return (
-            "Saturday guest events may run 8:00 a.m. to midnight, and teardown ends by "
-            "2:00 a.m. Large events and parties belong on the weekend at the published rates."
+            "Saturday guest events may run 8:00 a.m. to midnight. "
+            + _SELF_SERVE
+            + " Large events and parties belong on the weekend at the published rates."
         )
     if weekday == 6:
         return (
-            "Sunday guest events may run 8:00 a.m. to 10:00 p.m., and teardown ends by "
-            "midnight. Large events and parties belong on the weekend at the published rates."
+            "Sunday guest events may run 8:00 a.m. to 10:00 p.m. "
+            + _SELF_SERVE
+            + " Large events and parties belong on the weekend at the published rates."
         )
     return _BUSINESS_HOURS
 

@@ -1,6 +1,7 @@
 """Published facts stay aligned, and texts do not make promises."""
 
 import re
+from datetime import date
 
 from voice.audio import mulaw_frames
 from voice.calendar_availability import CalendarAvailability
@@ -9,9 +10,12 @@ from voice.knowledge import (
     FRONT_DESK_PATH,
     INC_KNOWLEDGE_PATH,
     KNOWLEDGE_PATH,
+    PUBLISHED_PHONE,
     RENTAL_RATES,
     anata_inc_facts,
+    hours_guidance,
     load_knowledge_text,
+    published_addons,
     published_rates,
 )
 from voice.prompts import build_instructions
@@ -55,6 +59,16 @@ def test_knowledge_file_contains_the_published_rental_rates_and_no_extras() -> N
     assert "do not take trash out" in text
     assert "BNI" in text
     assert "$175" not in text
+    assert "(385) 336-3562" in text
+    assert "386-8104" not in text
+    assert "You set them up and reset them" in text
+    assert "event support" not in text.casefold()
+    assert "2:00 a.m." not in text
+    assert "Teardown ends" not in text
+    assert "require customer-paid security" not in text.casefold()
+    assert "never required" in text.casefold()
+    assert "autoservicio" in text
+    assert "security_preference" in text
     rates = published_rates()
     assert rates["half_day_up_to_6_hours_usd"] == RENTAL_RATES["half_day_up_to_6_hours_usd"] == 1500
     assert "not reserved" in str(rates["confirmation"]).lower() or "confirmed only" in str(rates["confirmation"]).lower()
@@ -106,6 +120,21 @@ def test_prompt_names_both_businesses_and_the_line_id() -> None:
     assert "Line id: anata" in prompt
     assert "Never negotiate" in prompt
     assert "get_anata_inc_facts" in prompt
+    assert "continue in Spanish" in prompt
+    assert "security_preference" in prompt
+    assert "Security is never required" in prompt
+    assert "in mind for security" not in prompt
+    assert PUBLISHED_PHONE == "(385) 336-3562"
+    assert "(385) 336-3562" in anata_inc_facts()["contact"]
+    assert "(385) 336-3562" in FRONT_DESK_PATH.read_text(encoding="utf-8")
+    assert "(385) 336-3562" in INC_KNOWLEDGE_PATH.read_text(encoding="utf-8")
+    saturday = hours_guidance(date(2026, 12, 5), "party")
+    assert "2:00 a.m." not in saturday
+    assert "midnight" in saturday
+    assert "never required" in saturday.casefold()
+    included = str(published_addons()["included"])
+    assert "Included: tables, chairs" in included
+    assert "You set them up and reset them" in included
 
 
 def test_agency_lead_is_not_a_building_inquiry() -> None:
@@ -130,6 +159,12 @@ def test_sms_replies_quote_published_rates_and_do_not_confirm_a_booking() -> Non
     assert "8:00 a.m. to midnight" in hours
     assert "9:00 a.m. to 4:00 p.m." in hours
     assert "5:00 p.m. to 11:00 p.m." not in hours
+    assert "no free teardown" in hours
+    assert "You set up and reset the room" in rates
+    security = reply_to_sms("do we need a security guard?")
+    assert "never required" in security
+    assert "20%" in security
+    assert reply_to_sms("is there a security deposit and how much").startswith("Weekend")
 
 
 def test_spam_calls_are_not_texted_and_sms_summaries_always_can_be() -> None:
@@ -203,6 +238,20 @@ def test_lead_row_matches_the_admin_inquiry_shape() -> None:
     assert row["payload_json"]["company"] == "Northwind"
     assert row["payload_json"]["_lifecycle"]["stage"] == "new"
     assert row["idempotency_key"] == "voice-call:CA123"
+    assert row["source"] == "voice"
+
+    party = _session(
+        category="lead",
+        caller_name="Jamie Lee",
+        event_date="2026-12-05",
+        guest_count="120",
+        event_or_interest_type="birthday party",
+        security_preference="no",
+    )
+    party_row = build_inquiry_row(party, owner="building-operator")
+    assert party_row["source"] == "voice"
+    assert party_row["payload_json"]["security_preference"] == "no"
+    assert party_row["payload_json"]["_event_interview"]["security_preference"] == "no"
 
     spam = _session(category="spam")
     assert should_create_inquiry(spam) is False
@@ -244,6 +293,7 @@ def test_realtime_session_uses_native_mulaw() -> None:
     audio = event["session"]["audio"]
     assert audio["input"]["format"]["type"] == "audio/pcmu"
     assert audio["output"]["format"]["type"] == "audio/pcmu"
+    assert "language_hint" not in audio["input"]["transcription"]
     assert "rate" not in audio["input"]["format"]
     names = [tool["name"] for tool in event["session"]["tools"]]
     assert "request_transfer" in names

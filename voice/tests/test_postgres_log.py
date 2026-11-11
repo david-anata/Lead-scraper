@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from voice.leads import build_call_row
 from voice.lines import LineContext
 from voice.logging_store import LoggingStore
 from voice.postgres_log import PostgresLog, ensure_sslmode_require
@@ -156,6 +157,121 @@ def test_database_url_wins_over_the_rest_fallback() -> None:
     )
     assert rest_calls == []
     assert any("call_log" in sql for sql, _ in conn.statements)
+
+
+def test_full_transcript_and_summary_are_not_trimmed() -> None:
+    session = _session()
+    session.summary = "S" * 2500
+    session.add_turn("Caller", "C" * 3000)
+    session.add_turn("Anata", "The published half day is one thousand five hundred.")
+    row = build_call_row(session, inquiry_id="", sms_notified=False)
+    assert row["transcript_summary"] == "S" * 2500
+    assert "C" * 3000 in row["transcript"]
+    assert "Anata: The published half day" in row["transcript"]
+
+
+def test_inquiry_failure_still_upserts_the_call_log(caplog) -> None:
+    class _Cursor(_CursorBase):
+        def execute(self, sql: str, params: tuple[object, ...] | None = None) -> None:
+            self.conn.statements.append((sql, params))
+            if "building_inquiries" in sql and sql.startswith("INSERT"):
+                raise RuntimeError("permission denied for table building_inquiries")
+            self._row = None
+
+    class _Conn(_ConnBase):
+        def cursor(self) -> _Cursor:
+            return _Cursor(self)
+
+    conn = _Conn()
+    writer = PostgresLog("postgresql://voice_logger@pooler/db", connect=lambda dsn: conn)
+    with caplog.at_level("ERROR"):
+        result = writer.save_call(_session(), sms_notified=False)
+    assert result["call_log"] == "saved"
+    assert result["inquiry_id"] == ""
+    assert result["inquiry"] == "failed"
+    assert any("call_log" in sql for sql, _ in conn.statements)
+    assert any("Inquiry insert failed" in record.message for record in caplog.records)
+    assert conn.committed
+
+
+class _CursorBase:
+    def __init__(self, conn: object) -> None:
+        self.conn = conn
+        self._row: tuple[object, ...] | None = None
+
+    def execute(self, sql: str, params: tuple[object, ...] | None = None) -> None:
+        raise NotImplementedError
+
+    def fetchone(self) -> tuple[object, ...] | None:
+        return self._row
+
+    def __enter__(self) -> "_CursorBase":
+        return self
+
+    def __exit__(self, *args: object) -> bool:
+        return False
+
+
+class _ConnBase:
+    def __init__(self) -> None:
+        self.statements: list[tuple[str, tuple[object, ...] | None]] = []
+        self.committed = False
+
+    def commit(self) -> None:
+        self.committed = True
+
+    def __enter__(self) -> "_ConnBase":
+        return self
+
+    def __exit__(self, *args: object) -> bool:
+        return False
+
+
+def test_privilege_probe_requires_the_grants_not_just_the_url() -> None:
+    class _Conn:
+        def __init__(self, allowed: bool) -> None:
+            self.allowed = allowed
+            self.sql = ""
+
+        def cursor(self) -> "_Conn":
+            return self
+
+        def execute(self, sql: str, params: tuple[object, ...] | None = None) -> None:
+            self.sql = sql
+            assert params is None
+            assert "has_table_privilege" in sql
+            assert "has_column_privilege" in sql
+
+        def fetchone(self) -> tuple[bool]:
+            return (self.allowed,)
+
+        def __enter__(self) -> "_Conn":
+            return self
+
+        def __exit__(self, *args: object) -> bool:
+            return False
+
+    denied = _Conn(False)
+    writer = PostgresLog("postgresql://voice_logger:secret@pooler/db", connect=lambda dsn: denied)
+    assert writer.probe_privileges() is False
+    assert writer.probe_status == "denied"
+    allowed = _Conn(True)
+    writer._connect = lambda dsn: allowed
+    assert writer.probe_privileges() is True
+    assert writer.probe_status == "ok"
+    assert "secret" not in writer.probe_status
+
+
+def test_sms_delivery_update_is_parameterized() -> None:
+    conn = _Conn()
+    writer = PostgresLog("postgresql://voice_logger@pooler/db", connect=lambda dsn: conn)
+    writer.set_sms_notified("CA123", False)
+    sql, params = conn.statements[-1]
+    assert sql.startswith("UPDATE public.call_log")
+    assert params is not None
+    assert params[0] is False
+    assert params[2] == "CA123"
+    assert "CA123" not in sql
 
 
 def test_logging_ready_accepts_either_path() -> None:

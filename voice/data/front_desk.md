@@ -6,7 +6,7 @@ Front desk and visitor hours are 9:00 a.m. to 4:00 p.m.
 ## Lines
 
 The line id for this call is in "This call" above.
-main: (801) 386-8104, David's main published number. It covers both anata Inc. and the Anata Building. Find out which one the caller wants.
+main: (385) 336-3562, David's main published number. It covers both anata Inc. and the Anata Building. Find out which one the caller wants.
 front_desk: (801) 210-0894, the Anata Building front desk. Most callers are tenants, visitors, deliveries, and building questions.
 anata_services: (385) 204-4649, listed on Eventective. Most callers are asking about an event at the Arena.
 gabe_line: a number that used to belong to Gabe. If they ask for Gabe, say he is not available, offer to help, or take a message for the team. Do not say why.

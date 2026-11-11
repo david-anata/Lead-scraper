@@ -17,6 +17,11 @@ APOLOGY = (
     "Please call again, or email hello@anatainc.com."
 )
 GOODBYE = "Thanks for calling Anata. The team has your message."
+# Twilio's standard hold-music twimlet. The caller hears this in the conference
+# until the on-call phone presses 1. It replaces ringing.
+HOLD_MUSIC_URL = "https://twimlets.com/holdmusic?Bucket=com.twilio.music.classical"
+RING_TIMEOUT_SECONDS = 25
+ACCEPT_TIMEOUT_SECONDS = 25
 
 
 def xml_response(*inner: str) -> str:
@@ -84,24 +89,63 @@ def inbound_twiml(
     return xml_response(*parts)
 
 
-def dial_twiml(settings: Settings, *, http_base: str) -> str:
-    action = escape(f"{http_base}/voice/dial-result", {'"': "&quot;"})
-    whisper_url = escape(f"{http_base}/voice/whisper", {'"': "&quot;"})
-    number = escape(settings.forward_to_number)
-    # answerOnBridge keeps the caller on ringing until the on-call phone answers.
+def conference_name(call_sid: str) -> str:
+    return f"anata-{call_sid}"
+
+
+def _attr(value: str) -> str:
+    return escape(value, {'"': "&quot;"})
+
+
+def caller_hold_twiml(*, http_base: str, call_sid: str) -> str:
+    """Park the caller in a conference with hold music instead of ringback.
+
+    The conference does not start until the on-call phone presses 1 and joins.
+    `startConferenceOnEnter` stays false so `waitUrl` keeps playing.
+    """
+
+    action = _attr(f"{http_base}/voice/dial-result")
+    wait = _attr(HOLD_MUSIC_URL)
+    name = _attr(conference_name(call_sid))
     return xml_response(
         say("Please hold."),
         (
-            f'<Dial action="{action}" method="POST" timeout="20" answerOnBridge="true">'
-            f'<Number url="{whisper_url}" method="POST">{number}</Number>'
+            f'<Dial action="{action}" method="POST">'
+            f'<Conference waitUrl="{wait}" waitMethod="GET" '
+            f'startConferenceOnEnter="false" endConferenceOnExit="true" beep="false">'
+            f"{name}</Conference>"
             "</Dial>"
         ),
     )
 
 
-def whisper_twiml(summary: str) -> str:
-    text = summary.strip() or "Anata transfer. Connecting you now."
-    return xml_response(say(text))
+def whisper_twiml(summary: str, accept_url: str) -> str:
+    """Play the whisper, then wait for digit 1. Anything else hangs up."""
+
+    text = summary.strip() or "Anata transfer. Press 1 to accept."
+    if "press 1" not in text.casefold():
+        text = text.rstrip(".") + ". Press 1 to accept."
+    action = _attr(accept_url)
+    return xml_response(
+        (
+            f'<Gather numDigits="1" timeout="{ACCEPT_TIMEOUT_SECONDS}" '
+            f'action="{action}" method="POST">'
+            f"{say(text)}</Gather>"
+        ),
+        hangup(),
+    )
+
+
+def join_conference_twiml(call_sid: str) -> str:
+    """Connect the on-call phone after it presses 1. This starts the conference."""
+
+    name = _attr(conference_name(call_sid))
+    return xml_response(
+        "<Dial>"
+        f'<Conference startConferenceOnEnter="true" endConferenceOnExit="true" beep="false">'
+        f"{name}</Conference>"
+        "</Dial>"
+    )
 
 
 def resume_twiml(settings: Settings, *, http_base: str, call_sid: str) -> str:

@@ -14,6 +14,8 @@ from __future__ import annotations
 
 import logging
 import re
+import time
+from datetime import datetime, timezone
 from typing import Any, Callable
 
 from voice.leads import build_call_row, build_inquiry_row, should_create_inquiry
@@ -104,6 +106,27 @@ _INQUIRY_INSERT = (
 _INQUIRY_LOOKUP = (
     "SELECT id FROM public.building_inquiries WHERE idempotency_key = %s"
 )
+_SMS_UPDATE = (
+    "UPDATE public.call_log SET sms_notified = %s, updated_at = %s WHERE call_sid = %s"
+)
+# Column privileges, not the presence of VOICE_DATABASE_URL. A role can have
+# the variable set and still be denied the insert that failed in production.
+_PRIVILEGE_PROBE = """
+SELECT
+  has_table_privilege(current_user, 'public.call_log', 'INSERT')
+  AND has_table_privilege(current_user, 'public.call_log', 'UPDATE')
+  AND has_column_privilege(current_user, 'public.call_log', 'call_sid', 'INSERT')
+  AND has_column_privilege(current_user, 'public.call_log', 'call_sid', 'SELECT')
+  AND has_column_privilege(current_user, 'public.call_log', 'transcript', 'INSERT')
+  AND has_column_privilege(current_user, 'public.call_log', 'transcript_summary', 'INSERT')
+  AND has_column_privilege(current_user, 'public.call_log', 'sms_notified', 'UPDATE')
+  AND has_table_privilege(current_user, 'public.building_inquiries', 'INSERT')
+  AND has_column_privilege(current_user, 'public.building_inquiries', 'source', 'INSERT')
+  AND has_column_privilege(current_user, 'public.building_inquiries', 'idempotency_key', 'INSERT')
+  AND has_column_privilege(current_user, 'public.building_inquiries', 'id', 'SELECT')
+  AND has_column_privilege(current_user, 'public.building_inquiries', 'idempotency_key', 'SELECT')
+"""
+_PROBE_OK_SECONDS = 30
 
 
 class PostgresLog:
@@ -119,6 +142,9 @@ class PostgresLog:
         self.dsn = ensure_sslmode_require(dsn)
         self.owner = owner
         self._connect = connect
+        self.probe_status = "not_configured"
+        self._probe_ok = False
+        self._probe_at = 0.0
 
     @property
     def configured(self) -> bool:
@@ -126,17 +152,63 @@ class PostgresLog:
 
     def save_call(self, session: CallSession, *, sms_notified: bool) -> dict[str, str]:
         if not self.configured:
-            return {"call_log": "skipped", "inquiry_id": ""}
+            return {"call_log": "skipped", "inquiry_id": "", "inquiry": "skipped"}
         inquiry_id = ""
+        inquiry_state = "skipped"
+        if should_create_inquiry(session):
+            try:
+                inquiry_id = self._write_inquiry(session)
+            except Exception:
+                logger.exception("Inquiry insert failed for call %s", session.call_sid)
+                inquiry_id = ""
+            else:
+                if not inquiry_id:
+                    logger.error("Inquiry insert failed for call %s", session.call_sid)
+            inquiry_state = "saved" if inquiry_id else "failed"
+            session.inquiry_id = inquiry_id
         with self._connection() as conn:
             with conn.cursor() as cur:
-                if should_create_inquiry(session):
-                    inquiry_id = self._insert_inquiry(cur, session)
-                    session.inquiry_id = inquiry_id
                 row = build_call_row(session, inquiry_id=inquiry_id, sms_notified=sms_notified)
                 cur.execute(_CALL_UPSERT, _values(row, _CALL_COLUMNS))
             conn.commit()
-        return {"call_log": "saved", "inquiry_id": inquiry_id}
+        return {"call_log": "saved", "inquiry_id": inquiry_id, "inquiry": inquiry_state}
+
+    def set_sms_notified(self, call_sid: str, notified: bool) -> None:
+        """Update delivery after the status callback. A 2xx from send is not enough."""
+
+        if not self.configured or not call_sid:
+            return
+        with self._connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(_SMS_UPDATE, (notified, _now(), call_sid))
+            conn.commit()
+
+    def probe_privileges(self) -> bool:
+        """True only when this role can write the log and the inquiry table."""
+
+        if not self.configured:
+            self.probe_status = "not_configured"
+            return False
+        now = time.monotonic()
+        if self._probe_ok and now - self._probe_at < _PROBE_OK_SECONDS:
+            return True
+        try:
+            with self._connection(timeout=3) as conn:
+                with conn.cursor() as cur:
+                    cur.execute(_PRIVILEGE_PROBE)
+                    row = cur.fetchone()
+        except Exception as exc:
+            logger.exception("Logging privilege probe failed")
+            self._probe_ok = False
+            self._probe_at = 0.0
+            text = str(exc).casefold()
+            self.probe_status = "denied" if "permission" in text or "privilege" in text else "unreachable"
+            return False
+        ok = bool(row and row[0])
+        self._probe_ok = ok
+        self._probe_at = now if ok else 0.0
+        self.probe_status = "ok" if ok else "denied"
+        return ok
 
     def save_sms(
         self,
@@ -165,8 +237,8 @@ class PostgresLog:
             "started_at": now,
             "ended_at": now,
             "duration_seconds": 0,
-            "transcript_summary": summary[:2000],
-            "transcript": body[:2000],
+            "transcript_summary": summary,
+            "transcript": body,
             "category": category or "other",
             "lead_fields": dict(lead_fields or {}),
             "action_taken": "sms_forwarded" if sms_notified else "sms_logged",
@@ -181,6 +253,15 @@ class PostgresLog:
                 cur.execute(_CALL_UPSERT, _values(row, _CALL_COLUMNS))
             conn.commit()
 
+    def _write_inquiry(self, session: CallSession) -> str:
+        """Own connection so a denied inquiry insert cannot abort the call log."""
+
+        with self._connection() as conn:
+            with conn.cursor() as cur:
+                inquiry_id = self._insert_inquiry(cur, session)
+            conn.commit()
+        return inquiry_id
+
     def _insert_inquiry(self, cur: Any, session: CallSession) -> str:
         row = build_inquiry_row(session, owner=self.owner)
         cur.execute(_INQUIRY_INSERT, _values(row, _INQUIRY_COLUMNS))
@@ -194,12 +275,16 @@ class PostgresLog:
         logger.warning("Inquiry insert did not return an id")
         return ""
 
-    def _connection(self) -> Any:
+    def _connection(self, timeout: int = 10) -> Any:
         if self._connect is not None:
             return self._connect(self.dsn)
         import psycopg
 
-        return psycopg.connect(self.dsn, connect_timeout=10)
+        return psycopg.connect(self.dsn, connect_timeout=timeout)
+
+
+def _now() -> str:
+    return datetime.now(timezone.utc).isoformat()
 
 
 def _values(row: dict[str, Any], columns: tuple[str, ...]) -> tuple[Any, ...]:

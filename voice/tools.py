@@ -34,7 +34,7 @@ TOOLS: list[dict[str, Any]] = [
     {
         "type": "function",
         "name": "get_published_addons",
-        "description": "Return published add-on prices for setup, labor, and A/V, plus insurance and security rules. Use only when the caller asks about those.",
+        "description": "Return optional add-on prices for setup, labor, and A/V, plus insurance. Security is never required. Use setup, labor, or A/V only when the caller asks. Use security only when they ask, or once on a big party.",
         "parameters": {"type": "object", "properties": {}, "required": []},
     },
     {
@@ -84,6 +84,11 @@ TOOLS: list[dict[str, Any]] = [
                 "marketplaces": {"type": "string", "description": "Agency callers: where they sell, e.g. Amazon, TikTok Shop, Shopify."},
                 "revenue_range": {"type": "string", "description": "Agency callers: rough annual or monthly sales range they gave."},
                 "notes": {"type": "string"},
+                "security_preference": {
+                    "type": "string",
+                    "enum": ["yes", "no", "undecided"],
+                    "description": "Whether the caller wants optional event security. Only for a big party, or if they asked.",
+                },
             },
             "required": [],
         },
@@ -145,6 +150,11 @@ TOOLS: list[dict[str, Any]] = [
                     "description": "Which part of Anata the call is about.",
                 },
                 "notes": {"type": "string"},
+                "security_preference": {
+                    "type": "string",
+                    "enum": ["yes", "no", "undecided"],
+                    "description": "The caller's answer about optional event security, if it came up.",
+                },
             },
             "required": ["category", "summary", "callback_needed"],
         },
@@ -263,7 +273,7 @@ def _finish(args: dict[str, Any], session: CallSession) -> dict[str, Any]:
     # into a lead by the goodbye tool.
     if category == "spam" or session.category not in {"spam", "vendor"}:
         session.category = category
-    session.summary = str(args.get("summary") or session.summary)[:500]
+    session.summary = str(args.get("summary") or session.summary)
     if "callback_needed" in args and session.category != "spam":
         session.callback_needed = bool(args.get("callback_needed"))
     if session.category == "spam":
@@ -290,7 +300,8 @@ def session_update_event(settings: Settings, instructions: str) -> dict[str, Any
                     "format": {"type": "audio/pcmu"},
                     "transcription": {
                         "model": "grok-transcribe",
-                        "language_hint": "en",
+                        # Omit language_hint. xAI auto-detects when it is absent.
+                        # A fixed "en" pins the transcript to English and drops Spanish.
                         "keyterms": [
                             "Anata",
                             "Anata Building",

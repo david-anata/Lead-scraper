@@ -3,8 +3,12 @@
 Webhook paths, all POST unless noted:
 
 - `POST /voice/inbound` — Twilio Voice webhook
-- `POST /voice/dial-result` — `<Dial action>` when the forward ends
-- `POST /voice/whisper` — spoken to the on-call phone before it is connected
+- `POST /voice/dial-result` — caller's conference leg ended
+- `POST /voice/whisper` — spoken to the on-call phone, then waits for digit 1
+- `POST /voice/accept` — on-call phone pressed 1 and joins the conference
+- `POST /voice/agent-status` — on-call leg ended without a press 1
+- `POST /voice/agent-amd` — voicemail detection on the on-call leg
+- `POST /voice/sms-status` — delivery receipt for a summary text
 - `GET  /voice/media` — Twilio Media Stream websocket
 - `POST /voice/sms` — Twilio Messaging webhook
 - `GET  /health` — Render health check
@@ -16,6 +20,7 @@ import asyncio
 import json
 import logging
 from typing import Any
+from urllib.parse import quote
 
 from fastapi import FastAPI, Request, WebSocket
 from fastapi.responses import PlainTextResponse, Response
@@ -23,7 +28,7 @@ from fastapi.responses import PlainTextResponse, Response
 from voice.bridge import CallBridge, whisper_line
 from voice.calendar_availability import CalendarAvailability
 from voice.logging_store import LoggingStore
-from voice.lifecycle import finalize_call
+from voice.lifecycle import accept_transfer, fail_transfer, finalize_call
 from voice.lines import LineContext, resolve_line
 from voice.notify import TwilioRest, sms_forward_text
 from voice.security import public_request_url, valid_signature, valid_stream_token
@@ -32,10 +37,15 @@ from voice.settings import Settings
 from voice.sms_reply import classify_sms, reply_to_sms
 from voice.twiml import (
     empty_twiml,
+    goodbye_twiml,
+    hangup,
     inbound_twiml,
+    join_conference_twiml,
     resume_twiml,
+    say,
     sms_twiml,
     whisper_twiml,
+    xml_response,
 )
 
 logger = logging.getLogger(__name__)
@@ -69,11 +79,19 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.get("/health")
     def health() -> dict[str, Any]:
         live = app.state.settings
+        probed = app.state.store.probe_logging()
+        if probed is None:
+            logging_ready = live.logging_ready
+            logging_probe = "not_probed"
+        else:
+            logging_ready = probed
+            logging_probe = app.state.store.postgres.probe_status
         return {
             "status": "ok",
             "service": "anata-voice-receptionist",
             "calls_ready": live.calls_ready,
-            "logging_ready": live.logging_ready,
+            "logging_ready": logging_ready,
+            "logging_probe": logging_probe,
             "calendar_ready": live.calendar_ready,
             "sms_autoreply": live.sms_autoreply,
             "recording_enabled": live.recording_enabled,
@@ -113,28 +131,43 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             return Response(empty_twiml(), media_type=XML)
         status = form.get("DialCallStatus", "")
         call_status = form.get("CallStatus", "")
-        try:
-            duration = int(form.get("DialCallDuration") or "0")
-        except ValueError:
-            duration = 0
-        if status == "completed" and duration > 0:
+        # Hold time is not an answer. Only a press 1 counts as a connected transfer.
+        if session.transfer_accepted:
+            session.holding_for_transfer = False
             session.transfer_state = "done"
             session.transfer_outcome = "answered"
             session.action = "transferred"
             session.callback_needed = False
             await _finish(request, session)
-            return Response(empty_twiml(), media_type=XML)
+            if call_status == "completed":
+                return Response(empty_twiml(), media_type=XML)
+            return Response(goodbye_twiml(), media_type=XML)
+        if session.resume == "message" or session.transfer_state == "messaging":
+            # The on-call leg already failed. If this Dial action still owns the
+            # caller, hand them back to the assistant instead of hanging up.
+            if call_status == "completed":
+                return Response(empty_twiml(), media_type=XML)
+            xml = resume_twiml(
+                request.app.state.settings,
+                http_base=_base(request),
+                call_sid=session.call_sid,
+            )
+            return Response(xml, media_type=XML)
         if call_status == "completed":
+            session.holding_for_transfer = False
             session.transfer_state = "done"
-            session.transfer_outcome = status or "missed"
-            session.action = "transfer_missed"
+            raw = (status or "no_answer").strip().casefold()
+            if raw in {"", "completed", "answered"}:
+                raw = "no_answer"
+            session.transfer_outcome = "voicemail" if session.voicemail_detected else raw
+            session.action = "transfer_no_answer_message"
             session.callback_needed = True
+            await _drop_agent(request, session)
             await _finish(request, session)
             return Response(empty_twiml(), media_type=XML)
-        session.transfer_state = "messaging"
-        session.transfer_outcome = status or "no_answer"
-        session.resume = "message"
-        session.transfer_requested = False
+        outcome = "voicemail" if session.voicemail_detected else (status or "no_answer")
+        if fail_transfer(session, outcome):
+            await _drop_agent(request, session)
         xml = resume_twiml(
             request.app.state.settings,
             http_base=_base(request),
@@ -147,10 +180,86 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         form, ok = await _signed_form(request)
         if not ok:
             return Response(status_code=403)
-        parent = form.get("ParentCallSid") or form.get("CallSid") or ""
-        session = request.app.state.sessions.get(parent)
-        text = whisper_line(session) if session is not None else "Anata transfer. Connecting you now."
-        return Response(whisper_twiml(text), media_type=XML)
+        parent = _parent(request) or form.get("ParentCallSid") or ""
+        session = request.app.state.sessions.get(parent) if parent else None
+        if session is None:
+            return Response(
+                xml_response(say("This transfer is no longer available."), hangup()),
+                media_type=XML,
+            )
+        accept_url = f"{_base(request)}/voice/accept?parent={quote(parent, safe='')}"
+        return Response(whisper_twiml(whisper_line(session), accept_url), media_type=XML)
+
+    @app.api_route("/voice/accept", methods=["GET", "POST"])
+    async def accept(request: Request) -> Response:
+        form, ok = await _signed_form(request)
+        if not ok:
+            return Response(status_code=403)
+        parent = _parent(request)
+        session = request.app.state.sessions.get(parent) if parent else None
+        digit = form.get("Digits", "").strip()
+        if digit == "1" and session is not None and not session.voicemail_detected:
+            accept_transfer(session)
+            if session.transfer_accepted:
+                return Response(join_conference_twiml(parent), media_type=XML)
+        if session is not None:
+            outcome = "voicemail" if session.voicemail_detected else "no_answer"
+            if fail_transfer(session, outcome):
+                await _redirect_parent(request, session)
+        return Response(xml_response(hangup()), media_type=XML)
+
+    @app.api_route("/voice/agent-status", methods=["GET", "POST"])
+    async def agent_status(request: Request) -> Response:
+        form, ok = await _signed_form(request)
+        if not ok:
+            return Response(status_code=403)
+        session = _parent_session(request)
+        if session is None or session.transfer_accepted:
+            return Response(empty_twiml(), media_type=XML)
+        status = form.get("CallStatus", "").strip().casefold()
+        if status in {"no-answer", "busy", "failed", "canceled", "completed"}:
+            outcome = "voicemail" if session.voicemail_detected else "no_answer"
+            if fail_transfer(session, outcome):
+                await _redirect_parent(request, session)
+        return Response(empty_twiml(), media_type=XML)
+
+    @app.api_route("/voice/agent-amd", methods=["GET", "POST"])
+    async def agent_amd(request: Request) -> Response:
+        form, ok = await _signed_form(request)
+        if not ok:
+            return Response(status_code=403)
+        session = _parent_session(request)
+        answered = form.get("AnsweredBy", "").strip().casefold()
+        if session is not None and session.transfer_accepted:
+            return Response(empty_twiml(), media_type=XML)
+        if session is not None and (answered.startswith("machine") or answered == "fax"):
+            session.voicemail_detected = True
+            if not session.transfer_accepted:
+                session.transfer_outcome = "voicemail"
+                session.callback_needed = True
+                if session.action in {"", "transfer", "transferred"}:
+                    session.action = "transfer_no_answer_message"
+            agent_sid = form.get("CallSid", "") or session.agent_call_sid
+            if agent_sid:
+                await asyncio.to_thread(request.app.state.twilio.complete_call, agent_sid)
+            if fail_transfer(session, "voicemail"):
+                await _redirect_parent(request, session)
+        return Response(empty_twiml(), media_type=XML)
+
+    @app.api_route("/voice/sms-status", methods=["GET", "POST"])
+    async def sms_status(request: Request) -> Response:
+        form, ok = await _signed_form(request)
+        if not ok:
+            return Response(status_code=403)
+        call_sid = request.query_params.get("call_sid", "").strip()
+        status = form.get("MessageStatus", "").strip().casefold()
+        error = form.get("ErrorCode", "").strip()
+        if call_sid and (error == "30034" or status in {"undelivered", "failed"}):
+            logger.warning("SMS not delivered status=%s error=%s", status, error)
+            await asyncio.to_thread(request.app.state.store.set_sms_notified, call_sid, False)
+        elif call_sid and status == "delivered" and error != "30034":
+            await asyncio.to_thread(request.app.state.store.set_sms_notified, call_sid, True)
+        return Response(empty_twiml(), media_type=XML)
 
     @app.api_route("/voice/sms", methods=["GET", "POST"])
     async def sms(request: Request) -> Response:
@@ -164,9 +273,25 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         category = classify_sms(body)
         line = resolve_line(settings.line_contexts_json, dialed)
         reply = reply_to_sms(body) if settings.sms_autoreply else ""
-        notified = False
+        message_sid = form.get("MessageSid", "")
+        await asyncio.to_thread(
+            request.app.state.store.save_sms,
+            message_sid=message_sid,
+            caller_number=caller,
+            dialed_number=dialed,
+            body=body,
+            category=category,
+            summary=body,
+            sms_notified=False,
+            line_id=line.id,
+            lead_fields={"source": line.source} if line.source else {},
+        )
         if settings.notify_sms_number:
-            notified = await asyncio.to_thread(
+            callback = ""
+            base = _base(request)
+            if base and message_sid:
+                callback = f"{base}/voice/sms-status?call_sid={quote(message_sid, safe='')}"
+            accepted = await asyncio.to_thread(
                 request.app.state.twilio.send_sms,
                 from_number=dialed,
                 to_number=settings.notify_sms_number,
@@ -178,19 +303,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     category=category,
                     source=line.source,
                 ),
+                status_callback=callback,
             )
-        await asyncio.to_thread(
-            request.app.state.store.save_sms,
-            message_sid=form.get("MessageSid", ""),
-            caller_number=caller,
-            dialed_number=dialed,
-            body=body,
-            category=category,
-            summary=body[:500],
-            sms_notified=notified,
-            line_id=line.id,
-            lead_fields={"source": line.source} if line.source else {},
-        )
+            if not accepted:
+                logger.warning("Inbound SMS forward was not accepted")
         return Response(sms_twiml(reply), media_type=XML)
 
     @app.websocket("/voice/media")
@@ -313,6 +429,32 @@ async def _signed_form(request: Request) -> tuple[dict[str, str], bool]:
     signed_params = pairs if request.method == "POST" else []
     signature = request.headers.get("x-twilio-signature", "")
     return data, valid_signature(url, signed_params, signature, settings.twilio_auth_token)
+
+
+def _parent(request: Request) -> str:
+    return request.query_params.get("parent", "").strip()
+
+
+def _parent_session(request: Request) -> CallSession | None:
+    parent = _parent(request)
+    if not parent:
+        return None
+    return request.app.state.sessions.get(parent)
+
+
+async def _redirect_parent(request: Request, session: CallSession) -> None:
+    twiml = resume_twiml(
+        request.app.state.settings,
+        http_base=_base(request),
+        call_sid=session.call_sid,
+    )
+    await asyncio.to_thread(request.app.state.twilio.update_call, session.call_sid, twiml)
+
+
+async def _drop_agent(request: Request, session: CallSession) -> None:
+    if not session.agent_call_sid:
+        return
+    await asyncio.to_thread(request.app.state.twilio.complete_call, session.agent_call_sid)
 
 
 async def _finish(request: Request, session: CallSession) -> None:

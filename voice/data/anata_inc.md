@@ -9,7 +9,7 @@ Do not invent anything that is not written here.
 anata Inc. is an ecommerce marketing, marketplace operations, and fulfillment company headquartered in the Anata Building, 1657 N. State Street, Lehi, Utah 84043.
 It runs marketing, fulfillment, and software out of that one building, with more than 10 years of experience. It is an Amazon Ads Verified Partner.
 Its typical marketing client is a brand doing about $1 million to $20 million a year without a full ads team in-house. Smaller or larger brands still get a message to the team.
-Website: anatainc.com. Email on anatainc.com: david@anatainc.com. Phone: (801) 386-8104.
+Website: anatainc.com. Email on anatainc.com: david@anatainc.com. Phone: (385) 336-3562.
 
 ## Two arms, three ways to work
 

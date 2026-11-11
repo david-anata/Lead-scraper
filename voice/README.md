@@ -21,10 +21,14 @@ websocket for the whole conversation.
    date status come back from tools, not from the model's memory. To correct
    the assistant, edit the matching file; the tests check that no unpublished
    dollar amount slips in.
-5. A live transfer is a Twilio call update to `<Dial>`. It runs only after the
-   screening rules in `voice/screening.py` approve it. If that phone does not
-   answer, Twilio hits `/voice/dial-result` and the assistant returns to take
-   a message.
+5. A live transfer parks the caller in a Twilio conference with hold music
+   (the standard hold-music twimlet on `waitUrl`) and dials the on-call phone
+   as its own call. That phone hears the whisper and must press 1 within 25
+   seconds. If it does not, the ring times out, or answering-machine detection
+   hears voicemail, that leg is dropped and the caller returns to the assistant
+   to leave a message. Voicemail is never a successful transfer, and
+   `callback_needed` is set. Screening in `voice/screening.py` still decides
+   whether a transfer is allowed.
 6. When the call ends, a non-spam call is summarized by SMS to
    `NOTIFY_SMS_NUMBER` and every call is written to Supabase `call_log`.
    Event and tour leads are also inserted into `building_inquiries`, which is
@@ -52,10 +56,14 @@ Example, once the service is at `https://anata-voice-receptionist.onrender.com`:
 - SMS URL: `https://anata-voice-receptionist.onrender.com/voice/sms`
 
 Do not point the voice status callback, the dial action, or the whisper URL
-yourself. The TwiML sets these:
+yourself. The service sets these:
 
-- `POST /voice/dial-result` — after the forward ends
-- `POST /voice/whisper` — spoken only to the on-call phone
+- `POST /voice/dial-result` — the caller's conference leg ended
+- `POST /voice/whisper` — spoken only to the on-call phone, then waits for digit 1
+- `POST /voice/accept` — the on-call phone pressed 1 and is joined to the conference
+- `POST /voice/agent-status` — the on-call leg ended without a press 1
+- `POST /voice/agent-amd` — voicemail detection on the on-call leg
+- `POST /voice/sms-status` — delivery receipt for a summary text
 - `GET /voice/media` — Media Stream websocket (`wss://` on the same host, no query string). The stream token is a `<Parameter>`, because Twilio does not accept query parameters on a Stream URL.
 
 `GET /health` is the Render health check. It returns 200 even when secrets are
@@ -139,11 +147,24 @@ table. A lead insert uses the columns the admin already reads: `kind`
 `payload_json.groupSize`, and `_lifecycle.stage = new`. Spam is written to
 `call_log` only.
 
-`/health` reports `logging_ready` when either `VOICE_DATABASE_URL` or the
-service-role REST pair is set. The database URL wins. Writes run in a worker
-thread, not on the call audio loop. The Postgres path writes only
-`call_log` and `building_inquiries`. The REST path still links a contact when
-the service-role key is the writer.
+`/health` reports `logging_ready` from a live privilege probe when
+`VOICE_DATABASE_URL` is set. The probe uses `has_table_privilege` and
+`has_column_privilege` for the call log and inquiry writes, including
+`SELECT` on `call_log.call_sid`. A present variable with a denied role
+reports `logging_ready: false` and `logging_probe: denied` or `unreachable`.
+A successful probe is cached for 30 seconds. When only the service-role REST
+pair is set, there is no privilege probe and `logging_probe` is `not_probed`.
+
+The inquiry insert and the call-log upsert use separate transactions. An
+inquiry failure is logged on its own and the call log is still written.
+`source` on a voice lead is `voice`. The full transcript and the full summary
+are stored. `sms_notified` stays false until the message status callback says
+`delivered`. An undelivered text, including error 30034 while A2P is not
+approved, stays false. A Twilio 2xx on send is only acceptance, not delivery.
+
+Writes run in a worker thread, not on the call audio loop. The Postgres path
+writes only `call_log` and `building_inquiries`. The REST path still links a
+contact when the service-role key is the writer.
 
 ### Grants for `voice_logger`
 
@@ -159,6 +180,8 @@ GRANT INSERT, UPDATE (
   category, lead_fields, action_taken, transfer_attempted, transfer_outcome,
   sms_notified, building_inquiry_id, updated_at
 ) ON TABLE public.call_log TO voice_logger;
+
+GRANT SELECT (call_sid) ON TABLE public.call_log TO voice_logger;
 
 GRANT INSERT (
   id, idempotency_key, kind, source, source_reference, offering_id,
@@ -180,7 +203,8 @@ CREATE POLICY voice_logger_select_voice_inquiries ON public.building_inquiries
   FOR SELECT TO voice_logger USING (source = 'voice');
 ```
 
-`call_log` is not granted SELECT. `building_inquiries` is not granted UPDATE.
+`call_log` SELECT is only `call_sid`, so the status callback and the upsert
+can see the row they are updating. `building_inquiries` is not granted UPDATE.
 Nothing else is granted: not contacts, relationships, audit events, or their
 sequences. The SELECT is only so a repeated call can find the inquiry id
 after `ON CONFLICT DO NOTHING`.
@@ -260,8 +284,15 @@ These decisions are code, not a prompt:
 - Reasoning is turned down (`reasoning.effort = none`) so the front desk stays
   short. The model is `grok-voice-latest` (currently grok-voice-3.0).
 - Summary SMS uses the Twilio number or a messaging service. Until A2P 10DLC
-  is registered, Twilio may reject those texts. The call is still logged, with
-  `sms_notified` false. Inbound auto-reply stays off for the same reason.
+  is registered, Twilio may accept the send and then mark it undelivered
+  with error 30034. The call is still logged, and `sms_notified` stays false
+  unless a later status callback says delivered. Inbound auto-reply stays off
+  for the same reason.
+- Arena events are self-serve. The renter sets up and resets inside the booked
+  time. There is no free teardown after Saturday midnight or Sunday 10:00 p.m.
+  Security staffing is never required. On a big party the assistant offers it
+  once as an optional add-on and records `security_preference` as yes, no, or
+  undecided.
 - One Render instance. A restart mid-call drops the in-memory session; the
   caller would need to call back. The durable record is written at the end.
 - Office prices and office availability are not on anatabuilding.com, so the

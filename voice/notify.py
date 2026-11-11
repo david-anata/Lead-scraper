@@ -41,21 +41,91 @@ class TwilioRest:
         response = self._post(url, {"Twiml": twiml})
         return response is not None and int(getattr(response, "status_code", 0)) < 300
 
-    def send_sms(self, *, from_number: str, to_number: str, body: str) -> bool:
+    def send_sms(
+        self,
+        *,
+        from_number: str,
+        to_number: str,
+        body: str,
+        status_callback: str = "",
+    ) -> str:
+        """Return the MessageSid when Twilio accepts the message.
+
+        A 2xx only means the message was queued. It is not delivery.
+        The status callback is what may later set `sms_notified`.
+        """
+
         if not self.configured or not to_number or not body.strip():
-            return False
+            return ""
         url = (
             "https://api.twilio.com/2010-04-01/Accounts/"
             f"{self.settings.twilio_account_sid}/Messages.json"
         )
         data: dict[str, str] = {"To": to_number, "Body": body[:1400]}
+        if status_callback:
+            data["StatusCallback"] = status_callback
+            data["StatusCallbackMethod"] = "POST"
         if self.settings.twilio_messaging_service_sid:
             data["MessagingServiceSid"] = self.settings.twilio_messaging_service_sid
         elif from_number:
             data["From"] = from_number
         else:
-            return False
+            return ""
         response = self._post(url, data)
+        if response is None or int(getattr(response, "status_code", 0)) >= 300:
+            return ""
+        payload = _json_dict(response)
+        return str(payload.get("sid") or payload.get("Sid") or "accepted")
+
+    def create_call(
+        self,
+        *,
+        to_number: str,
+        from_number: str,
+        url: str,
+        status_callback: str,
+        amd_status_callback: str,
+        timeout: int,
+    ) -> str:
+        """Dial the on-call phone. The caller is already waiting in a conference."""
+
+        if not self.configured or not to_number or not from_number or not url:
+            return ""
+        endpoint = (
+            "https://api.twilio.com/2010-04-01/Accounts/"
+            f"{self.settings.twilio_account_sid}/Calls.json"
+        )
+        response = self._post(
+            endpoint,
+            {
+                "To": to_number,
+                "From": from_number,
+                "Url": url,
+                "Method": "POST",
+                "Timeout": str(timeout),
+                "StatusCallback": status_callback,
+                "StatusCallbackMethod": "POST",
+                "MachineDetection": "Enable",
+                "AsyncAmd": "true",
+                "AsyncAmdStatusCallback": amd_status_callback,
+                "AsyncAmdStatusCallbackMethod": "POST",
+            },
+        )
+        if response is None or int(getattr(response, "status_code", 0)) >= 300:
+            return ""
+        payload = _json_dict(response)
+        return str(payload.get("sid") or payload.get("Sid") or "")
+
+    def complete_call(self, call_sid: str) -> bool:
+        """Hang up one leg. Used when voicemail answers or the caller gives up."""
+
+        if not self.configured or not call_sid:
+            return False
+        url = (
+            "https://api.twilio.com/2010-04-01/Accounts/"
+            f"{self.settings.twilio_account_sid}/Calls/{call_sid}.json"
+        )
+        response = self._post(url, {"Status": "completed"})
         return response is not None and int(getattr(response, "status_code", 0)) < 300
 
     def _post(self, url: str, data: dict[str, str]) -> Any:
@@ -72,7 +142,8 @@ class TwilioRest:
             return None
         status = int(getattr(response, "status_code", 0))
         if status >= 300:
-            logger.warning("Twilio returned status %s", status)
+            code = str(_json_dict(response).get("code") or "")
+            logger.warning("Twilio returned status %s error %s", status, code)
         return response
 
     def _client(self) -> Any:
@@ -81,6 +152,14 @@ class TwilioRest:
 
             self._requests = requests
         return self._requests
+
+
+def _json_dict(response: Any) -> dict[str, Any]:
+    try:
+        payload = response.json()
+    except Exception:
+        return {}
+    return payload if isinstance(payload, dict) else {}
 
 
 def should_text_about_call(category: str) -> bool:
@@ -116,6 +195,8 @@ def call_summary_text(session: CallSession) -> str:
         f"Callback: {callback}",
         f"Action: {session.action or 'message'}",
     ])
+    if session.security_preference:
+        lines.append(f"Security preference: {session.security_preference}")
     if bits:
         lines.append("Lead: " + one_line(" / ".join(bits), 300))
     if session.notes:

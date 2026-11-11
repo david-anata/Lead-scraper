@@ -2,8 +2,9 @@
 
 Audio is passed through as G.711 µ-law. When the caller starts talking, the
 Twilio playback buffer is cleared so the model can be interrupted. A transfer
-is a Twilio call update to `<Dial>`, which drops this socket. If that dial
-is not answered, Twilio requests `/voice/dial-result` and a new socket resumes
+parks the caller in a conference with hold music and dials the on-call phone
+on its own leg. That socket drops when the call is updated. If the on-call
+phone does not press 1, Twilio brings the caller back and a new socket resumes
 the assistant.
 """
 
@@ -14,16 +15,17 @@ import inspect
 import json
 import logging
 from typing import Any
+from urllib.parse import quote
 
 from voice.audio import mulaw_frames
 from voice.calendar_availability import CalendarAvailability
-from voice.lifecycle import finalize_call
+from voice.lifecycle import begin_transfer, finalize_call
 from voice.lines import parse_known_numbers
 from voice.prompts import build_instructions
 from voice.session import CallSession
 from voice.settings import Settings
 from voice.tools import execute_tool, session_update_event
-from voice.twiml import apology_twiml, dial_twiml
+from voice.twiml import RING_TIMEOUT_SECONDS, apology_twiml, caller_hold_twiml, resume_twiml
 from voice.notify import TwilioRest
 from voice.leads import SupabaseStore
 from voice.screening import one_line
@@ -64,6 +66,12 @@ class CallBridge:
         self._continuing = False
 
     async def run(self, start_message: dict[str, Any] | None = None) -> None:
+        if self.session.resume == "message":
+            # The hold is over. This socket is the message-taking leg, so it
+            # may write the call log when it closes.
+            self.session.holding_for_transfer = False
+            if self.session.transfer_state == "dialing":
+                self.session.transfer_state = "messaging"
         if start_message:
             await self._on_twilio(start_message)
         xai_task = asyncio.create_task(self._xai_loop())
@@ -285,29 +293,54 @@ class CallBridge:
         async with self._dial_lock:
             if self._stop.is_set() or self.session.transfer_started or not self.session.transfer_requested:
                 return
-            self.session.transfer_started = True
-            self.session.transfer_state = "dialing"
+            begin_transfer(self.session)
         http_base = self.settings.http_base()
-        twiml = dial_twiml(self.settings, http_base=http_base)
-        ok = await asyncio.to_thread(self.twilio.update_call, self.session.call_sid, twiml)
-        if ok:
+        parent = self.session.call_sid
+        twiml = caller_hold_twiml(http_base=http_base, call_sid=parent)
+        ok = await asyncio.to_thread(self.twilio.update_call, parent, twiml)
+        if not ok:
+            self.session.holding_for_transfer = False
+            self.session.transfer_started = False
+            self.session.transfer_state = ""
+            self.session.transfer_requested = False
+            self.session.action = "message"
+            await self._ask_for_message("The transfer could not be placed. Take a message.")
             return
-        self.session.transfer_started = False
-        self.session.transfer_state = ""
+        parent_query = quote(parent, safe="")
+        agent_sid = await asyncio.to_thread(
+            self.twilio.create_call,
+            to_number=self.settings.forward_to_number,
+            from_number=self.session.dialed_number,
+            url=f"{http_base}/voice/whisper?parent={parent_query}",
+            status_callback=f"{http_base}/voice/agent-status?parent={parent_query}",
+            amd_status_callback=f"{http_base}/voice/agent-amd?parent={parent_query}",
+            timeout=RING_TIMEOUT_SECONDS,
+        )
+        if agent_sid:
+            self.session.agent_call_sid = agent_sid
+            return
+        # The caller is already in the conference. Bring them back here rather
+        # than leaving them on hold. The closing socket must not finalize yet.
+        self.session.resume = "message"
+        self.session.transfer_state = "messaging"
         self.session.transfer_requested = False
-        self.session.action = "message"
+        self.session.callback_needed = True
+        self.session.action = "transfer_no_answer_message"
+        self.session.transfer_outcome = "no_answer"
+        await asyncio.to_thread(
+            self.twilio.update_call,
+            parent,
+            resume_twiml(self.settings, http_base=http_base, call_sid=parent),
+        )
+
+    async def _ask_for_message(self, text: str) -> None:
         await self._xai_send(
             {
                 "type": "conversation.item.create",
                 "item": {
                     "type": "message",
                     "role": "user",
-                    "content": [
-                        {
-                            "type": "input_text",
-                            "text": "The transfer could not be placed. Take a message.",
-                        }
-                    ],
+                    "content": [{"type": "input_text", "text": text}],
                 },
             }
         )
@@ -361,4 +394,4 @@ def whisper_line(session: CallSession) -> str:
     name = session.caller_name or "A caller"
     reason = one_line(session.reason or session.summary or "needs a person", 120)
     number = session.caller_number or "an unknown number"
-    return f"Anata transfer. {name}, calling from {number}. {reason}. Connecting you now."
+    return f"Anata transfer. {name}, calling from {number}. {reason}. Press 1 to accept."
