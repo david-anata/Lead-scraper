@@ -20,8 +20,9 @@ logger = logging.getLogger(__name__)
 
 HIGH_RATING = 4.5
 RETAILER_VENDOR_COUNT = 25
-OPENER_MAX_WORDS = 80
-ANGLE_MAX_WORDS = 45
+# Same hard caps as outbound_openers. About 20 and 15 is the aim.
+OPENER_MAX_WORDS = 25
+ANGLE_MAX_WORDS = 20
 
 _RESTRICTED = re.compile(
     r"\b(?:wines?|alcohol|beer|spirits|liquor|cannabis|marijuana|cbd|tobacco|vapes?|vaping|"
@@ -88,6 +89,7 @@ class FactSheet:
     facts: list[str] = field(default_factory=list)
     blocked: str = ""
     high_rating: bool = False
+    trial_offer: bool = False
 
     @property
     def thin(self) -> bool:
@@ -201,7 +203,12 @@ def fact_sheet(lead: dict[str, Any]) -> FactSheet:
     brand = str(store.get("merchant_name") or lead.get("brand") or store.get("name") or "").strip()
     category = str(store.get("categories") or lead.get("categories") or lead.get("niche") or "")
     recipe = str(lead.get("recipe") or "").strip()
-    sheet = FactSheet(brand=brand or "This brand", category=category, recipe=recipe)
+    from outbound_openers import trial_offer_lead
+
+    trial = trial_offer_lead(lead)
+    sheet = FactSheet(
+        brand=brand or "This brand", category=category, recipe=recipe, trial_offer=trial,
+    )
     if _RESTRICTED.search(category) or _RESTRICTED.search(brand):
         sheet.blocked = "restricted category"
         return sheet
@@ -226,6 +233,8 @@ def fact_sheet(lead: dict[str, Any]) -> FactSheet:
             facts.append(f"recent product: {title}")
     channels = _channel_names(store)
     for name in ("Amazon", "Etsy", "Faire"):
+        if name == "Amazon" and trial:
+            continue
         if any(name.lower() in item.lower() for item in channels):
             facts.append(f"sells on {name}")
     if str(store.get("store_locator_page") or "").strip():
@@ -285,6 +294,7 @@ def style_violation(
     role: str = "opener",
     recipe: str = "",
     high_rating: bool = False,
+    trial_offer: bool = False,
 ) -> str:
     """Empty when the line is allowed. Otherwise a short reason."""
 
@@ -309,10 +319,17 @@ def style_violation(
         return "low rating"
     if re.search(r"\bstars?\b|\brating\b", raw, re.I) and not high_rating:
         return "low rating"
+    from outbound_openers import sentence_count, trial_amazon_claim, trial_offer_lead
+
     words = raw.split()
     limit = ANGLE_MAX_WORDS if role == "angle" else OPENER_MAX_WORDS
     if len(words) > limit:
         return "too long"
+    if sentence_count(raw) > 1:
+        return "more than one sentence"
+    trial = trial_offer or trial_offer_lead({"recipe": recipe})
+    if trial and trial_amazon_claim(raw):
+        return "claims the brand already sells on Amazon"
     if role == "angle" and raw.lower().startswith("anata helps"):
         return "anata helps"
     if recipe:
@@ -330,34 +347,51 @@ def _category_lines(sheet: FactSheet) -> tuple[str, str]:
     brand = sheet.brand or "This brand"
     if not category or _RESTRICTED.search(category):
         return "", ""
-    opener = (
-        f"Saw {brand} in {category}. "
-        "That is a category where Amazon demand tends to sit next to the website."
-    )
-    angle = f"{category[:1].upper()}{category[1:]} shoppers compare fast, so the listing has to be ready when they look."
-    if style_violation(opener, role="opener", recipe=sheet.recipe, high_rating=False):
+    opener = f"Saw {brand} in {category}, a category where shoppers already compare options."
+    angle = f"Shoppers already compare {category}."
+    if style_violation(
+        opener, role="opener", recipe=sheet.recipe, high_rating=False, trial_offer=sheet.trial_offer,
+    ):
         return "", ""
-    if style_violation(angle, role="angle", recipe=sheet.recipe, high_rating=False):
+    if style_violation(
+        angle, role="angle", recipe=sheet.recipe, high_rating=False, trial_offer=sheet.trial_offer,
+    ):
         return "", ""
     return opener, angle
 
 
 def _prompt(sheet: FactSheet) -> str:
     facts = "\n".join(f"- {fact}" for fact in sheet.facts)
+    if sheet.trial_offer:
+        amazon_rule = (
+            "This is a Trial Offer. Do not claim or assume the brand already sells on Amazon. "
+            "Never write 'your Amazon store', 'your listings', or 'already on Amazon'. "
+            "The angle may mention Amazon as an opportunity, for example: "
+            "A milk and nut butter bundle could give new Amazon shoppers an easy way to try both. "
+        )
+    else:
+        amazon_rule = (
+            "Only mention Amazon when a fact says the brand sells there. Never assume they do. "
+        )
     return (
         f"Brand: {sheet.brand}\n"
         f"Category: {sheet.category or 'unknown'}\n"
         "Shopper-visible facts:\n"
         f"{facts}\n\n"
         "Write JSON with keys opener and angle. Use only the facts above. "
-        "Opener is one or two sentences in Abby's voice tying one fact to why Amazon matters. "
-        "Angle is one sentence with a specific Amazon idea. It must not repeat the opener "
-        "and must not start with Anata helps. No digits, no em dashes, no URLs, no hype, "
-        "no platform, plan, app, pixel, or the words moved or upgraded. "
+        f"{amazon_rule}"
+        "Opener is one sentence of about 20 words, never more than 25, in Abby's voice. "
+        "Angle is one sentence of about 15 words, never more than 20. "
+        "The angle must not repeat the opener and must not start with Anata helps. "
+        "No digits, no em dashes, no URLs, no hype, no platform, plan, app, pixel, "
+        "or the words moved or upgraded. "
         "A subscribe option may be named. Never name a review app. "
         "Cite reviews only when the facts say the average is close to five stars. "
         "Do not invent products, stores, or follower counts.\n\n"
-        f"Examples of the voice:\n{_EXAMPLES}"
+        f"Examples of the voice:\n{_EXAMPLES}\n\n"
+        "The examples show voice only. Do not copy their length. "
+        "The opener must be one sentence of about 20 words and never more than 25. "
+        "The angle must be one sentence of about 15 words and never more than 20."
     )
 
 
@@ -404,7 +438,8 @@ def generate(
     """Return (opener, angle, source). Source is ai, fallback, or none.
 
     Thin, restricted, and multi-brand records get no lines. A failed model
-    line falls back to a category sentence when the category itself is safe.
+    line falls back to a short category sentence when the category itself is safe.
+    A line over the hard word max is regenerated once, then left empty so the lead is held.
     """
 
     sheet = fact_sheet(lead)
@@ -430,14 +465,23 @@ def generate(
                 logger.exception("[outbound-personalization] model call failed")
                 break
             why = style_violation(
-                opener, role="opener", recipe=sheet.recipe, high_rating=sheet.high_rating,
+                opener, role="opener", recipe=sheet.recipe,
+                high_rating=sheet.high_rating, trial_offer=sheet.trial_offer,
             ) or style_violation(
-                angle, role="angle", recipe=sheet.recipe, high_rating=sheet.high_rating,
+                angle, role="angle", recipe=sheet.recipe,
+                high_rating=sheet.high_rating, trial_offer=sheet.trial_offer,
             )
             if opener and angle and not why and opener.strip() != angle.strip():
                 return opener, angle, "ai"
-            prompt = prompt + f"\n\nRejected ({why or 'empty'}). Write a different pair that follows every rule."
+            prompt = (
+                prompt
+                + f"\n\nRejected ({why or 'empty'}). Write a different pair that follows every rule. "
+                "Opener: one sentence, about 20 words, never more than 25. "
+                "Angle: one sentence, about 15 words, never more than 20."
+            )
         logger.info("[outbound-personalization] model line rejected (%s)", why or "empty")
+        if why == "too long":
+            return "", "", "none"
     opener, angle = _category_lines(sheet)
     if opener and angle:
         return opener, angle, "fallback"
