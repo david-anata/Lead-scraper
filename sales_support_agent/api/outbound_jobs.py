@@ -85,6 +85,18 @@ def morning_pull_status(engine, now: datetime) -> dict:
     except Exception:  # noqa: BLE001
         rows = []
     match = next((row for row in rows if row.business_date == today), None)
+    if match is not None and outbound_batches.batch_is_reopenable(match.status):
+        return {
+            "ok": False,
+            "status": "failed",
+            "already_ran": False,
+            "batch_id": match.id,
+            "unique_companies": match.unique_companies,
+            "reason": (
+                f"Today's pull did not finish. Batch {match.id} is still {match.status}, "
+                "so it can be run again."
+            ),
+        }
     if match is not None:
         held = 0
         try:
@@ -197,6 +209,36 @@ def _mark_ran(engine, now: datetime) -> None:
         )
     except Exception:  # noqa: BLE001
         logger.exception("[outbound-jobs] could not record that today's run started")
+
+
+_EXPECTED_SKIP_REASONS = frozenset({
+    "nothing scheduled today",
+    "today's daily batch already exists",
+    "daily marker already exists",
+})
+_RECORDED_RUN_STATUSES = frozenset({"complete", "partial", "failed"})
+
+
+def lease_status_for(result: dict | None) -> str:
+    """Scheduler lease outcome for one morning-routine result."""
+
+    result = result or {}
+    reason = str(result.get("reason") or "")
+    if result.get("ran") or reason in _EXPECTED_SKIP_REASONS:
+        return "succeeded"
+    return "failed"
+
+
+def _rerun_requested(request: Request) -> bool:
+    """True when an operator is replaying an unfinished business day.
+
+    The date is America/Denver today. There is no business_date parameter.
+    ``rerun=1`` skips the 7am hour check. It does not reopen a batch that
+    already finalized, and it does not bypass scheduler auth.
+    """
+
+    raw = str(request.query_params.get("rerun") or "").strip().lower()
+    return raw in {"1", "true", "yes"}
 
 
 _APP_URL = "https://agent.anatainc.com"
@@ -335,7 +377,9 @@ def run_morning_routine(*, now: datetime | None = None, scan_limit: int = _SCAN_
     """Pull whatever is due today, then check those brands on Amazon.
 
     Returns a small summary so the health endpoint and the tests can see what
-    happened. Never raises: a failed morning must not take the app down.
+    happened. Pull failures are caught. A finalize failure is marked on the
+    batch and raised, so the cron returns 503 instead of leaving the batch
+    running. An unfinished batch for this business date is reopened.
     """
     import outbound_pipeline as _op
     import outbound_recipes as _rx
@@ -378,6 +422,7 @@ def run_morning_routine(*, now: datetime | None = None, scan_limit: int = _SCAN_
     batch_id, created = outbound_batches.create_batch(
         engine, business_date=_today(now), trigger="scheduled",
         recipe_count=len(due), correlation_id=str(uuid4()),
+        resume_incomplete=True,
     )
     if not created:
         out["reason"] = "today's daily batch already exists"
@@ -472,6 +517,13 @@ def run_morning_routine(*, now: datetime | None = None, scan_limit: int = _SCAN_
                 allowed_due.append(recipe)
                 continue
             logger.info("[outbound-jobs] skipping %s: %s", recipe.key, skip_reason)
+            # The campaign loop already appended this recipe. A second skipped
+            # row uses the same recipe_key and the batch-run primary key rejects
+            # the insert. replatformed is the alias of replatform, so its key
+            # differs and would not collide, but it is the same sourcing decision
+            # and must not become its own batch row either.
+            if skip_reason == _gate.ALREADY_SOURCED_REASON:
+                continue
             recipe_runs.append({
                 "recipe_key": recipe.key,
                 "recipe_label": recipe.label,
@@ -483,7 +535,21 @@ def run_morning_routine(*, now: datetime | None = None, scan_limit: int = _SCAN_
 
     # 1. Pull. Fast and free; the Amazon work is deliberately not inline here,
     #    because at minutes per brand it would never finish inside one request.
+    # A campaign row is already the batch record. Pulling the same key again
+    # (the catalog read failed, or it came back empty) would insert a second
+    # primary key and spend another StoreLeads query.
+    recorded_keys = {
+        str(run.get("recipe_key") or "")
+        for run in recipe_runs
+        if str(run.get("status") or "") in _RECORDED_RUN_STATUSES
+    }
     for recipe in due:
+        if recipe.key in recorded_keys:
+            logger.info(
+                "[outbound-jobs] not pulling %s: a campaign batch row is already recorded",
+                recipe.key,
+            )
+            continue
         requested = min(recipe.cap(tunables), daily_remaining)
         if requested <= 0:
             recipe_runs.append({"recipe_key": recipe.key, "recipe_label": recipe.label,
@@ -538,6 +604,7 @@ def run_morning_routine(*, now: datetime | None = None, scan_limit: int = _SCAN_
                 "skipped_seen": result.skipped_already_contacted,
             })
 
+    recipe_runs = outbound_batches.merge_recipe_runs(recipe_runs)
     batch = outbound_batches.finalize_batch(
         engine, batch_id=batch_id, recipe_runs=recipe_runs, leads=all_leads,
         filename=f"anata-daily-leads-{_today(now)}.csv",
@@ -662,7 +729,13 @@ def _require_scheduler_auth(request: Request) -> None:
 
 @router.api_route("/run", methods=["GET", "POST"])
 def run_scheduled_outbound(request: Request) -> dict:
-    """Run the daily outbound batch from Vercel Cron or an internal operator."""
+    """Run the daily outbound batch from Vercel Cron or an internal operator.
+
+    ``?rerun=1`` replays America/Denver's current business date outside the
+    7am window. Auth is unchanged. A batch that already finalized
+    (``ready``, ``needs_review``, ``delivered``) is not pulled again. A
+    ``running`` or ``failed`` batch is reopened. Do not delete that row first.
+    """
 
     _require_scheduler_auth(request)
     now = datetime.now(ZoneInfo(_TZ))
@@ -676,12 +749,15 @@ def run_scheduled_outbound(request: Request) -> dict:
     except Exception:  # noqa: BLE001 - a missing database still has to skip cleanly
         hour = _RUN_HOUR
         engine = None
-    if now.hour != hour:
+    rerun = _rerun_requested(request)
+    if not rerun and now.hour != hour:
         return {
             "status": "skipped",
             "message": f"Outbound morning routine is waiting for {hour}:00 America/Denver.",
             "local_time": now.isoformat(),
         }
+    if rerun:
+        logger.info("[outbound-jobs] same-day rerun requested for %s", _today(now))
 
     from sales_support_agent.models.database import get_engine
 
@@ -693,6 +769,7 @@ def run_scheduled_outbound(request: Request) -> dict:
         job_key="outbound_morning",
         run_key=run_key,
         lease_minutes=240,
+        recover_succeeded=rerun,
     )
     if lease is None:
         return {
@@ -716,11 +793,7 @@ def run_scheduled_outbound(request: Request) -> dict:
             result = run_morning_routine(now=now)
 
         reason = str(result.get("reason") or "")
-        expected_skip = reason in {
-            "nothing scheduled today",
-            "today's daily batch already exists",
-            "daily marker already exists",
-        }
+        expected_skip = reason in _EXPECTED_SKIP_REASONS
         if not result.get("ran") and not expected_skip:
             finish_scheduled_job(engine, lease, status="failed", details=result)
             raise HTTPException(

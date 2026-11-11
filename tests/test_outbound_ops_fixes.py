@@ -132,6 +132,18 @@ def test_manual_pull_reports_running_and_already_finished_without_starting():
     )
     done = jobs.morning_pull_status(engine, now)
     assert done["already_ran"] is True
+    stuck_day = datetime(2026, 11, 11, 9, tzinfo=DENVER)
+    jobs._morning_state["running"] = False
+    jobs._morning_state["last_status"] = ""
+    stuck_id, _created = batches.create_batch(
+        engine, business_date="2026-11-11", trigger="scheduled",
+        recipe_count=2, correlation_id="stuck",
+    )
+    stuck = jobs.morning_pull_status(engine, stuck_day)
+    assert stuck["already_ran"] is False
+    assert stuck["status"] == "failed"
+    assert stuck["batch_id"] == stuck_id
+    assert "still running" in stuck["reason"]
     assert done["unique_companies"] == 1
     assert "Finished" in done["reason"] or "finished" in done["reason"]
     control = daily_run_control()

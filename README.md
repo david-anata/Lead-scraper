@@ -331,3 +331,27 @@ uvicorn sales_support_agent.main:app --host 0.0.0.0 --port 8010 --reload
 See the dedicated setup and system diagram in [`sales_support_agent/README.md`](/Users/davidnarayan/Documents/Playground/Lead-scraper/sales_support_agent/README.md).
 
 No quotes, no trailing slash, and no extra spaces.
+
+## Replay an unfinished outbound morning batch
+
+The daily job is `GET` or `POST` `/api/jobs/outbound-morning/run`. It only pulls when the America/Denver hour matches the saved pull hour (7 by default). `?rerun=1` is the same job outside that hour.
+
+The business date is America/Denver today. There is no date parameter. A call after midnight Denver opens the new day and does not touch the previous batch.
+
+Do not delete or reset the batch row first. A `running` or `failed` batch for that date is reopened. A batch that already finalized (`ready`, `needs_review`, or `delivered`) is left alone and the call returns `today's daily batch already exists`.
+
+Auth is unchanged: `Authorization: Bearer $CRON_SECRET` or `X-Internal-Api-Key: $SALES_AGENT_INTERNAL_API_KEY`.
+
+On 2026-11-11 the 14:00Z run left batch 12 `running` after `outbound_daily_batch_runs_pkey` rejected a second `plan_upgrade` row. The scheduler lease `outbound_morning` / `2026-11-11` is `failed`, so this call can take it. Run it only while the Denver date is still 2026-11-11, and only after the fix is deployed:
+
+```bash
+curl --fail --silent --show-error --max-time 3500 \
+  -X POST "https://agent.anatainc.com/api/jobs/outbound-morning/run?rerun=1" \
+  -H "X-Internal-Api-Key: $SALES_AGENT_INTERNAL_API_KEY"
+```
+
+`GET` with `Authorization: Bearer $CRON_SECRET` is the same call. One runner at a time. If the response says the routine is already running or complete, the lease is still held; wait for it instead of deleting batch 12.
+
+The failed attempt had already saved 42 `amz_on` companies in `outbound_contacted_domains` (`source` `campaign:amz_on`) before the batch write rolled back. The rerun skips those domains. They are not copied onto the new batch file. `outbound_pull_runs` for that attempt is empty. This rerun does not change send caps, campaign status, or copy.
+
+The Daily Leads button uses the same routine and the same lease. It stays available while today's batch is `running` or `failed`.

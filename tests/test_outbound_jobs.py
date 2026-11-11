@@ -204,6 +204,252 @@ class MorningRoutineTests(unittest.TestCase):
     def test_one_daily_sheet_has_a_controlled_company_ceiling(self):
         self.assertEqual(jobs._DAILY_COMPANY_CAP, 300)  # raised 2026-10-26 (maximize pulls)
 
+    def _run_with_campaigns(self, *, recipes, catalog, sourced, pull_calls, now, env=None,
+                            engine=None, lister=None):
+        """Drive one morning routine with the campaign and recipe edges stubbed."""
+        import os
+
+        import outbound_campaign_source as source
+        import outbound_campaigns as campaigns
+        import outbound_pipeline as op
+        from sales_support_agent.api import outbound_router
+        from sales_support_agent.models import database as db
+        from sales_support_agent.services import outbound_batches, outbound_delivery, outbound_memory
+
+        if engine is None:
+            engine = create_engine("sqlite://", future=True)
+
+        def pull(**kwargs):
+            pull_calls.append(kwargs["recipe"].key)
+            return op.PipelineResult(dry_run=True)
+
+        replacements = [
+            (op, "load_config_from_env", lambda: ("storeleads-key", "")),
+            (op, "run_recipe_pull", pull),
+            (db, "get_engine", lambda: engine),
+            (outbound_memory, "persistence_health", lambda _engine: {"ready": True}),
+            (outbound_batches, "materialize_recipes", lambda *_args, **_kwargs: recipes),
+            (outbound_delivery, "deliver_daily_batch", lambda *_a, **_k: {"email": "skipped", "slack": "skipped"}),
+            (source, "source_active_campaigns", lambda *_a, **_k: sourced),
+            (source, "source_sales_org", lambda *_a, **_k: {"recorded": 0}),
+            (campaigns, "list_campaigns", lister or (lambda _engine: catalog)),
+            (outbound_router, "_amazon_checker", lambda _settings: None),
+        ]
+        saved = [(owner, name, getattr(owner, name)) for owner, name, _value in replacements]
+        for owner, name, value in replacements:
+            setattr(owner, name, value)
+        previous_env = os.environ.get("OUTBOUND_PROTECTED_CAMPAIGN_IDS")
+        if env is not None:
+            os.environ["OUTBOUND_PROTECTED_CAMPAIGN_IDS"] = env
+        try:
+            result = jobs.run_morning_routine(now=now)
+        finally:
+            for owner, name, value in saved:
+                setattr(owner, name, value)
+            if env is None:
+                pass
+            elif previous_env is None:
+                os.environ.pop("OUTBOUND_PROTECTED_CAMPAIGN_IDS", None)
+            else:
+                os.environ["OUTBOUND_PROTECTED_CAMPAIGN_IDS"] = previous_env
+        return engine, result
+
+    def test_campaign_rows_are_not_duplicated_by_standalone_skips(self):
+        """2026-11-11: plan_upgrade was inserted twice and the batch stayed running."""
+        import outbound_instantly_push as push
+        from sales_support_agent.services import outbound_batches
+
+        pulled = []
+        plan_id = push.RECIPE_CAMPAIGN_MAP["plan_upgrade"]
+        recipes = [
+            SimpleNamespace(key="plan_upgrade", label="Upgraded to Shopify Plus", cap=lambda _s: 30),
+            SimpleNamespace(key="replatformed", label="Recently replatformed", cap=lambda _s: 25),
+            SimpleNamespace(key="churned_tool", label="Just dropped a growth tool", cap=lambda _s: 30),
+        ]
+        catalog = [
+            {"recipe_key": "amz_on", "recipe_aliases": "", "status": "active", "daily_cap": 100,
+             "campaign_id": "8e0df427-1f18-43ac-b0c6-e8ea787123d7", "storeleads_filters": {"f:scs": "Amazon"}},
+            {"recipe_key": "amz_off", "recipe_aliases": "", "status": "active", "daily_cap": 100,
+             "campaign_id": "138a162d-6654-4916-9959-20c11e31214b", "storeleads_filters": {"f:scs": "Amazon"}},
+            {"recipe_key": "plan_upgrade", "recipe_aliases": "", "status": "active", "daily_cap": 100,
+             "campaign_id": plan_id, "storeleads_filters": {"f:plan": "Shopify Plus"}},
+            {"recipe_key": "plan_upgrade", "recipe_aliases": "", "status": "cut", "daily_cap": 30,
+             "campaign_id": "1937c21a-89c4-458f-a949-306f90ae6258", "storeleads_filters": {"f:plan": "Shopify Plus"}},
+            {"recipe_key": "replatform", "recipe_aliases": "replatformed", "status": "active", "daily_cap": 100,
+             "campaign_id": "d1c197e3-bf1f-4f41-bcb9-e30e73975a2c", "storeleads_filters": {"f:p": "shopify"}},
+            {"recipe_key": "churned_tool", "recipe_aliases": "", "status": "cut", "daily_cap": 0,
+             "campaign_id": "a04a958c-6546-5ba0-a97d-586446d2b580",
+             "name": "churned_tool|hold|no_trial_offer_ingest", "storeleads_filters": None},
+        ]
+        sourced = {
+            "recorded": 42,
+            "leads": [{"domain": "on.example", "brand": "On", "recipe": "amz_on"}],
+            "recipes": ["amz_on"],
+            "campaigns": [
+                {"recipe_key": "amz_on", "recorded": 42, "scanned": 80, "skipped_seen": 3},
+                {"recipe_key": "amz_off", "recorded": 0, "scanned": 20, "skipped_seen": 10},
+                {"recipe_key": "plan_upgrade", "recorded": 0, "scanned": 11, "skipped_seen": 4},
+                {"recipe_key": "replatform", "recorded": 0, "scanned": 8, "skipped_seen": 2},
+            ],
+        }
+        engine, out = self._run_with_campaigns(
+            recipes=recipes, catalog=catalog, sourced=sourced, pull_calls=pulled,
+            now=datetime(2026, 11, 11, 9, tzinfo=DENVER), env=plan_id,
+        )
+        self.assertTrue(out["ran"], out.get("reason"))
+        self.assertEqual(pulled, [])
+        runs = outbound_batches.batch_runs(engine, out["batch_id"])
+        by_key = {row["recipe_key"]: row for row in runs}
+        self.assertEqual(list(by_key), sorted(by_key))
+        self.assertEqual(set(by_key), {"amz_on", "amz_off", "plan_upgrade", "replatform", "churned_tool"})
+        self.assertEqual(by_key["plan_upgrade"]["status"], "complete")
+        self.assertEqual(by_key["plan_upgrade"]["fresh"], 0)
+        self.assertNotIn("replatformed", by_key)
+        self.assertEqual(by_key["churned_tool"]["status"], "skipped")
+        self.assertEqual(by_key["amz_on"]["fresh"], 42)
+        batch = outbound_batches.get_batch(engine, out["batch_id"])
+        self.assertEqual(batch.status, "ready")
+        self.assertEqual(batch.unique_companies, 1)
+
+    def test_a_missing_catalog_does_not_pull_a_recipe_the_campaign_already_recorded(self):
+        from sales_support_agent.services import outbound_batches
+
+        pulled = []
+        recipe = [SimpleNamespace(key="plan_upgrade", label="Upgraded to Shopify Plus", cap=lambda _s: 30)]
+        sourced = {"recorded": 0, "leads": [], "recipes": [], "campaigns": [
+            {"recipe_key": "plan_upgrade", "recorded": 0, "scanned": 4, "skipped_seen": 1},
+        ]}
+        now = datetime(2026, 11, 11, 9, tzinfo=DENVER)
+        engine, out = self._run_with_campaigns(
+            recipes=recipe, catalog=[], sourced=sourced, pull_calls=pulled, now=now,
+        )
+        self.assertTrue(out["ran"], out.get("reason"))
+        self.assertEqual(pulled, [])
+        runs = outbound_batches.batch_runs(engine, out["batch_id"])
+        self.assertEqual([row["recipe_key"] for row in runs], ["plan_upgrade"])
+        self.assertEqual(runs[0]["status"], "complete")
+
+        def explode(_engine):
+            raise RuntimeError("catalog unavailable")
+
+        pulled.clear()
+        engine, out = self._run_with_campaigns(
+            recipes=recipe, catalog=[], sourced=sourced, pull_calls=pulled, now=now, lister=explode,
+        )
+        self.assertTrue(out["ran"], out.get("reason"))
+        self.assertEqual(pulled, [])
+        runs = outbound_batches.batch_runs(engine, out["batch_id"])
+        self.assertEqual([(row["recipe_key"], row["status"]) for row in runs], [("plan_upgrade", "complete")])
+
+    def test_two_active_campaigns_for_one_recipe_become_one_batch_row(self):
+        from sales_support_agent.services import outbound_batches
+
+        _engine, out = self._run_with_campaigns(
+            recipes=[],
+            catalog=[],
+            sourced={"recorded": 45, "leads": [], "recipes": ["plan_upgrade"], "campaigns": [
+                {"recipe_key": "plan_upgrade", "recorded": 42, "scanned": 80, "skipped_seen": 1},
+                {"recipe_key": "plan_upgrade", "recorded": 3, "scanned": 10, "skipped_seen": 0},
+            ]},
+            pull_calls=[],
+            now=datetime(2026, 11, 11, 9, tzinfo=DENVER),
+        )
+        runs = outbound_batches.batch_runs(_engine, out["batch_id"])
+        self.assertEqual(len(runs), 1)
+        self.assertEqual(runs[0]["fresh"], 45)
+        self.assertEqual(outbound_batches.get_batch(_engine, out["batch_id"]).scanned, 90)
+
+    def test_an_active_hold_campaign_does_not_emit_a_second_skipped_row(self):
+        import outbound_instantly_push as push
+        from sales_support_agent.services import outbound_batches
+
+        hold_id = "a04a958c-6546-5ba0-a97d-586446d2b580"
+        self.assertIn(hold_id, push.HOLD_INGEST_CAMPAIGN_IDS)
+        pulled = []
+        _engine, out = self._run_with_campaigns(
+            recipes=[SimpleNamespace(key="churned_tool", label="Just dropped a growth tool", cap=lambda _s: 30)],
+            catalog=[{
+                "recipe_key": "churned_tool", "recipe_aliases": "", "status": "active",
+                "daily_cap": 10, "campaign_id": hold_id,
+                "name": "churned_tool|hold|no_trial_offer_ingest",
+                "storeleads_filters": {"f:p": "shopify"},
+            }],
+            sourced={"recorded": 2, "leads": [], "recipes": ["churned_tool"], "campaigns": [
+                {"recipe_key": "churned_tool", "recorded": 2, "scanned": 6, "skipped_seen": 1},
+            ]},
+            pull_calls=pulled,
+            now=datetime(2026, 11, 10, 9, tzinfo=DENVER),
+        )
+        self.assertEqual(pulled, [])
+        runs = outbound_batches.batch_runs(_engine, out["batch_id"])
+        self.assertEqual(len(runs), 1)
+        self.assertEqual(runs[0]["status"], "complete")
+        self.assertEqual(runs[0]["fresh"], 2)
+
+    def test_a_stuck_batch_is_reopened_and_a_finished_one_is_not(self):
+        import outbound_pipeline as op
+        from sales_support_agent.services import outbound_batches
+
+        now = datetime(2026, 11, 11, 9, tzinfo=DENVER)
+        empty = {"recorded": 0, "leads": [], "recipes": [], "campaigns": []}
+        engine = create_engine("sqlite://", future=True)
+        outbound_batches.ensure_tables(engine)
+        batch_id, _created = outbound_batches.create_batch(
+            engine, business_date="2026-11-11", trigger="scheduled",
+            recipe_count=2, correlation_id="stuck",
+        )
+        self.assertEqual(outbound_batches.get_batch(engine, batch_id).status, "running")
+        _engine, out = self._run_with_campaigns(
+            recipes=[], catalog=[], sourced=empty, pull_calls=[], now=now, engine=engine,
+        )
+        self.assertIs(_engine, engine)
+        self.assertTrue(out["ran"], out.get("reason"))
+        self.assertEqual(out["batch_id"], batch_id)
+        self.assertEqual(outbound_batches.get_batch(engine, batch_id).status, "ready")
+
+        pulled = []
+        blocked_engine, blocked = self._run_with_campaigns(
+            recipes=[SimpleNamespace(key="plan_upgrade", label="Upgraded to Shopify Plus", cap=lambda _s: 30)],
+            catalog=[],
+            sourced={"recorded": 99, "leads": [{"domain": "new.example", "recipe": "plan_upgrade"}],
+                     "recipes": ["plan_upgrade"], "campaigns": [
+                         {"recipe_key": "plan_upgrade", "recorded": 99, "scanned": 1, "skipped_seen": 0},
+                     ]},
+            pull_calls=pulled, now=now, engine=engine,
+        )
+        self.assertIs(blocked_engine, engine)
+        self.assertFalse(blocked["ran"])
+        self.assertIn("already exists", blocked["reason"])
+        self.assertEqual(blocked["batch_id"], batch_id)
+        self.assertEqual(pulled, [])
+        self.assertEqual(outbound_batches.get_batch(engine, batch_id).unique_companies, 0)
+
+        failed_engine = create_engine("sqlite://", future=True)
+
+        def boom(_leads):
+            raise RuntimeError(
+                'duplicate key value violates unique constraint "outbound_daily_batch_runs_pkey"'
+            )
+
+        saved_csv = op.leads_to_csv
+        op.leads_to_csv = boom
+        try:
+            with self.assertRaises(RuntimeError):
+                self._run_with_campaigns(
+                    recipes=[], catalog=[], sourced=empty, pull_calls=[], now=now, engine=failed_engine,
+                )
+        finally:
+            op.leads_to_csv = saved_csv
+        failed = outbound_batches.load_batches(failed_engine, page=1, per_page=5)[0][0]
+        self.assertEqual(failed.status, "failed")
+        self.assertIn("outbound_daily_batch_runs_pkey", failed.error)
+        _same, retried = self._run_with_campaigns(
+            recipes=[], catalog=[], sourced=empty, pull_calls=[], now=now, engine=failed_engine,
+        )
+        self.assertTrue(retried["ran"], retried.get("reason"))
+        self.assertEqual(retried["batch_id"], failed.id)
+        self.assertEqual(outbound_batches.get_batch(failed_engine, failed.id).status, "ready")
+
 
 class ScheduledRouteTests(unittest.TestCase):
     def setUp(self):
@@ -243,6 +489,146 @@ class ScheduledRouteTests(unittest.TestCase):
             )
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["status"], "skipped")
+
+    def _lease_engine(self):
+        from sqlalchemy.pool import StaticPool
+
+        from sales_support_agent.services.job_lease import ensure_job_lease_schema
+
+        # The route runs in another thread. A plain memory engine would give
+        # that thread an empty database and the lease table would be missing.
+        engine = create_engine(
+            "sqlite://", future=True, poolclass=StaticPool,
+            connect_args={"check_same_thread": False},
+        )
+        ensure_job_lease_schema(engine)
+        return engine
+
+    def test_rerun_outside_the_pull_hour_replays_a_failed_lease(self):
+        import os
+        from unittest.mock import patch
+
+        from sqlalchemy import text
+
+        from sales_support_agent.services.job_lease import claim_scheduled_job, finish_scheduled_job
+
+        engine = self._lease_engine()
+        lease = claim_scheduled_job(
+            engine, job_key="outbound_morning", run_key="2026-11-11", lease_minutes=240,
+        )
+        finish_scheduled_job(engine, lease, status="failed", details={"error": "UniqueViolation"})
+        calls = []
+
+        class Afternoon:
+            @classmethod
+            def now(cls, tz):
+                return datetime(2026, 11, 11, 15, 43, tzinfo=tz)
+
+        def ran(**kwargs):
+            calls.append(kwargs.get("now"))
+            return {"ran": True, "recipes": ["amz_on"], "pulled": 1, "scanned": 0, "reason": ""}
+
+        with patch.dict(os.environ, {"CRON_SECRET": "cron-test-key"}), patch.object(
+            jobs, "datetime", Afternoon
+        ), patch(
+            "sales_support_agent.models.database.get_engine", return_value=engine
+        ), patch.object(jobs, "run_morning_routine", side_effect=ran):
+            waiting = self.client.post(
+                "/api/jobs/outbound-morning/run",
+                headers={"X-Internal-Api-Key": "internal-test-key"},
+            )
+            self.assertEqual(waiting.status_code, 200)
+            self.assertEqual(waiting.json()["status"], "skipped")
+            self.assertIn("waiting", waiting.json()["message"])
+            self.assertEqual(calls, [])
+            replay = self.client.post(
+                "/api/jobs/outbound-morning/run?rerun=1",
+                headers={"X-Internal-Api-Key": "internal-test-key"},
+            )
+        self.assertEqual(replay.status_code, 200, replay.text)
+        self.assertEqual(replay.json()["status"], "ok")
+        self.assertEqual(replay.json()["run_key"], "2026-11-11")
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0].hour, 15)
+        with engine.connect() as conn:
+            status = conn.execute(text(
+                "SELECT status FROM scheduled_job_runs WHERE job_key='outbound_morning' AND run_key='2026-11-11'"
+            )).scalar_one()
+        self.assertEqual(status, "succeeded")
+
+    def test_rerun_can_reclaim_a_succeeded_lease_and_a_normal_call_cannot(self):
+        import os
+        from unittest.mock import patch
+
+        from sales_support_agent.services.job_lease import claim_scheduled_job, finish_scheduled_job
+
+        engine = self._lease_engine()
+        lease = claim_scheduled_job(
+            engine, job_key="outbound_morning", run_key="2026-11-11", lease_minutes=240,
+        )
+        finish_scheduled_job(engine, lease, status="succeeded", details={"ran": True})
+        calls = []
+
+        class Seven:
+            @classmethod
+            def now(cls, tz):
+                return datetime(2026, 11, 11, 7, tzinfo=tz)
+
+        def ran(**_kwargs):
+            calls.append("ran")
+            return {"ran": True, "pulled": 0, "scanned": 0, "reason": ""}
+
+        with patch.dict(os.environ, {"CRON_SECRET": "cron-test-key"}), patch.object(
+            jobs, "datetime", Seven
+        ), patch(
+            "sales_support_agent.models.database.get_engine", return_value=engine
+        ), patch.object(jobs, "run_morning_routine", side_effect=ran):
+            blocked = self.client.get(
+                "/api/jobs/outbound-morning/run",
+                headers={"Authorization": "Bearer cron-test-key"},
+            )
+            self.assertEqual(blocked.json()["status"], "skipped")
+            self.assertIn("already running or complete", blocked.json()["message"])
+            self.assertEqual(calls, [])
+            replay = self.client.get(
+                "/api/jobs/outbound-morning/run?rerun=1",
+                headers={"Authorization": "Bearer cron-test-key"},
+            )
+        self.assertEqual(replay.status_code, 200, replay.text)
+        self.assertEqual(replay.json()["status"], "ok")
+        self.assertEqual(calls, ["ran"])
+
+    def test_a_failed_finalize_returns_503_and_frees_the_lease(self):
+        import os
+        from unittest.mock import patch
+
+        from sqlalchemy import text
+
+        engine = self._lease_engine()
+
+        class Seven:
+            @classmethod
+            def now(cls, tz):
+                return datetime(2026, 11, 11, 7, tzinfo=tz)
+
+        def boom(**_kwargs):
+            raise RuntimeError("finalize failed")
+
+        with patch.dict(os.environ, {"CRON_SECRET": "cron-test-key"}), patch.object(
+            jobs, "datetime", Seven
+        ), patch(
+            "sales_support_agent.models.database.get_engine", return_value=engine
+        ), patch.object(jobs, "run_morning_routine", side_effect=boom):
+            response = self.client.get(
+                "/api/jobs/outbound-morning/run?rerun=1",
+                headers={"Authorization": "Bearer cron-test-key"},
+            )
+        self.assertEqual(response.status_code, 503)
+        with engine.connect() as conn:
+            status = conn.execute(text(
+                "SELECT status FROM scheduled_job_runs WHERE job_key='outbound_morning' AND run_key='2026-11-11'"
+            )).scalar_one()
+        self.assertEqual(status, "failed")
 
 
 if __name__ == "__main__":
