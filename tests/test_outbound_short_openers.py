@@ -134,7 +134,7 @@ def test_over_long_angle_is_regenerated_once_then_held():
 
 def test_rich_pair_over_the_max_is_regenerated_once_then_left_empty():
     lead = {**LEAD, "domain": "rich.com", "catalog_products": [
-        {"title": "Cherry Cola", "body": "A cherry soda."},
+        {"title": "Cherry Cola", "body": "Brewed with turmeric."},
     ]}
 
     def llm(_prompt):
@@ -266,7 +266,7 @@ def test_a_short_budget_does_not_retry_or_relabel_a_rejected_line():
     def grader(_prompt):
         return json.dumps({"pass": False, "reason": "filler"})
 
-    lead = {**LEAD, "catalog_products": [{"title": "Cherry Cola", "product_type": "Soda", "body": "A cherry soda."}]}
+    lead = {**LEAD, "catalog_products": [{"title": "Cherry Cola", "product_type": "Soda", "body": "Brewed with turmeric."}]}
     _opener, _angle, source = personalization.generate(lead, llm=llm, grader=grader, allow_retry=lambda: False)
     assert calls["n"] == 2
     assert source == "skipped:grader"
@@ -276,7 +276,7 @@ def test_a_model_timeout_stays_a_timeout():
     def llm(_prompt):
         raise personalization.ModelTimeout("slow")
 
-    lead = {**LEAD, "catalog_products": [{"title": "Cherry Cola", "product_type": "Soda", "body": "A cherry soda."}]}
+    lead = {**LEAD, "catalog_products": [{"title": "Cherry Cola", "product_type": "Soda", "body": "Brewed with turmeric."}]}
     assert personalization.generate(lead, llm=llm)[2] == "skipped:model_timeout"
 
 
@@ -301,7 +301,7 @@ def test_the_first_dry_run_call_is_capped_and_a_timeout_is_not_a_missing_product
 
     row = dry.render_row(
         {"domain": "huppy.com", "brand": "Huppy", "first_name": "Ann", "recipe": "amz_on"},
-        facts={"source": "products.json", "products": [{"title": "Cherry Cola", "product_type": "Soda", "body": "A cherry soda."}]},
+        facts={"source": "products.json", "products": [{"title": "Cherry Cola", "product_type": "Soda", "body": "Brewed with turmeric."}]},
         llm=llm,
         deadline=time.monotonic() + 35,
     )

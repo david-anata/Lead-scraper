@@ -241,9 +241,11 @@ def opener_model_name() -> str:
 
 
 def grader_model_name() -> str:
-    """Grader model. Defaults to the writer model."""
+    """Grader model. Defaults to a stronger model than the writer."""
 
-    return (os.getenv("OUTBOUND_OPENER_GRADER_MODEL") or opener_model_name()).strip()
+    from outbound_opener_line import GRADER_MODEL
+
+    return (os.getenv("OUTBOUND_OPENER_GRADER_MODEL") or GRADER_MODEL).strip()
 
 
 def lead_budget_seconds() -> float:

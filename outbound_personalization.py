@@ -263,16 +263,9 @@ def fact_sheet(lead: dict[str, Any]) -> FactSheet:
         catalog = lead.get("catalog_products") if isinstance(lead.get("catalog_products"), list) else []
     catalog = [item for item in catalog if isinstance(item, dict) and item.get("title")]
     if catalog:
-        from outbound_product_facts import _hemp_in_catalog, blocked_category_reason
+        from outbound_product_facts import catalog_blocked_reason
 
-        blocked = blocked_category_reason(
-            category,
-            *(str(item.get("title") or "") for item in catalog),
-            *(str(item.get("product_type") or "") for item in catalog),
-            *(str(item.get("body") or "") for item in catalog),
-        )
-        if not blocked and _hemp_in_catalog(catalog, brand):
-            blocked = "blocked_category"
+        blocked = catalog_blocked_reason(catalog, brand)
         if blocked:
             sheet.blocked = blocked
             return sheet

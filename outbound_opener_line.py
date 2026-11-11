@@ -20,6 +20,8 @@ logger = logging.getLogger(__name__)
 # environment does not have. The public model list's non-reasoning chat model
 # is this one, and xAI describes it as the speed variant (reasoning: no).
 FAST_MODEL = "grok-4.20-0309-non-reasoning"
+# A step up from the writer. Still inside the 8s call cap and the 35s lead budget.
+GRADER_MODEL = "grok-4.3"
 
 _EXAMPLES = """
 Love that Perfy does flavors like blood orange yuzu and turmeric.
@@ -28,8 +30,44 @@ Biggs makes a coffee bar soap with ground coffee in the bar.
 """.strip()
 
 _FLUFF = re.compile(
-    r"\b(?:best|official|premium|organic|natural|luxury|authentic|ultimate|"
-    r"top|rated|selling|quality|perfect|amazing|deluxe|exclusive|new)\b",
+    r"\b(?:best|official|premium|luxury|authentic|ultimate|"
+    r"top|rated|selling|quality|perfect|amazing|deluxe|exclusive)\b",
+    re.I,
+)
+_PACK = re.compile(
+    r"\([^)]{0,40}\b(?:cans?|packs?|oz|ml|count|ct)\b[^)]{0,20}\)"
+    r"|\b\d+(?:\.\d+)?\s*(?:fl\.?\s*)?(?:oz|ml|cans?|count|ct|pk)\b"
+    r"|\bSingle\b.{0,40}\bPackaged Bar\b",
+    re.I,
+)
+_NOUN = re.compile(
+    r"\b(?:cola|soda|soap|bar|serum|kit|mug|mugs|chess|bracelet|necklace|"
+    r"pillow|chips|mix|cookie|shampoo|tile|oil|tea|gum|candle|balm|treatment|"
+    r"set|frame|frames)\b",
+    re.I,
+)
+_FILLER_WORD = {
+    "this", "that", "these", "those", "unique", "very", "really", "just", "little",
+    "some", "your", "with", "from", "made", "real", "fun", "nice", "great", "good",
+    "experience", "special", "our", "its", "the", "and", "for", "into",
+    "craft", "comes", "come",
+}
+_GENERIC_DETAIL = {
+    "soda", "cola", "drink", "beverage", "product", "item", "flavor", "scent",
+    "soap", "bar", "set", "piece", "kit", "serum", "oil",
+}
+_INVENTED = re.compile(
+    r"\bi (?:just )?(?:bought|tried|ordered)\b"
+    r"|\badded\b.{0,40}\bto my cart\b"
+    r"|\b(?:bought|ordered|tried)\b.{0,40}\bon amazon\b"
+    r"|\bon amazon\b.{0,30}\b(?:bought|ordered|cart)\b",
+    re.I,
+)
+_HYPE = re.compile(r"\b(?:perfect|amazing|obsessed)\b", re.I)
+_NONFOOD = re.compile(r"\b(?:soap|candle|balm|wax|lotion)\b", re.I)
+_VENDOR_CATEGORY = re.compile(
+    r"\b(?:tinted|polarized|eyeglasses|sunglasses|frames|optical|readers)\b"
+    r"|^(?:women|men|kids|unisex|youth)\b",
     re.I,
 )
 _FLAVORS = (
@@ -99,6 +137,20 @@ class LineResult:
     calls: list[str] = field(default_factory=list)
 
 
+def shopper_name(title: str) -> str:
+    """A name a person would say, without the pack size or the SKU tail."""
+
+    raw = re.sub(r"[®™]", "", str(title or ""))
+    raw = raw.split(". ")[0]
+    raw = _PACK.sub(" ", raw)
+    halves = re.split(r"\s+[-–—]\s+", raw)
+    if len(halves) >= 2:
+        named = [half for half in halves if _NOUN.search(half)]
+        raw = named[-1] if named else halves[-1]
+    raw = re.sub(r"\bby\b.+$", "", raw, flags=re.I)
+    return " ".join(raw.split())
+
+
 def _clean(text: str) -> str:
     raw = _FLUFF.sub(" ", str(text or ""))
     return " ".join(raw.split())
@@ -122,22 +174,62 @@ def _keyword_blob(text: str) -> bool:
     return len(words) >= 14 and raw.count(",") >= 3
 
 
+def _product_words(product: str) -> set[str]:
+    return set(re.findall(r"[a-z0-9]+", product.lower()))
+
+
+def _novel_words(text: str, product_words: set[str]) -> list[str]:
+    found = []
+    for word in re.findall(r"[a-z0-9']+", (text or "").lower()):
+        word = word.strip("'")
+        if len(word) < 3 or word in _FILLER_WORD or word in _GENERIC_DETAIL or word in product_words:
+            continue
+        found.append(word)
+    return found
+
+
+def _kind_for(text: str, product_words: set[str]) -> str:
+    novel = " ".join(_novel_words(text, product_words))
+    if _find_phrase(novel, _FLAVORS):
+        return "flavor"
+    if _find_phrase(novel, _MATERIALS):
+        return "material"
+    return "detail"
+
+
+def _detail_from_text(text: str, product_words: set[str]) -> str:
+    """A short clause that adds a word the product name does not already use."""
+
+    if not text or _keyword_blob(text):
+        return ""
+    clauses = [part.strip(" -") for part in re.split(r"[.!?;]", text) if part.strip()]
+    ranked = []
+    for clause in clauses:
+        novel = _novel_words(clause, product_words)
+        if novel:
+            ranked.append((len(novel), clause))
+    if not ranked:
+        return ""
+    ranked.sort(key=lambda item: item[0], reverse=True)
+    chosen = [" ".join(clause.split()[:8]) for _score, clause in ranked[:2]]
+    detail = ", ".join(chosen)
+    if not _novel_words(detail, product_words):
+        return ""
+    return detail
+
+
 def extract_detail(title: str, body: str = "", options: Optional[list[dict[str, Any]]] = None) -> tuple[str, str, str]:
     """Return (product, detail, kind) or three empty strings.
 
-    The product is a cleaned title. The detail is one flavor, scent,
-    ingredient, material, color, or format from that product's own text.
+    The detail comes from the body or options. A word already in the
+    shopper name is not a detail on its own.
     """
 
-    product = _clean(title)
-    product = re.split(r"\s+[–—|-]\s+", product, maxsplit=1)[0].strip()
-    if len(product.split()) > 8:
-        product = " ".join(product.split()[:8])
-    if len(product.split()) < 1 or not re.search(r"[A-Za-z]", product):
+    product = shopper_name(title)
+    if not product or not re.search(r"[A-Za-z]", product):
         return "", "", ""
-    sources = [product]
-    if body and not _keyword_blob(body):
-        sources.append(_clean(body))
+    product_words = _product_words(product)
+    chunks = [body or ""]
     for option in options or []:
         if not isinstance(option, dict):
             continue
@@ -145,24 +237,12 @@ def extract_detail(title: str, body: str = "", options: Optional[list[dict[str, 
         values = [str(value) for value in (option.get("values") or []) if str(value).strip()]
         if re.search(r"colou?r|size", name, re.I) and len(values) > 3:
             continue
-        if re.search(r"flavor|scent|material|scent", name, re.I) and values:
-            sources.append(values[0])
-    blob = " ".join(sources)
-    for kind, phrases in (("flavor", _FLAVORS), ("material", _MATERIALS), ("format", _FORMATS)):
-        found = _find_phrase(blob, phrases)
-        if found and found.lower() != product.lower():
-            return product, found, kind
-        if found:
-            return product, found, kind
-    made = re.search(
-        r"\b(?:made with|made from|with|scent of|notes of)\s+([a-z][a-z' -]{2,40})",
-        blob, re.I,
-    )
-    if made:
-        detail = " ".join(made.group(1).split()[:4])
-        kind = "scent" if re.search(r"scent|notes", made.group(0), re.I) else "ingredient"
-        return product, detail, kind
-    return "", "", ""
+        chunks.extend(values[:3])
+    details = [item for item in (_detail_from_text(chunk, product_words) for chunk in chunks) if item]
+    if not details:
+        return product, "", ""
+    detail = details[0]
+    return product, detail, _kind_for(detail, product_words)
 
 
 def _tokens(text: str) -> set[str]:
@@ -190,10 +270,32 @@ def _brand_match(vendor: str, brand: str) -> bool:
     return False
 
 
-def reseller_catalog(products: list[dict[str, Any]], brand: str) -> bool:
-    """True when most product vendors are a different company than the store."""
+def _selling_vendor(vendor: str) -> str:
+    """A brand name. A category stuffed into the vendor field is ignored."""
 
-    vendors = [str(item.get("vendor") or "").strip() for item in products if str(item.get("vendor") or "").strip()]
+    text = str(vendor or "").strip()
+    if not text or _VENDOR_CATEGORY.search(text):
+        return ""
+    return text
+
+
+def custom_catalog(products: list[dict[str, Any]], brand: str) -> bool:
+    """True for a shop that sells the customer's own logo or personalized goods."""
+
+    if re.search(r"\b(?:personaliz\w*|custom)\b", brand or "", re.I):
+        return True
+    blob = " ".join(
+        f"{item.get('title') or ''} {item.get('vendor') or ''} {item.get('product_type') or ''}"
+        for item in products if isinstance(item, dict)
+    )
+    return bool(re.search(r"\b(?:personaliz\w*|monogram|logomats?|your logo)\b", blob, re.I))
+
+
+def reseller_catalog(products: list[dict[str, Any]], brand: str) -> bool:
+    """True when most real vendor names are a different company than the store."""
+
+    vendors = [_selling_vendor(str(item.get("vendor") or "")) for item in products]
+    vendors = [vendor for vendor in vendors if vendor]
     if len(vendors) < 2 or not _tokens(brand):
         return False
     matches = sum(1 for vendor in vendors if _brand_match(vendor, brand))
@@ -210,8 +312,10 @@ def pick_line_facts(
     """The first real product that has one concrete detail, or a skip."""
 
     catalog = [item for item in products if isinstance(item, dict) and item.get("title")]
-    vendor_rows = [{"vendor": vendor} for vendor in (vendors or [])]
-    if reseller_catalog(vendor_rows or catalog, brand):
+    vendor_rows = [{"vendor": vendor} for vendor in (vendors or [])] or catalog
+    if custom_catalog(catalog, brand) or custom_catalog(vendor_rows, brand):
+        return LineFacts(brand=brand, recipe=recipe, skip="custom")
+    if reseller_catalog(vendor_rows, brand):
         return LineFacts(brand=brand, recipe=recipe, skip="reseller")
     for item in catalog:
         product, detail, kind = extract_detail(
@@ -228,14 +332,26 @@ def pick_line_facts(
     return LineFacts(brand=brand, recipe=recipe, skip="no_product_detail")
 
 
-def _content_tokens(phrase: str) -> list[str]:
-    tokens = []
-    for token in re.findall(r"[A-Za-z0-9]+", phrase or ""):
-        if token.lower() in _STOP:
+def main_nouns(product: str, brand: str = "") -> list[str]:
+    """The product words a line has to include. Not the pack size or the brand."""
+
+    brand_words = set(re.findall(r"[a-z0-9]+", (brand or "").lower()))
+    words = [word for word in re.findall(r"[a-z0-9]+", (product or "").lower()) if word not in _STOP]
+    nouns: list[str] = []
+    for index, word in enumerate(words):
+        if word in brand_words or word.isdigit():
             continue
-        if len(token) >= 3 or token.isupper():
-            tokens.append(token.lower())
-    return tokens
+        if _NOUN.fullmatch(word) or word in {"serum", "kit", "cola", "soap", "bar", "chips", "pillow", "bracelet"}:
+            if index and words[index - 1] not in brand_words and words[index - 1] not in _STOP:
+                nouns.append(words[index - 1])
+            nouns.append(word)
+    if not nouns:
+        nouns = [word for word in words if len(word) >= 5 and word not in brand_words][:3]
+    seen: list[str] = []
+    for noun in nouns:
+        if noun not in seen:
+            seen.append(noun)
+    return seen[:4]
 
 
 def hard_reason(line: str, facts: LineFacts) -> str:
@@ -244,10 +360,21 @@ def hard_reason(line: str, facts: LineFacts) -> str:
     raw = " ".join((line or "").split())
     if not raw:
         return "empty"
-    needed = _content_tokens(facts.product)
+    needed = main_nouns(facts.product, facts.brand)
     low = raw.lower()
     if needed and not all(token in low for token in needed):
         return "grounding"
+    if _INVENTED.search(raw):
+        return "invented action"
+    if _HYPE.search(raw):
+        return "hype"
+    food = re.search(r"\b(?:cola|soda|chips|cookie|tea|gum|candy|chocolate)\b", facts.product, re.I)
+    if (
+        re.search(r"\bflavou?r\b", raw, re.I)
+        and not food
+        and (_NONFOOD.search(f"{facts.product} {raw}") or re.search(r"\bbar\b", facts.product, re.I))
+    ):
+        return "flavor"
     from outbound_openers import BACKEND_LANGUAGE
 
     if BACKEND_LANGUAGE.search(raw) or re.search(
@@ -302,12 +429,18 @@ def writer_prompt(facts: LineFacts, *, rejection: str = "") -> str:
 def grader_prompt(facts: LineFacts, line: str) -> str:
     return (
         "Grade this cold-email line. Pass only when it is specific, sounds human, "
-        "stays true to the facts, and is not filler or a critique.\n"
+        "and uses a detail that is not already the product name.\n"
         f"Facts: {facts.as_text()}\n"
         f"Line: {line}\n"
-        "Examples of the bar:\n"
-        f"{_EXAMPLES}\n"
-        "Filler such as 'worth a closer look' or 'a fun option to try' fails.\n"
+        "Pass:\n"
+        "Love that Perfy does flavors like blood orange yuzu and turmeric.\n"
+        "The olive wood mugs from ArtisRaw look sturdy enough for daily use.\n"
+        "Fail:\n"
+        "The coffee bar soap is worth a closer look.\n"
+        "I like the cherry flavor in Perfy Cherry Cola (12 Cans).\n"
+        "I just bought these chips on Amazon.\n"
+        "Fail invented actions, hype, a detail that only restates the name, "
+        "a raw catalog title, and empty filler.\n"
         'Return JSON {"pass": false, "reason": "short reason"}.'
     )
 
@@ -391,5 +524,11 @@ def compose_line(
     result.line = ""
     result.grader_pass = False
     result.grader_reason = why
-    result.source = "skipped:model_timeout" if why == "model_timeout" else f"skipped:{why if why in {'grounding', 'reseller', 'health claim', 'amazon presence', 'backend', 'url'} else 'grader'}"
+    kept = {
+        "grounding", "reseller", "custom", "health claim", "amazon presence",
+        "backend", "url", "invented action", "hype", "flavor",
+    }
+    result.source = "skipped:model_timeout" if why == "model_timeout" else (
+        f"skipped:{why}" if why in kept else "skipped:grader"
+    )
     return result

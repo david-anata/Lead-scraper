@@ -172,7 +172,29 @@ def _hemp_is_a_color_name(text: str) -> bool:
     return len(others) >= 2
 
 
-def blocked_category_reason(*parts: Any) -> str:
+_CATALOG_HEALTH = re.compile(
+    r"\b(?:improve|improves|improved|support|supports)\w*.{0,40}\b(?:health|immunity)\b"
+    r"|\btotal body health\b",
+    re.I,
+)
+_DISEASE_WORD = re.compile(r"\b(?:cancer|diabetes|alzheimer)\b", re.I)
+_PRINT_DESIGN = re.compile(
+    r"\b(?:dtf|htv|decal|decals|heat transfer|sublimation|gang sheet|iron[- ]on)\b",
+    re.I,
+)
+
+
+def _is_print_design(item: dict[str, Any]) -> bool:
+    """A transfer or print whose title is the artwork, not a drug claim."""
+
+    title = str(item.get("title") or "")
+    kind = str(item.get("product_type") or "")
+    if kind.strip().lower() in {"transfer", "transfers", "dtf", "htv", "decal", "decals"}:
+        return True
+    return bool(_PRINT_DESIGN.search(f"{title} {kind}"))
+
+
+def blocked_category_reason(*parts: Any, drug: bool = True) -> str:
     """A hard skip for drug, hemp, and research-peptide catalogs.
 
     A copper peptide serum is cosmetic and is not blocked. A research peptide,
@@ -181,7 +203,7 @@ def blocked_category_reason(*parts: Any) -> str:
     """
 
     text = " ".join(str(part or "") for part in parts)
-    if _BLOCKED_CATEGORY.search(text) or _DRUG_CLAIM.search(text):
+    if _BLOCKED_CATEGORY.search(text) or (drug and _DRUG_CLAIM.search(text)):
         return "blocked_category"
     if _MOOD_MUSHROOM.search(text) and _MOOD_CLAIM.search(text):
         return "blocked_category"
@@ -1024,6 +1046,34 @@ def _products_by_handle(
     return ordered, found
 
 
+def catalog_blocked_reason(
+    products: list[dict[str, Any]],
+    brand: str = "",
+    homepage: str = "",
+) -> str:
+    """Block a catalog from product records, not from joined design names.
+
+    A DTF or HTV artwork title such as ``Tackle Breast Cancer`` is not a claim.
+    A supplement body that says it improves health, or names a disease, is.
+    """
+
+    if blocked_category_reason(brand, homepage, drug=False) or hemp_is_product(brand):
+        return "blocked_category"
+    for item in products:
+        if not isinstance(item, dict) or _is_print_design(item):
+            continue
+        title = str(item.get("title") or "")
+        kind = str(item.get("product_type") or "")
+        body = str(item.get("body") or "")
+        tags = " ".join(str(tag) for tag in (item.get("tags") or []))
+        blob = " ".join((title, kind, body, tags))
+        if blocked_category_reason(blob) or hemp_is_product(title, kind, body):
+            return "blocked_category"
+        if _CATALOG_HEALTH.search(blob) or _DISEASE_WORD.search(body):
+            return "blocked_category"
+    return ""
+
+
 def _hemp_in_catalog(products: list[dict[str, Any]], brand: str = "") -> bool:
     """Hemp as a product or ingredient in the brand or a product record.
 
@@ -1126,36 +1176,22 @@ def collect_product_facts(
             get=get, sleep=sleep, guard=guard, accept="text/html", timeout=5, attempts=1,
         )
         handles = handles_from_html(page if isinstance(page, str) else "")
-        if not handles:
-            handles = handles_from_html(html)
-            if handles:
-                pick = "featured"
-        else:
-            pick = "best-selling"
         ordered, everything = _products_by_handle(
             domain, handles, get=get, sleep=sleep, guard=guard,
         )
         block_rows = everything or ordered
-        if ordered:
+        if handles and ordered:
             json_rows = ordered
+            pick = "best-selling"
         else:
-            pick = "catalog"
-            json_rows = everything
-    titles = [str(item.get("title") or "") for item in json_rows[:30]]
+            json_rows = []
+            pick = ""
+    titles = [str(item.get("title") or "") for item in (json_rows or block_rows)[:30]]
     signals = signals_from_storefront(html, titles)
-    if json_rows:
-        catalog = _catalog_rows(json_rows)
-        checked = block_rows or json_rows
-        blocked = blocked_category_reason(
-            brand,
-            _text(html, 20000),
-            *(str(item.get("title") or "") for item in checked),
-            *(str(item.get("product_type") or "") for item in checked),
-            *(str(item.get("body") or "") for item in checked),
-            *(" ".join(str(tag) for tag in (item.get("tags") or [])) for item in checked),
-        )
-        if not blocked and _hemp_in_catalog(checked, brand):
-            blocked = "blocked_category"
+    checked = block_rows or json_rows
+    if checked:
+        catalog = _catalog_rows(json_rows) if pick == "best-selling" else []
+        blocked = catalog_blocked_reason(checked, brand, html)
         return {
             "source": "products.json" if catalog and not blocked else "",
             "pick": pick if catalog and not blocked else "",
