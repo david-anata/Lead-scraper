@@ -288,21 +288,28 @@ def render_row(
     hold = ""
     opener = ""
     angle = ""
-    if not company:
-        hold = "no recognizable brand"
+    if facts.get("blocked"):
+        hold = "skipped:blocked_category"
+    elif not company:
+        hold = "skipped:no recognizable brand"
     elif copy_country_reason(gate):
         from outbound_pipeline import country_eligibility
 
         _allowed, detail = country_eligibility(gate)
-        hold = "non_us" + (f" ({detail})" if detail else "")
+        hold = "skipped:non_us" + (f" ({detail})" if detail else "")
     elif domain_brand_mismatch(domain, str(row.get("brand") or ""), str(facts.get("vendor") or "")):
-        hold = "domain_brand_mismatch"
+        hold = "skipped:domain_brand_mismatch"
+    elif not facts.get("products"):
+        hold = "skipped:no_product"
     else:
         opener, angle, source = personalization.generate(lead, llm=llm, batch=batch)
-        if not opener:
+        if source.startswith("skipped"):
+            hold = source
+            opener, angle = "", ""
+        elif not opener:
             from sales_support_agent.services.llm_client import llm_available
 
-            hold = "no model" if llm is None and not llm_available() else "no shopper-visible fact"
+            hold = "skipped:no_model" if llm is None and not llm_available() else "skipped:no_product"
             opener, angle = "", ""
     return {
         "segment": str(row.get("segment") or _segment(row)),
@@ -315,7 +322,7 @@ def render_row(
         "hold": hold,
         "source": str(facts.get("source") or lead.get("store_profile", {}).get("product_fact_source") or ""),
         "pick": str(facts.get("pick") or ""),
-        "product": str(facts.get("phrase") or ""),
+        "product": str(lead.get("product_phrase") or facts.get("phrase") or ""),
     }
 
 
@@ -335,10 +342,10 @@ def render_report(rows: list[dict[str, str]]) -> str:
             lines.append(f"Opener: {row['opener']}")
             lines.append(f"Angle: {row['angle'] or '(none)'}")
         else:
-            lines.append(f"Opener: (held) {row['hold']}")
+            lines.append(f"Skipped: {row['hold']}")
         lines.append("")
     held = [row for row in rows if row.get("hold")]
-    lines.append(f"Held {len(held)} of {len(rows)}.")
+    lines.append(f"Skipped {len(held)} of {len(rows)}.")
     counts: dict[str, int] = {}
     for row in held:
         counts[row["hold"]] = counts.get(row["hold"], 0) + 1

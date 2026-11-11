@@ -87,6 +87,81 @@ def _non_english(text: str) -> bool:
     return any(char.isalpha() and ord(char) > 127 for char in text)
 
 
+_BLOCKED_CATEGORY = re.compile(
+    r"\b(?:cbd|cbda|hemp|kratom|microdos\w*|psilocybin|psychedelic|"
+    r"bpc-?157|semaglutide|tirzepatide|research use only|nicotine|vapes?|vaping)\b",
+    re.I,
+)
+_MOOD_MUSHROOM = re.compile(r"functional mushroom", re.I)
+_MOOD_CLAIM = re.compile(r"\b(?:mood|calm|focus|anxiety|psychoactive)\b", re.I)
+_DRUG_CLAIM = re.compile(
+    r"\b(?:cure|cures|treat|treats|treating|prevent|prevents)\b.{0,40}\b(?:disease|cancer|diabetes|alzheimer)\b"
+    r"|\b(?:disease|cancer|diabetes|alzheimer)\b.{0,40}\b(?:cure|cures|treat|treats|treating|prevent|prevents)\b",
+    re.I,
+)
+_PHRASE_JUNK = re.compile(
+    r"\b(?:options|hidden|google shopping|membership|sku)\b",
+    re.I,
+)
+_DANGLING_END = re.compile(r"\b(?:with|and|of|for|the|a|an)\s*$", re.I)
+_SKU_TOKEN = re.compile(r"\b(?=[A-Za-z0-9]*\d)[A-Za-z0-9]{2,}\b|\b[A-Z]{2,5}\b")
+_GROUND_STOP = {
+    "the", "and", "with", "for", "from", "that", "this", "your", "their", "its",
+    "into", "over", "than", "instead", "many", "brand", "brands", "people",
+    "looks", "like", "one", "come", "back", "not", "something", "see", "saw",
+    "love", "does", "flavors", "another", "plain", "caught", "eye",
+}
+
+
+def blocked_category_reason(*parts: Any) -> str:
+    """A hard skip for drug, hemp, and research-peptide catalogs.
+
+    A copper peptide serum is cosmetic and is not blocked. A research peptide,
+    CBD or hemp product, kratom, nicotine, or a disease claim is.
+    """
+
+    text = " ".join(str(part or "") for part in parts)
+    if _BLOCKED_CATEGORY.search(text) or _DRUG_CLAIM.search(text):
+        return "blocked_category"
+    if _MOOD_MUSHROOM.search(text) and _MOOD_CLAIM.search(text):
+        return "blocked_category"
+    return ""
+
+
+def phrase_is_natural(phrase: str) -> bool:
+    """True when the model named a product in plain English."""
+
+    raw = " ".join(str(phrase or "").split())
+    if not raw or _non_english(raw) or _FOREIGN_WORD.search(raw):
+        return False
+    if _PHRASE_JUNK.search(raw) or _DANGLING_END.search(raw) or _SKU_TOKEN.search(raw):
+        return False
+    words = re.findall(r"[A-Za-z][A-Za-z'-]*", raw)
+    short_ok = {
+        "the", "and", "for", "gel", "mix", "oil", "tea", "bar", "hat", "bag",
+        "can", "set", "kit", "wax", "rye", "soy", "oat", "jam",
+    }
+    if any(2 <= len(word) <= 3 and word.lower() not in short_ok for word in words):
+        return False
+    return 2 <= len(words) <= 8
+
+
+def phrase_is_grounded(phrase: str, products: list[dict[str, Any]]) -> bool:
+    """True when the phrase's content words appear in the catalog we passed."""
+
+    blob = " ".join(
+        " ".join(str(item.get(key) or "") for key in ("title", "product_type", "body", "tags"))
+        for item in products if isinstance(item, dict)
+    ).lower()
+    nouns = [
+        word.lower() for word in re.findall(r"[A-Za-z][A-Za-z'-]*", phrase or "")
+        if len(word) >= 3 and word.lower() not in _GROUND_STOP
+    ]
+    if not nouns or not blob:
+        return False
+    return all(noun in blob for noun in nouns)
+
+
 def _off_core(title: str, product_type: str, core: str) -> bool:
     """True for gift cards, add-ons, licensed merch, and products off the core type."""
 
@@ -724,6 +799,30 @@ def phrase_from_description(text: str, brand: str = "") -> str:
     return natural_product_phrase(raw, brand)
 
 
+def _catalog_rows(products: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Up to five real products, titles left as the shop wrote them."""
+
+    core = _core_type(products)
+    kept: list[dict[str, Any]] = []
+    for item in products:
+        title = str(item.get("title") or "").strip()
+        kind = str(item.get("product_type") or "").strip()
+        if not title or _off_core(title, kind, core):
+            continue
+        if _non_english(title) or _FOREIGN_WORD.search(title):
+            continue
+        tags = item.get("tags") if isinstance(item.get("tags"), list) else []
+        kept.append({
+            "title": title,
+            "product_type": kind,
+            "body": str(item.get("body") or "")[:240],
+            "tags": [str(tag) for tag in tags[:8]],
+        })
+        if len(kept) >= 5:
+            break
+    return kept
+
+
 def collect_product_facts(
     domain: str,
     *,
@@ -744,41 +843,67 @@ def collect_product_facts(
 
     empty: dict[str, Any] = {
         "source": "", "products": [], "phrase": "", "description": "", "vendor": "",
-        "pick": "", "currency_code": "", "language_code": "",
+        "pick": "", "currency_code": "", "language_code": "", "blocked": "",
     }
-    # Two catalog reads, one attempt each. A full homepage and extra collection
-    # pages were what pushed a lead past a couple of minutes.
+    # Homepage once for currency and language, then one best-selling fetch,
+    # then one products page only if best-selling did not yield a catalog.
+    # Each request is 5 seconds and is not retried.
     html = homepage_html
-    ranked: list[tuple[str, str]] = [
-        ("best-selling", "/collections/all/products.json?limit=30&sort_by=best-selling"),
-    ]
-    featured = featured_collection(html) if html else ""
-    if featured:
-        ranked.append(("featured", f"/collections/{featured}/products.json?limit=30"))
-    ranked.append(("product_type", "/products.json?limit=50"))
-    chosen: dict[str, Any] = {}
-    titles: list[str] = []
-    for method, path in ranked:
-        if chosen:
-            break
-        payload = fetch_shopify_path(
-            domain, path, get=get, sleep=sleep, guard=guard,
-            timeout=5, attempts=1,
+    if not html:
+        page = fetch_shopify_path(
+            domain, "/", get=get, sleep=sleep, guard=guard,
+            accept="text/html", timeout=5, attempts=1,
         )
-        products = parse_shopify_products(payload) if isinstance(payload, dict) else []
-        if products and not titles:
-            titles = [str(item.get("title") or "") for item in products[:12]]
-        if not products:
-            continue
-        if method == "product_type":
-            products = pick_representative(products, limit=30)
-        picked = choose_products(products, brand=brand, method=method)
-        if picked:
-            chosen = picked
+        html = page if isinstance(page, str) else ""
+    fetched: list[tuple[str, list[dict[str, Any]]]] = []
+    for method, path in (
+        ("best-selling", "/collections/all/products.json?limit=30&sort_by=best-selling"),
+    ):
+        payload = fetch_shopify_path(
+            domain, path, get=get, sleep=sleep, guard=guard, timeout=5, attempts=1,
+        )
+        rows = parse_shopify_products(payload) if isinstance(payload, dict) else []
+        if rows:
+            fetched.append((method, rows))
+    if not fetched:
+        featured = featured_collection(html)
+        if featured:
+            payload = fetch_shopify_path(
+                domain, f"/collections/{featured}/products.json?limit=30",
+                get=get, sleep=sleep, guard=guard, timeout=5, attempts=1,
+            )
+            rows = parse_shopify_products(payload) if isinstance(payload, dict) else []
+            if rows:
+                fetched.append(("featured", rows))
+    if not fetched:
+        payload = fetch_shopify_path(
+            domain, "/products.json?limit=50",
+            get=get, sleep=sleep, guard=guard, timeout=5, attempts=1,
+        )
+        rows = parse_shopify_products(payload) if isinstance(payload, dict) else []
+        if rows:
+            fetched.append(("product_type", rows))
+    titles = [str(item.get("title") or "") for _method, rows in fetched for item in rows[:8]]
     signals = signals_from_storefront(html, titles)
-    if chosen:
-        chosen.update(signals)
-        return chosen
+    if fetched:
+        method, rows = fetched[0]
+        catalog = _catalog_rows(rows)
+        blocked = blocked_category_reason(
+            *(str(item.get("title") or "") for item in rows),
+            *(str(item.get("product_type") or "") for item in rows),
+            *(str(item.get("body") or "") for item in rows),
+            *(" ".join(str(tag) for tag in (item.get("tags") or [])) for item in rows),
+        )
+        return {
+            "source": "products.json" if catalog and not blocked else "",
+            "pick": method if catalog and not blocked else "",
+            "products": [] if blocked else catalog,
+            "phrase": "",
+            "description": "",
+            "vendor": next((str(item.get("vendor") or "") for item in rows if item.get("vendor")), ""),
+            "blocked": blocked,
+            **signals,
+        }
     if allow_storeleads:
         record = fetch_storeleads_record(domain, api_key=api_key, get=get)
         if record:
@@ -838,9 +963,12 @@ def apply_product_facts(profile: dict[str, Any], facts: dict[str, Any]) -> dict[
     """Copy the chosen products onto the store profile the writer already reads."""
 
     merged = dict(profile or {})
-    for key in ("currency_code", "language_code"):
+    for key in ("currency_code", "language_code", "blocked"):
         if facts.get(key):
             merged[key] = facts[key]
+    products = [item for item in (facts.get("products") or []) if isinstance(item, dict)]
+    if products:
+        merged["catalog_products"] = products
     if facts.get("pick"):
         merged["product_pick"] = facts["pick"]
     source = str((facts or {}).get("source") or "")

@@ -54,29 +54,29 @@ _REPR = re.compile(r"\[|\]|\{|\}|\b(?:none|nan|null)\b|\{\{", re.I)
 _SUBSCRIBE_APPS = ("recharge", "skio", "smartrr", "subscription")
 
 _EXAMPLES = """
-Opener: Cherry cola is the Perfy can a new shopper would reach for first.
-Angle: Listing photos of that can give the brand a clear Amazon presence.
+Opener: Your adai dosa mix caught my eye. It's not something I see from many brands.
+Angle: Listing photos of that mix would give the brand a clear first product.
 
-Opener: The bar soap is how a new shopper meets Biggs and Featherbelle.
-Angle: An ad works when that soap is the only thing on screen.
+Opener: Saw the cookie mixes at Autumn Sons. The chocolate chunk looks like the one people come back for.
+Angle: An ad can stay on the chocolate chunk and let the photo do the rest.
 
-Opener: Inova's clarifying shampoo tells a new shopper what the brand is for.
-Angle: Images of the shampoo do more than a paragraph of claims.
+Opener: Love that Perfy does flavors like blood orange yuzu instead of another plain cola.
+Angle: The listing can lead with that flavor so the image has one job.
 
-Opener: What Autumn Sons sells is the cookie mix, and it belongs at the front.
-Angle: The mix is a simple product to put in an ad.
+Opener: The clarifying shampoo is the Inova product I would tell a friend about.
+Angle: Images of that shampoo are enough for an ad.
 
-Opener: A new shopper can tell RSL makes shave cream before reading a word.
-Angle: Ads for RSL should stay on that cream.
+Opener: RSL's shave cream is a specific thing, not a general grooming line.
+Angle: Ads for the cream can stay on one product.
 
-Opener: The dosa mix is the Adukale product a shopper would cook this week.
-Angle: A listing that opens on the mix is easier to trust.
+Opener: The copper peptide serum is a real skincare product, not a vague promise.
+Angle: A listing that shows the serum is easier to understand.
 
-Opener: New shoppers meet the brand through the copper peptide serum.
-Angle: The serum is the image an ad can hold on.
+Opener: On Amazon, the pillow is the I Wanna Sleep product a shopper can see first.
+Angle: The listing should open on that pillow.
 
-Opener: On Amazon, the pillow is the product to show before anything else.
-Angle: The listing should make that pillow the obvious choice.
+Opener: Biggs and Featherbelle's bar soap has a scent a shopper can name.
+Angle: One photo of the soap is a complete ad.
 """.strip()
 
 
@@ -88,6 +88,7 @@ class FactSheet:
     category: str = ""
     recipe: str = ""
     product: str = ""
+    catalog: list[dict[str, Any]] = field(default_factory=list)
     facts: list[str] = field(default_factory=list)
     blocked: str = ""
     high_rating: bool = False
@@ -259,6 +260,25 @@ def fact_sheet(lead: dict[str, Any]) -> FactSheet:
         return sheet
 
     facts: list[str] = []
+    catalog = store.get("catalog_products")
+    if not isinstance(catalog, list):
+        catalog = lead.get("catalog_products") if isinstance(lead.get("catalog_products"), list) else []
+    catalog = [item for item in catalog if isinstance(item, dict) and item.get("title")]
+    if catalog:
+        from outbound_product_facts import blocked_category_reason
+
+        blocked = blocked_category_reason(
+            category,
+            *(str(item.get("title") or "") for item in catalog),
+            *(str(item.get("product_type") or "") for item in catalog),
+            *(str(item.get("body") or "") for item in catalog),
+        )
+        if blocked:
+            sheet.blocked = blocked
+            return sheet
+        sheet.catalog = catalog[:5]
+        sheet.facts = [str(item.get("title") or "") for item in sheet.catalog]
+        return sheet
     phrase = as_text(store.get("product_phrase") or lead.get("product_phrase"))
     if phrase:
         # The picker already chose the short noun phrase. A catalog title,
@@ -397,8 +417,11 @@ def style_violation(
         return "too long"
     if len(words) < MIN_WORDS:
         return "too short"
-    if sentence_count(raw) > 1:
-        return "more than one sentence"
+    sentence_limit = 2 if role == "opener" else 1
+    if sentence_count(raw) > sentence_limit:
+        return "more than two sentences" if role == "opener" else "more than one sentence"
+    if re.search(r"\bpick up right away\b|\bshoppers will\b|\bwill love\b|\bguaranteed to\b", raw, re.I):
+        return "guesses what shoppers will do"
     if re.search(r"\bfirst image\b|\bshould be the first\b", raw, re.I):
         return "tells the brand what their first image should be"
     from outbound_openers import copy_tic
@@ -423,7 +446,16 @@ def _prompt(sheet: FactSheet) -> str:
     from outbound_openers import plain_category
 
     category = plain_category(sheet.category) or "unknown"
-    if sheet.product:
+    if sheet.catalog:
+        lines = []
+        for index, item in enumerate(sheet.catalog, start=1):
+            lines.append(
+                f"{index}. Title: {item.get('title') or ''}. "
+                f"Type: {item.get('product_type') or ''}. "
+                f"Description: {item.get('body') or ''}"
+            )
+        facts = "\n".join(lines)
+    elif sheet.product:
         facts = f"- {sheet.product}"
     else:
         facts = "\n".join(f"- {fact}" for fact in sheet.facts)
@@ -447,22 +479,30 @@ def _prompt(sheet: FactSheet) -> str:
         f"Brand: {sheet.brand}\n"
         f"Category: {category}\n"
         + (
-            f"Product, said the way a shopper would: {sheet.product}\n"
-            "This is the only product you may name. Do not mention any other product, "
-            "a catalog title, or a newest or recent item.\n"
-            if sheet.product else
-            "Shopper-visible facts:\n"
+            "Products a shopper can see:\n"
             f"{facts}\n"
+            "Pick ONE of these. Return JSON with keys product_phrase, opener, and angle. "
+            "product_phrase is the natural way a shopper would name that product, using words "
+            "from the title, type, or description. Do not shorten it into catalog junk.\n"
+            if sheet.catalog else
+            (
+                f"Product, said the way a shopper would: {sheet.product}\n"
+                if sheet.product else
+                "Shopper-visible facts:\n"
+                f"{facts}\n"
+            )
         )
         + "\n"
-        "Write JSON with keys opener and angle. Use only the brand and the product above. "
-        "Do not invent a product, a store, or a number. "
+        "Write JSON with keys product_phrase, opener, and angle. "
+        "Use only the brand and one product from the list above. "
+        "Do not invent a product, a store, a result, or a number. "
+        "Do not guess what shoppers will do. Do not critique the store. "
         "Do not say recent, newest, I noticed, small set, easy to picture, "
         "one clear start, or simple place to start. "
         "Sound like a person who looked at their store. Plain and warm. "
         "Vary the sentence shape. Do not start both lines with the brand name. "
         f"{amazon_rule}"
-        "Opener: one sentence of about 20 words, never more than 25, and at least 6 words. "
+        "Opener: one or two short sentences, about 25 words max, and at least 6 words. "
         "Angle: one sentence of about 15 words, never more than 20, and at least 6 words. "
         "The angle ties the brand to Amazon listings, images, or ads. "
         "It must not restate the opener, must not start with Anata helps, "
@@ -476,7 +516,7 @@ def _prompt(sheet: FactSheet) -> str:
         "Do not invent products, stores, or follower counts.\n\n"
         f"Examples of the voice:\n{_EXAMPLES}\n\n"
         "The examples show voice only. Do not copy their length. "
-        "The opener must be one sentence of about 20 words and never more than 25. "
+        "The opener must be one sentence of about 20 words, never more than 25, or two short sentences. "
         "The angle must be one sentence of about 15 words and never more than 20."
     )
 
@@ -499,6 +539,32 @@ def _parse_pair(raw: str) -> tuple[str, str]:
     if not isinstance(payload, dict):
         return "", ""
     return str(payload.get("opener") or "").strip(), str(payload.get("angle") or "").strip()
+
+
+def _parse_copy(raw: str) -> tuple[str, str, str]:
+    """``(product_phrase, opener, angle)`` from the model JSON."""
+
+    text = (raw or "").strip()
+    if text.startswith("```"):
+        text = re.sub(r"^```(?:json)?", "", text).strip()
+        text = re.sub(r"```$", "", text).strip()
+    try:
+        payload = json.loads(text)
+    except json.JSONDecodeError:
+        match = re.search(r"\{.*\}", text, re.S)
+        if not match:
+            return "", "", ""
+        try:
+            payload = json.loads(match.group(0))
+        except json.JSONDecodeError:
+            return "", "", ""
+    if not isinstance(payload, dict):
+        return "", "", ""
+    return (
+        str(payload.get("product_phrase") or "").strip(),
+        str(payload.get("opener") or "").strip(),
+        str(payload.get("angle") or "").strip(),
+    )
 
 
 def _call_model(prompt: str, api_key: Optional[str]) -> str:
@@ -537,6 +603,8 @@ def generate(
             "[outbound-personalization] %s flagged: %s",
             sheet.brand, sheet.blocked,
         )
+        if sheet.blocked == "blocked_category":
+            return "", "", "skipped:blocked_category"
         return "", "", "none"
     prompt = _prompt(sheet)
     model = llm
@@ -549,13 +617,21 @@ def generate(
         why = ""
         for _attempt in range(2):
             try:
-                opener, angle = _parse_pair(model(prompt))
+                if sheet.catalog:
+                    phrase, opener, angle = _parse_copy(model(prompt))
+                else:
+                    opener, angle = _parse_pair(model(prompt))
+                    phrase = ""
             except Exception:  # noqa: BLE001
                 logger.exception("[outbound-personalization] model call failed")
                 break
             from outbound_openers import variety_clash
+            from outbound_product_facts import phrase_is_grounded, phrase_is_natural
 
-            why = style_violation(
+            why = ""
+            if sheet.catalog and (not phrase_is_natural(phrase) or not phrase_is_grounded(phrase, sheet.catalog)):
+                why = "product phrase is not grounded in the catalog"
+            why = why or style_violation(
                 opener, role="opener", recipe=sheet.recipe,
                 high_rating=sheet.high_rating, trial_offer=sheet.trial_offer,
             ) or style_violation(
@@ -563,18 +639,25 @@ def generate(
                 high_rating=sheet.high_rating, trial_offer=sheet.trial_offer,
             ) or variety_clash(opener, batch or [])
             if opener and angle and not why and opener.strip() != angle.strip():
+                if phrase:
+                    lead["product_phrase"] = phrase
                 if batch is not None:
                     batch.append(opener)
                 return opener, angle, "ai"
             prompt = (
                 prompt
                 + f"\n\nRejected ({why or 'empty'}). Write a different pair that follows every rule. "
-                "Opener: one sentence, about 20 words, never more than 25. "
-                "Angle: one sentence, about 15 words, never more than 20."
+                "Opener: one or two short sentences, about 25 words, never more than 25. "
+                "Angle: one sentence, about 15 words, never more than 20. "
+                "Name only a product whose words appear in the catalog."
             )
         logger.info("[outbound-personalization] model line rejected (%s)", why or "empty")
+        if sheet.catalog:
+            return "", "", "skipped:no_product"
     from outbound_openers import idea_lines, template_fallback_enabled
 
+    if sheet.catalog:
+        return "", "", "skipped:no_product"
     if template_fallback_enabled(lead):
         opener, angle = idea_lines(lead)
         if opener:

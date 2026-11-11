@@ -60,7 +60,12 @@ def test_validator_enforces_the_hard_max_and_keeps_the_old_bans():
     assert personalization.style_violation(
         _words(21, "Shoppers", "compare", "oral", "care"), role="angle",
     ) == "too long"
-    assert personalization.style_violation("Huppy sells oral care. Shoppers like it.") == "more than one sentence"
+    assert personalization.style_violation(
+        "Huppy sells oral care. Shoppers like it. So does everyone else."
+    ) == "more than two sentences"
+    assert personalization.style_violation(
+        "Your adai dosa mix caught my eye. It's not something I see from many brands."
+    ) == ""
 
 
 def test_over_long_opener_is_regenerated_once_then_held():

@@ -2,12 +2,15 @@
 
 from outbound_product_facts import (
     apply_product_facts,
+    blocked_category_reason,
     collect_product_facts,
     description_is_product,
     fetch_shopify_catalog,
     fetch_storeleads_record,
     domain_brand_mismatch,
     natural_product_phrase,
+    phrase_is_grounded,
+    phrase_is_natural,
     parse_shopify_products,
     short_product_phrase,
     pick_representative,
@@ -20,6 +23,7 @@ class _Response:
     def __init__(self, status, payload):
         self.status_code = status
         self._payload = payload
+        self.text = payload if isinstance(payload, str) else ""
 
     def json(self):
         if isinstance(self._payload, Exception):
@@ -105,7 +109,7 @@ def test_best_selling_beats_the_first_catalog_item():
         get=getter, sleep=lambda _s: None, guard=lambda url: url, homepage_html="<html lang='en'></html>",
     )
     assert facts["pick"] == "best-selling"
-    assert facts["phrase"] == "the cherry cola"
+    assert facts["products"][0]["title"] == "Cherry Cola (12 Cans)"
     assert any("best-selling" in url for url in calls)
 
 
@@ -155,10 +159,64 @@ def test_catalog_fetch_is_two_calls_with_no_retry():
         "slow.example", brand="Slow", allow_storeleads=False,
         get=get, sleep=lambda _s: None, guard=lambda url: url,
     )
-    assert len(calls) == 2
-    assert "sort_by=best-selling" in calls[0][0]
-    assert calls[0][0].endswith("/products.json?limit=50") or "products.json?limit=50" in calls[1][0]
+    assert len(calls) == 3
+    assert calls[0][0].rstrip("/").endswith("slow.example")
+    assert "sort_by=best-selling" in calls[1][0]
+    assert "products.json?limit=50" in calls[2][0]
     assert all(timeout <= 5 for _url, timeout in calls)
+
+
+def test_blocked_categories_skip_and_a_copper_peptide_serum_passes():
+    assert blocked_category_reason("CBD oil", "Hemp") == "blocked_category"
+    assert blocked_category_reason("Microdose gummies") == "blocked_category"
+    assert blocked_category_reason("Psilocybin chocolate") == "blocked_category"
+    assert blocked_category_reason("Functional mushroom capsules for mood") == "blocked_category"
+    assert blocked_category_reason("BPC-157 research use only") == "blocked_category"
+    assert blocked_category_reason("Semaglutide") == "blocked_category"
+    assert blocked_category_reason("Tirzepatide") == "blocked_category"
+    assert blocked_category_reason("Kratom powder") == "blocked_category"
+    assert blocked_category_reason("Nicotine vape") == "blocked_category"
+    assert blocked_category_reason("This formula can cure cancer") == "blocked_category"
+    assert blocked_category_reason("Copper peptide serum", "Skincare") == ""
+    assert phrase_is_natural("copper peptide serum")
+    assert not phrase_is_natural("the spectrum nutrition with")
+    assert not phrase_is_natural("the options hidden product")
+    assert not phrase_is_natural("the google shopping")
+    assert not phrase_is_natural("the head gel iws")
+    products = [{"title": "Adai Dosa Mix", "product_type": "Mixes", "body": "A South Indian dosa mix"}]
+    assert phrase_is_grounded("adai dosa mix", products)
+    assert not phrase_is_grounded("blood orange yuzu", products)
+    import outbound_personalization as personalization
+    assert "Your adai dosa mix caught my eye." in personalization._EXAMPLES
+    assert "Saw the cookie mixes at Autumn Sons." in personalization._EXAMPLES
+    assert "Love that Perfy does flavors like blood orange yuzu" in personalization._EXAMPLES
+
+
+def test_homepage_currency_is_read_before_copy():
+    import outbound_pipeline as pipeline
+
+    html = '<html lang="es">Shopify.currency = {"active":"EUR","rate":"1.0"}</html>'
+
+    def get(url, timeout=5, headers=None, allow_redirects=True):
+        if url.rstrip("/").endswith("pedrogarcia.com"):
+            return _Response(200, html)
+        if "best-selling" in url:
+            return _Response(200, {"products": [_product("Bera Nappa", "Shoes")]})
+        return _Response(404, {})
+
+    facts = collect_product_facts(
+        "pedrogarcia.com", brand="Pedro García", allow_storeleads=False,
+        get=get, sleep=lambda _s: None, guard=lambda url: url,
+    )
+    assert facts["currency_code"] == "EUR"
+    assert facts["language_code"] == "es"
+    assert pipeline.copy_country_reason({
+        "name": "pedrogarcia.com",
+        "merchant_name": "Pedro García",
+        "country_code": "US",
+        "currency_code": facts["currency_code"],
+        "language_code": facts["language_code"],
+    }) == "non_us"
 
 
 def test_natural_phrase_is_lowercase_with_an_article():
@@ -253,12 +311,12 @@ def test_storeleads_key_stays_in_the_header():
         "artisraw.com",
         allow_storeleads=True,
         api_key="secret-key-should-not-leak",
-        get=lambda url, **kwargs: _Response(404, {}) if "products.json" in url else get(url, **kwargs),
+        get=lambda url, **kwargs: get(url, kwargs.get("headers"), kwargs.get("timeout")) if "storeleads" in url else _Response(404, {}),
         sleep=lambda _s: None,
         guard=lambda url: url,
     )
     assert facts["source"] == "storeleads"
-    assert facts["phrase"] == "the olive wood serving board"
+    assert any("Olive Wood" in str(item.get("title") or "") for item in facts["products"])
     assert "secret-key" not in str(facts)
 
 
