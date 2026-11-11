@@ -110,7 +110,9 @@ def test_tracking_source_is_in_the_summary_and_the_lead_fields() -> None:
     fields = session.lead_fields()
     assert fields["source"] == "inc-fulfillment"
     summary = call_summary_text(session)
-    assert "Source: inc-fulfillment" in summary
+    assert "inc-fulfillment" not in summary
+    assert "Source:" not in summary
+    assert len(summary) <= 160
     assert _session().lead_fields().get("source", "") == ""
 
 

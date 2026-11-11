@@ -216,6 +216,6 @@ def test_sms_autoreply_is_off_by_default_and_still_forwards() -> None:
     assert response.status_code == 200
     assert "<Message>" not in response.text
     assert sent and sent[0]["To"] == "+14155550198"
-    assert "How much is the Arena?" in sent[0]["Body"]
-    assert "Reply sent: no" in sent[0]["Body"]
+    assert sent[0]["Body"] == "Text from 415-555-0100: How much is the Arena?"
+    assert "Reply sent" not in sent[0]["Body"]
     assert app.state.store.http.calls

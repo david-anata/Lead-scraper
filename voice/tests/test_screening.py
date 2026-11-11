@@ -120,9 +120,11 @@ def test_a_missed_david_transfer_is_logged_as_a_callback() -> None:
     assert session.action == "needs_callback"
     assert missed_transfer_line(session) == DAVID_CALLBACK_LINE
     summary = call_summary_text(session)
-    assert summary.startswith("Callback needed. David missed this call.")
-    assert "Callback: yes" in summary
-    assert "Alex" in summary
+    assert summary.startswith("Missed call: Alex (801-319-3675).")
+    assert summary.endswith("Call back.")
+    assert "needs_callback" not in summary
+    assert summary.count("Alex") == 1
+    assert len(summary) <= 160
     assert should_text_about_call(session.category) is True
     assert DAVID_HOLD_LINE == "Sure, let me see if I can grab him, one moment."
 
