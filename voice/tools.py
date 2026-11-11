@@ -256,6 +256,8 @@ def _transfer(
     session.reason = str(args.get("reason") or session.reason)
     session.action = "transfer" if decision.allow_transfer else "message"
     session.transfer_requested = decision.allow_transfer
+    if decision.asked_for_david and decision.allow_transfer:
+        session.asked_for_david = True
     if decision.category == "spam":
         session.callback_needed = False
     return decision.as_tool_result()
@@ -281,6 +283,10 @@ def _finish(args: dict[str, Any], session: CallSession) -> dict[str, Any]:
     session.summary = str(args.get("summary") or session.summary)
     if "callback_needed" in args and session.category != "spam":
         session.callback_needed = bool(args.get("callback_needed"))
+    if session.asked_for_david and not session.transfer_accepted and session.category != "spam":
+        # The caller was already told David has a message. Do not let goodbye clear that.
+        session.callback_needed = True
+        session.action = "needs_callback"
     if session.category == "spam":
         session.callback_needed = False
         session.action = "logged_only"

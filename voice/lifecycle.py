@@ -59,7 +59,7 @@ def fail_transfer(session: CallSession, outcome: str) -> bool:
         session.transfer_requested = False
         session.transfer_outcome = cleaned[:200]
         session.callback_needed = True
-        session.action = "transfer_no_answer_message"
+        session.action = "needs_callback" if session.asked_for_david else "transfer_no_answer_message"
         return True
 
 
@@ -78,12 +78,15 @@ async def finalize_call(
         session.finalizing = True
     try:
         if session.resume == "message" and session.action in {"", "transfer", "message"}:
-            session.action = "transfer_no_answer_message"
+            session.action = "needs_callback" if session.asked_for_david else "transfer_no_answer_message"
             session.callback_needed = True
         if session.transfer_outcome == "voicemail":
             session.callback_needed = True
             if session.action in {"", "transfer", "transferred"}:
-                session.action = "transfer_no_answer_message"
+                session.action = "needs_callback" if session.asked_for_david else "transfer_no_answer_message"
+        if session.asked_for_david and not session.transfer_accepted and session.category != "spam":
+            session.callback_needed = True
+            session.action = "needs_callback"
         if session.category == "spam":
             session.callback_needed = False
             session.action = "logged_only"

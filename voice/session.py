@@ -47,6 +47,7 @@ class CallSession:
     holding_for_transfer: bool = False
     agent_call_sid: str = ""
     voicemail_detected: bool = False
+    asked_for_david: bool = False
     security_preference: str = ""
     turns: list[str] = field(default_factory=list)
     caller_partials: dict[str, str] = field(default_factory=dict)

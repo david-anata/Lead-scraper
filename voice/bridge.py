@@ -20,6 +20,7 @@ from urllib.parse import quote
 from voice.audio import mulaw_frames
 from voice.calendar_availability import CalendarAvailability
 from voice.lifecycle import begin_transfer, finalize_call
+from voice.screening import DAVID_CALLBACK_LINE
 from voice.lines import parse_known_numbers
 from voice.prompts import build_instructions
 from voice.session import CallSession
@@ -187,10 +188,7 @@ class CallBridge:
             return
         self._greeted = True
         if self.session.resume == "message":
-            text = (
-                "I'm sorry, I couldn't reach anyone just now. "
-                "I'll take a message and make sure it gets to the team."
-            )
+            text = missed_transfer_line(self.session)
         else:
             text = self.session.line.spoken_greeting()
         await self._xai_send(
@@ -333,7 +331,9 @@ class CallBridge:
         self.session.transfer_state = "messaging"
         self.session.transfer_requested = False
         self.session.callback_needed = True
-        self.session.action = "transfer_no_answer_message"
+        self.session.action = (
+            "needs_callback" if self.session.asked_for_david else "transfer_no_answer_message"
+        )
         self.session.transfer_outcome = "no_answer"
         await asyncio.to_thread(
             self.twilio.update_call,
@@ -395,6 +395,17 @@ def _connect_xai(settings: Settings) -> Any:
         open_timeout=10,
         ping_interval=20,
         **{header_kw: headers},
+    )
+
+
+def missed_transfer_line(session: CallSession) -> str:
+    """Spoken when the on-call leg did not accept. David gets the callback text."""
+
+    if session.asked_for_david:
+        return DAVID_CALLBACK_LINE
+    return (
+        "I'm sorry, I couldn't reach anyone just now. "
+        "I'll take a message and make sure it gets to the team."
     )
 
 

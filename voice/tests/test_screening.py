@@ -85,9 +85,46 @@ def test_asking_for_david_or_a_contract_is_forwarded_and_a_pitch_is_not() -> Non
         )
     )
     assert david.allow_transfer is True
+    assert david.asked_for_david is True
+    assert "Sure, let me see if I can grab him, one moment." in david.speak
     assert contract.allow_transfer is True
+    assert contract.asked_for_david is False
     assert seo.allow_transfer is False
     assert seo.category == "spam"
+    assert seo.asked_for_david is False
+
+
+def test_a_missed_david_transfer_is_logged_as_a_callback() -> None:
+    from voice.bridge import missed_transfer_line
+    from voice.lines import LineContext
+    from voice.notify import call_summary_text, should_text_about_call
+    from voice.screening import DAVID_CALLBACK_LINE, DAVID_HOLD_LINE
+    from voice.session import CallSession
+    from voice.tools import _finish
+
+    session = CallSession(
+        call_sid="CA123",
+        caller_number="+18013193675",
+        dialed_number="+13853363562",
+        line=LineContext(id="anata", label="Anata"),
+        asked_for_david=True,
+        action="transfer",
+        reason="Asked for David about a Saturday party",
+        caller_name="Alex",
+    )
+    _finish(
+        {"category": "lead", "summary": "Wanted David", "callback_needed": False, "caller_name": "Alex"},
+        session,
+    )
+    assert session.callback_needed is True
+    assert session.action == "needs_callback"
+    assert missed_transfer_line(session) == DAVID_CALLBACK_LINE
+    summary = call_summary_text(session)
+    assert summary.startswith("Callback needed. David missed this call.")
+    assert "Callback: yes" in summary
+    assert "Alex" in summary
+    assert should_text_about_call(session.category) is True
+    assert DAVID_HOLD_LINE == "Sure, let me see if I can grab him, one moment."
 
 
 def test_active_tenant_urgent_issue_is_forwarded() -> None:

@@ -146,12 +146,20 @@ class ScreenInput:
     caller_asked_for_person: bool = False
 
 
+DAVID_HOLD_LINE = "Sure, let me see if I can grab him, one moment."
+DAVID_CALLBACK_LINE = (
+    "Sorry, David couldn't pick up just now. I've left him a message. "
+    "Can I grab your name and best number so he can call you back?"
+)
+
+
 @dataclass(frozen=True)
 class ScreenDecision:
     allow_transfer: bool
     category: str
     action: str
     speak: str
+    asked_for_david: bool = False
 
     def as_tool_result(self) -> dict[str, object]:
         return {
@@ -261,7 +269,10 @@ def decide(screen: ScreenInput) -> ScreenDecision:
     # Solicitors are already refused above, so "talk to David about SEO" stays blocked.
     if screen.caller_asked_for_person or looks_like_person_request(text) or looks_like_handoff(text):
         logged = category if category in {"lead", "tenant", "other", "urgent"} else "other"
-        return _approved(logged)
+        asked_david = "david" in text and (
+            screen.caller_asked_for_person or looks_like_person_request(text)
+        )
+        return _approved(logged, asked_for_david=asked_david)
 
     number = _normalize_known(screen.caller_number)
     known = screen.is_known_customer or (bool(number) and number in screen.known_numbers)
@@ -301,19 +312,29 @@ def apply_forward_availability(decision: ScreenDecision, forward_configured: boo
                 "Do not transfer. No on-call number is configured. Take a message and "
                 "tell them the team will follow up. Then call finish_call."
             ),
+            asked_for_david=decision.asked_for_david,
         )
     return decision
 
 
-def _approved(category: str) -> ScreenDecision:
+def _approved(category: str, *, asked_for_david: bool = False) -> ScreenDecision:
+    if asked_for_david:
+        speak = (
+            "Transfer approved. Say exactly: "
+            + DAVID_HOLD_LINE
+            + " Then stop talking. Do not say he is unavailable, busy, or out."
+        )
+    else:
+        speak = (
+            "Transfer approved. Say one short sentence that you are connecting them "
+            "now, then stop talking. Do not ask another question."
+        )
     return ScreenDecision(
         allow_transfer=True,
         category=category,
         action="transfer",
-        speak=(
-            "Transfer approved. Say one short sentence that you are connecting them "
-            "now, then stop talking. Do not ask another question."
-        ),
+        speak=speak,
+        asked_for_david=asked_for_david,
     )
 
 

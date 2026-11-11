@@ -165,7 +165,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             if raw in {"", "completed", "answered"}:
                 raw = "no_answer"
             session.transfer_outcome = "voicemail" if session.voicemail_detected else raw
-            session.action = "transfer_no_answer_message"
+            session.action = "needs_callback" if session.asked_for_david else "transfer_no_answer_message"
             session.callback_needed = True
             await _drop_agent(request, session)
             await _finish(request, session)

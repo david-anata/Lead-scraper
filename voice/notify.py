@@ -184,10 +184,13 @@ def call_summary_text(session: CallSession) -> str:
         if value
     ]
     callback = "yes" if session.callback_needed else "no"
-    lines = [
+    lines = []
+    if session.action == "needs_callback":
+        lines.append("Callback needed. David missed this call.")
+    lines.extend([
         f"Anata {session.line.label} call",
         f"From: {session.caller_number or 'unknown'}",
-    ]
+    ])
     if lead.get("source"):
         lines.append(f"Source: {one_line(lead['source'], 80)}")
     lines.extend([
