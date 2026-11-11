@@ -109,20 +109,21 @@ _INQUIRY_LOOKUP = (
 _SMS_UPDATE = (
     "UPDATE public.call_log SET sms_notified = %s, updated_at = %s WHERE call_sid = %s"
 )
-# Column privileges, not the presence of VOICE_DATABASE_URL. A role can have
-# the variable set and still be denied the insert that failed in production.
+# Column privileges, not the presence of VOICE_DATABASE_URL. voice_logger is
+# granted specific columns, and has_table_privilege stays false for UPDATE and
+# for the inquiry INSERT even when those column grants are in place.
 _PRIVILEGE_PROBE = """
 SELECT
-  has_table_privilege(current_user, 'public.call_log', 'INSERT')
-  AND has_table_privilege(current_user, 'public.call_log', 'UPDATE')
-  AND has_column_privilege(current_user, 'public.call_log', 'call_sid', 'INSERT')
+  has_column_privilege(current_user, 'public.call_log', 'call_sid', 'INSERT')
   AND has_column_privilege(current_user, 'public.call_log', 'call_sid', 'SELECT')
   AND has_column_privilege(current_user, 'public.call_log', 'transcript', 'INSERT')
+  AND has_column_privilege(current_user, 'public.call_log', 'transcript', 'UPDATE')
   AND has_column_privilege(current_user, 'public.call_log', 'transcript_summary', 'INSERT')
+  AND has_column_privilege(current_user, 'public.call_log', 'transcript_summary', 'UPDATE')
   AND has_column_privilege(current_user, 'public.call_log', 'sms_notified', 'UPDATE')
-  AND has_table_privilege(current_user, 'public.building_inquiries', 'INSERT')
   AND has_column_privilege(current_user, 'public.building_inquiries', 'source', 'INSERT')
   AND has_column_privilege(current_user, 'public.building_inquiries', 'idempotency_key', 'INSERT')
+  AND has_column_privilege(current_user, 'public.building_inquiries', 'payload_json', 'INSERT')
   AND has_column_privilege(current_user, 'public.building_inquiries', 'id', 'SELECT')
   AND has_column_privilege(current_user, 'public.building_inquiries', 'idempotency_key', 'SELECT')
 """

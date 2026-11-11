@@ -148,10 +148,12 @@ table. A lead insert uses the columns the admin already reads: `kind`
 `call_log` only.
 
 `/health` reports `logging_ready` from a live privilege probe when
-`VOICE_DATABASE_URL` is set. The probe uses `has_table_privilege` and
-`has_column_privilege` for the call log and inquiry writes, including
-`SELECT` on `call_log.call_sid`. A present variable with a denied role
-reports `logging_ready: false` and `logging_probe: denied` or `unreachable`.
+`VOICE_DATABASE_URL` is set. The probe uses `has_column_privilege` for the
+call log and inquiry columns this role writes, including `SELECT` on
+`call_log.call_sid`. Table-level `has_table_privilege` is not used: column
+grants leave `UPDATE` on `call_log` and `INSERT` on `building_inquiries`
+false at table level. A present variable with a denied role reports
+`logging_ready: false` and `logging_probe: denied` or `unreachable`.
 A successful probe is cached for 30 seconds. When only the service-role REST
 pair is set, there is no privilege probe and `logging_probe` is `not_probed`.
 
