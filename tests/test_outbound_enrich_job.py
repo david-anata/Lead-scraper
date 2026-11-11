@@ -50,8 +50,7 @@ def finder(domain, *, api_key, max_contacts=2, **kw):
 def write(lead, contact=None):
     brand = lead["brand"]
     return (
-        f"{brand}'s best seller could be sold as a small set, so a new shopper "
-        "has one clear way to try it.",
+        f"{brand} makes the cherry cola, and a new shopper can tell what they sell.",
         "ai",
     )
 

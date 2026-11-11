@@ -221,11 +221,51 @@ def lead_for(
     }
 
 
+def compatible_llm():
+    """An OpenAI-compatible chat client, or None when the env is unset.
+
+    Production copy still uses the AI Gateway. This is only for a local dry run.
+    ``OUTBOUND_OPENER_BASE_URL`` is the API root, for example ``https://api.x.ai/v1``.
+    ``OUTBOUND_OPENER_MODEL`` is the model name. ``OUTBOUND_OPENER_API_KEY`` is
+    sent as a bearer token and is never printed.
+    """
+
+    base = (os.getenv("OUTBOUND_OPENER_BASE_URL") or "").strip().rstrip("/")
+    model = (os.getenv("OUTBOUND_OPENER_MODEL") or "").strip()
+    if not base or not model:
+        return None
+    key = (os.getenv("OUTBOUND_OPENER_API_KEY") or "").strip()
+
+    def call(prompt: str) -> str:
+        import requests
+
+        headers = {"Content-Type": "application/json"}
+        if key:
+            headers["Authorization"] = f"Bearer {key}"
+        response = requests.post(
+            f"{base}/chat/completions",
+            headers=headers,
+            json={
+                "model": model,
+                "temperature": 0.7,
+                "messages": [{"role": "user", "content": prompt}],
+            },
+            timeout=8,
+        )
+        response.raise_for_status()
+        payload = response.json()
+        return str(payload["choices"][0]["message"]["content"] or "")
+
+    return call
+
+
 def render_row(
     row: dict[str, Any],
     *,
     facts: Optional[dict[str, Any]] = None,
     display_brand: str = "",
+    llm: Optional[Any] = None,
+    batch: Optional[list[str]] = None,
 ) -> dict[str, str]:
     """One opener pair. Nothing is saved."""
 
@@ -258,11 +298,11 @@ def render_row(
     elif domain_brand_mismatch(domain, str(row.get("brand") or ""), str(facts.get("vendor") or "")):
         hold = "domain_brand_mismatch"
     else:
-        opener, angle, source = personalization.generate(lead)
+        opener, angle, source = personalization.generate(lead, llm=llm, batch=batch)
         if not opener:
             from sales_support_agent.services.llm_client import llm_available
 
-            hold = "no model" if not llm_available() else (source and "no shopper-visible fact") or "no shopper-visible fact"
+            hold = "no model" if llm is None and not llm_available() else "no shopper-visible fact"
             opener, angle = "", ""
     return {
         "segment": str(row.get("segment") or _segment(row)),
@@ -323,6 +363,8 @@ def main(argv: Optional[list[str]] = None) -> int:
             return 1
         rows = load_recent(url, per_segment=args.per_segment)
     rendered = []
+    llm = compatible_llm()
+    batch: list[str] = []
     for row in rows:
         if len(rendered) >= args.per_segment * len(SEGMENTS):
             break
@@ -340,12 +382,9 @@ def main(argv: Optional[list[str]] = None) -> int:
                 domain,
                 brand=str(row.get("brand") or ""),
                 allow_storeleads=False,
-                fetch_homepage=fetch_homepage_html,
             )
             display = str(facts.get("vendor") or "")
-            if not display and facts.get("source") != "products.json":
-                display = fetch_public_fact(domain).get("site_name") or ""
-        rendered.append(render_row(row, facts=facts, display_brand=display))
+        rendered.append(render_row(row, facts=facts, display_brand=display, llm=llm, batch=batch))
     sys.stdout.write(render_report(rendered))
     return 0
 

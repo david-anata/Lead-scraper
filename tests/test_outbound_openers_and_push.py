@@ -13,16 +13,13 @@ LEAD = {"brand": "Huppy", "domain": "huppy.com", "niche": "oral care",
         "categories": ["Health & Beauty"]}
 CONTACT = {"email": "Ann@Huppy.com", "first_name": "Ann", "last_name": "Lee", "title": "Founder"}
 IDEA = (
-    "Huppy's oral care line is easy to picture, and a small set would give "
-    "a new shopper one clear way to try it."
+    "Huppy's oral care line gives a new shopper one product to remember."
 )
 TABS = (
-    "Huppy's toothpaste tabs are easy to picture, and a small set would give "
-    "a new shopper one clear way to try them."
+    "Huppy's toothpaste tabs give a new shopper one product to remember."
 )
 ON_AMAZON = (
-    "Huppy's toothpaste tabs are already on Amazon, and a small set would "
-    "make the first choice obvious."
+    "Huppy's toothpaste tabs are already on Amazon, and the listing should lead with them."
 )
 
 
@@ -296,7 +293,7 @@ def test_category_filler_urls_and_backend_are_not_sendable():
         "Kalm recently upgraded their store plan.", {"brand": "Kalm"},
     )
     assert op.opener_hold_reason(
-        "Kalm's Green Chile Salsa could be sold as a small set a new shopper can try.",
+        "Kalm's green chile salsa gives a new shopper one product to remember.",
         {"brand": "Kalm", "categories": "Food & Drink"},
     ) == ""
     assert op.angle_is_filler("Anata helps food & drink brands grow.")

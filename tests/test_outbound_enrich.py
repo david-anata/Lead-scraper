@@ -35,8 +35,7 @@ def finder(emails_by_domain, credits=3):
 def opener(l, c=None):
     brand = l["brand"]
     return (
-        f"{brand}'s best seller could be sold as a small set, so a new shopper "
-        "has one clear way to try it.",
+        f"{brand} makes the cherry cola, and a new shopper can tell what they sell.",
         "ai",
     )
 
@@ -53,7 +52,7 @@ def test_enriches_stores_and_reports(engine):
     assert r.contacts_found == 2 and r.credits_used == 4
     assert r.find_rate == 0.5 and r.credits_per_contact == 2.0
     assert r.dry_run and r.pushed == 0
-    assert len(r.samples) == 2 and "small set" in r.samples[0]["opener"]
+    assert len(r.samples) == 2 and "cherry cola" in r.samples[0]["opener"]
 
 
 def test_second_run_never_re_spends_on_same_domain(engine):
@@ -122,7 +121,7 @@ def test_pushed_lead_carries_brand_and_opener(engine):
                       campaign_id="new-campaign", dry_run=False, push=ok)
     assert seen["lead"]["company_name"] == "Acme"
     assert "Acme" in seen["lead"]["personalization"]
-    assert "small set" in seen["lead"]["personalization"]
+    assert "cherry cola" in seen["lead"]["personalization"]
     assert seen["lead"]["email"] == "x@a.com"
 
 
@@ -334,7 +333,7 @@ def test_held_filler_with_a_plan_signal_routes_to_plan_upgrade(engine, monkeypat
     oe._record_person(
         engine,
         oc.Contact(domain="plus.example", first_name="A", last_name="B", email="a@plus.example", title="Founder"),
-        "Plus's glass bottle could be sold as a small set a new shopper can try.", "test",
+        "Plus's glass bottle gives a new shopper one product to remember.", "test",
         {"brand": "Plus", "categories": "", "recipe": "icp_baseline", "tier": "B"},
     )
     seen = {}

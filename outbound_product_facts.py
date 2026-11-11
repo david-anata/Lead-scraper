@@ -50,6 +50,12 @@ _LICENSED = re.compile(
     r"\b(?:disney|marvel|nfl|nba|mlb|blippi|pok[eé]mon|star\s+wars|hello\s+kitty|barbie)\b",
     re.I,
 )
+_NOT_FOR_SALE = re.compile(
+    r"\b(?:adopt|adoption|donat(?:e|ion|ions)|fundrais(?:e|er|ing)|"
+    r"personaliz(?:e|ed)|custom(?:er|ized)?|monogram|your name|"
+    r"first baptist|baptist church|\bchurch\b)\b",
+    re.I,
+)
 _COLOR_WORD = re.compile(
     r"\b(?:black|white|gold|silver|ecru|mocha|grey|gray|navy|kaki|khaki|"
     r"anthracite|rose|chestnut|powder|gloss|stretch|earth|bold|brushed)\b",
@@ -70,6 +76,13 @@ _FOREIGN_WORD = re.compile(
     r"\b(?:para|piernas|comprimidos|naturales|pour|avec|fuer|della|degli)\b",
     re.I,
 )
+def _shouted(title: str) -> bool:
+    letters = [char for char in title if char.isalpha()]
+    if len(letters) < 8:
+        return False
+    return sum(char.isupper() for char in letters) / len(letters) >= 0.8
+
+
 def _non_english(text: str) -> bool:
     return any(char.isalpha() and ord(char) > 127 for char in text)
 
@@ -80,7 +93,11 @@ def _off_core(title: str, product_type: str, core: str) -> bool:
     blob = f"{title} {product_type}"
     if _SKIP_ITEM.search(blob) or _LICENSED.search(blob) or _RESTRICTED_PRODUCT.search(blob):
         return True
+    if _NOT_FOR_SALE.search(blob) or _shouted(title):
+        return True
     if _FOREIGN_WORD.search(title) or _non_english(title):
+        return True
+    if re.search(r"\b(?:it|me|my)\b", title, re.I) and len(title.split()) >= 4:
         return True
     if _ADDON.search(blob) and not _ADDON.search(core or ""):
         return True
@@ -447,10 +464,11 @@ def fetch_shopify_path(
     timeout: float = FETCH_TIMEOUT,
     min_interval: float = MIN_INTERVAL,
     accept: str = "application/json",
+    attempts: int = 2,
 ) -> Any:
     """One public Shopify URL, or None on 404, 401, or a non-Shopify response.
 
-    One retry covers a timeout, a 429, or a 5xx.
+    ``attempts`` is 2 for a single retry. The dry-run catalog uses 1.
     """
 
     import requests
@@ -468,7 +486,7 @@ def fetch_shopify_path(
         return None
     getter = get or requests.get
     last_error = ""
-    for attempt in range(2):
+    for attempt in range(max(1, attempts)):
         _pace(sleep, min_interval)
         try:
             response = getter(
@@ -487,7 +505,7 @@ def fetch_shopify_path(
         if status in {401, 404}:
             return None
         if status in {429} or status >= 500:
-            if attempt == 0:
+            if attempt + 1 < attempts:
                 continue
             return None
         if status != 200:
@@ -728,33 +746,25 @@ def collect_product_facts(
         "source": "", "products": [], "phrase": "", "description": "", "vendor": "",
         "pick": "", "currency_code": "", "language_code": "",
     }
+    # Two catalog reads, one attempt each. A full homepage and extra collection
+    # pages were what pushed a lead past a couple of minutes.
     html = homepage_html
-    if not html and fetch_homepage is not None:
-        try:
-            _pace(sleep, MIN_INTERVAL)
-            html = fetch_homepage(domain) or ""
-        except Exception:  # noqa: BLE001
-            html = ""
-    if not html:
-        page = fetch_shopify_path(
-            domain, "/", get=get, sleep=sleep, guard=guard, accept="text/html",
-        )
-        html = page if isinstance(page, str) else ""
     ranked: list[tuple[str, str]] = [
-        ("best-selling", "/collections/all/products.json?limit=50&sort_by=best-selling"),
-        ("best-selling", "/collections/best-sellers/products.json?limit=50"),
-        ("best-selling", "/collections/bestsellers/products.json?limit=50"),
+        ("best-selling", "/collections/all/products.json?limit=30&sort_by=best-selling"),
     ]
-    featured = featured_collection(html)
+    featured = featured_collection(html) if html else ""
     if featured:
-        ranked.append(("featured", f"/collections/{featured}/products.json?limit=50"))
-    ranked.append(("product_type", f"/products.json?limit={SHOPIFY_LIMIT}"))
+        ranked.append(("featured", f"/collections/{featured}/products.json?limit=30"))
+    ranked.append(("product_type", "/products.json?limit=50"))
     chosen: dict[str, Any] = {}
     titles: list[str] = []
     for method, path in ranked:
         if chosen:
             break
-        payload = fetch_shopify_path(domain, path, get=get, sleep=sleep, guard=guard)
+        payload = fetch_shopify_path(
+            domain, path, get=get, sleep=sleep, guard=guard,
+            timeout=5, attempts=1,
+        )
         products = parse_shopify_products(payload) if isinstance(payload, dict) else []
         if products and not titles:
             titles = [str(item.get("title") or "") for item in products[:12]]

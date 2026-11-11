@@ -54,17 +54,29 @@ _REPR = re.compile(r"\[|\]|\{|\}|\b(?:none|nan|null)\b|\{\{", re.I)
 _SUBSCRIBE_APPS = ("recharge", "skio", "smartrr", "subscription")
 
 _EXAMPLES = """
-amz_on. Opener: Lovevery's Play Kits are easy to picture, and a small age-based set would give a new shopper one clear way to try them.
-Angle: A tighter set of images around Play Kits would make Lovevery easier to choose on Amazon.
+Opener: Cherry cola is the Perfy can a new shopper would reach for first.
+Angle: Listing photos of that can give the brand a clear Amazon presence.
 
-Trial Offer. Opener: Happy Viking's plant-based shake is easy to picture, and a small set around it would give a new shopper one clear way to try it.
-Angle: A plant-based shake set could give new shoppers an easy way to try Happy Viking.
+Opener: The bar soap is how a new shopper meets Biggs and Featherbelle.
+Angle: An ad works when that soap is the only thing on screen.
 
-plan_upgrade. Opener: Joybees is already in retail stores, so a small set of the same shoes would make a first order simple.
-Angle: Shoppers who already see Joybees in stores need one easy set to start with.
+Opener: Inova's clarifying shampoo tells a new shopper what the brand is for.
+Angle: Images of the shampoo do more than a paragraph of claims.
 
-amz_off. Opener: Wove's replica ring is easy to picture, and a small set around it would give a new shopper one clear way to try it.
-Angle: Leading with the replica ring would give a new shopper a concrete reason to try Wove.
+Opener: What Autumn Sons sells is the cookie mix, and it belongs at the front.
+Angle: The mix is a simple product to put in an ad.
+
+Opener: A new shopper can tell RSL makes shave cream before reading a word.
+Angle: Ads for RSL should stay on that cream.
+
+Opener: The dosa mix is the Adukale product a shopper would cook this week.
+Angle: A listing that opens on the mix is easier to trust.
+
+Opener: New shoppers meet the brand through the copper peptide serum.
+Angle: The serum is the image an ad can hold on.
+
+Opener: On Amazon, the pillow is the product to show before anything else.
+Angle: The listing should make that pillow the obvious choice.
 """.strip()
 
 
@@ -75,6 +87,7 @@ class FactSheet:
     brand: str = ""
     category: str = ""
     recipe: str = ""
+    product: str = ""
     facts: list[str] = field(default_factory=list)
     blocked: str = ""
     high_rating: bool = False
@@ -246,30 +259,23 @@ def fact_sheet(lead: dict[str, Any]) -> FactSheet:
         return sheet
 
     facts: list[str] = []
-    representatives = store.get("representative_products")
-    if not isinstance(representatives, list):
-        representatives = []
-    catalog_title = ""
-    for item in representatives:
-        if isinstance(item, dict) and as_text(item.get("title")):
-            catalog_title = as_text(item.get("title"))
+    phrase = as_text(store.get("product_phrase") or lead.get("product_phrase"))
+    if phrase:
+        # The picker already chose the short noun phrase. A catalog title,
+        # including the newest product, must not reach the model.
+        sheet.product = phrase
+        sheet.facts = [phrase]
+        return sheet
+    for key in ("description",):
+        blurb = _clean_blurb(as_text(store.get(key)), brand)
+        if blurb:
+            facts.append(blurb)
             break
-    if catalog_title or store.get("product_phrase"):
-        # A catalog product replaces the homepage title. The title is often
-        # an SEO keyword string, not something a shopper buys.
-        if catalog_title:
-            facts.append(f"recent product: {catalog_title}")
-    else:
-        for key in ("description", "title"):
-            blurb = _clean_blurb(as_text(store.get(key)), brand)
-            if blurb:
-                facts.append(blurb)
-                break
-        product = store.get("most_recently_published_product")
-        if isinstance(product, dict):
-            title = _clean_blurb(as_text(product.get("title")), brand)
-            if title:
-                facts.append(f"recent product: {title}")
+    product = store.get("most_recently_published_product")
+    if isinstance(product, dict):
+        title = _clean_blurb(as_text(product.get("title")), brand)
+        if title and "recent" not in title.lower():
+            facts.append(title)
     # Amazon presence is copy only for the amz_on segment. Other channel
     # names decide who is emailed and stay out of the fact sheet.
     if recipe == "amz_on" and not trial:
@@ -395,6 +401,11 @@ def style_violation(
         return "more than one sentence"
     if re.search(r"\bfirst image\b|\bshould be the first\b", raw, re.I):
         return "tells the brand what their first image should be"
+    from outbound_openers import copy_tic
+
+    tic = copy_tic(raw)
+    if tic:
+        return tic
     from outbound_openers import stuffed_copy_reason
 
     stuffed = stuffed_copy_reason(raw)
@@ -409,10 +420,13 @@ def style_violation(
 
 
 def _prompt(sheet: FactSheet) -> str:
-    facts = "\n".join(f"- {fact}" for fact in sheet.facts)
     from outbound_openers import plain_category
 
     category = plain_category(sheet.category) or "unknown"
+    if sheet.product:
+        facts = f"- {sheet.product}"
+    else:
+        facts = "\n".join(f"- {fact}" for fact in sheet.facts)
     if sheet.trial_offer:
         amazon_rule = (
             "This is a Trial Offer. The opener and the angle must not mention Amazon "
@@ -432,10 +446,19 @@ def _prompt(sheet: FactSheet) -> str:
     return (
         f"Brand: {sheet.brand}\n"
         f"Category: {category}\n"
-        "Shopper-visible facts:\n"
-        f"{facts}\n\n"
-        "Write JSON with keys opener and angle. Use only the brand and the facts above. "
+        + (
+            f"Product, said the way a shopper would: {sheet.product}\n"
+            "This is the only product you may name. Do not mention any other product, "
+            "a catalog title, or a newest or recent item.\n"
+            if sheet.product else
+            "Shopper-visible facts:\n"
+            f"{facts}\n"
+        )
+        + "\n"
+        "Write JSON with keys opener and angle. Use only the brand and the product above. "
         "Do not invent a product, a store, or a number. "
+        "Do not say recent, newest, I noticed, small set, easy to picture, "
+        "one clear start, or simple place to start. "
         "Sound like a person who looked at their store. Plain and warm. "
         "Vary the sentence shape. Do not start both lines with the brand name. "
         f"{amazon_rule}"
@@ -497,6 +520,7 @@ def generate(
     *,
     llm: Optional[Callable[[str], str]] = None,
     api_key: Optional[str] = None,
+    batch: Optional[list[str]] = None,
 ) -> tuple[str, str, str]:
     """Return (opener, angle, source). Source is ai, fallback, or none.
 
@@ -529,14 +553,18 @@ def generate(
             except Exception:  # noqa: BLE001
                 logger.exception("[outbound-personalization] model call failed")
                 break
+            from outbound_openers import variety_clash
+
             why = style_violation(
                 opener, role="opener", recipe=sheet.recipe,
                 high_rating=sheet.high_rating, trial_offer=sheet.trial_offer,
             ) or style_violation(
                 angle, role="angle", recipe=sheet.recipe,
                 high_rating=sheet.high_rating, trial_offer=sheet.trial_offer,
-            )
+            ) or variety_clash(opener, batch or [])
             if opener and angle and not why and opener.strip() != angle.strip():
+                if batch is not None:
+                    batch.append(opener)
                 return opener, angle, "ai"
             prompt = (
                 prompt

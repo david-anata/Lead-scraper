@@ -109,6 +109,58 @@ def test_best_selling_beats_the_first_catalog_item():
     assert any("best-selling" in url for url in calls)
 
 
+def test_prompt_receives_only_the_short_phrase_and_tics_are_rejected():
+    import outbound_openers as op
+    import outbound_personalization as personalization
+
+    sheet = personalization.fact_sheet({
+        "brand": "Perfy",
+        "recipe": "trial_offer",
+        "campaign_id": "e5f5046b-07e4-41ad-a395-79cf8766ccd0",
+        "store_profile": {
+            "product_phrase": "the cherry cola",
+            "most_recently_published_product": {"title": "Blood Orange Yuzu"},
+            "description": "ADOPT A FRAILEJON",
+        },
+    })
+    prompt = personalization._prompt(sheet)
+    assert sheet.product == "the cherry cola"
+    assert sheet.facts == ["the cherry cola"]
+    assert "the cherry cola" in prompt
+    assert "Blood Orange" not in prompt
+    assert "recent product" not in prompt.lower()
+    examples = prompt.split("Examples of the voice:", 1)[-1]
+    assert "small set" not in examples.lower()
+    assert "easy to picture" not in examples.lower()
+    bad = "Blood Orange Yuzu is the recent Perfy can I noticed"
+    assert personalization.style_violation(bad, recipe="trial_offer") == "repeated opener tic"
+    assert not op.validate("A small set would give new shoppers a way to try it.")[0]
+    assert op.variety_clash(
+        "Cherry cola is the can a shopper would reach for first.",
+        ["Cherry cola is the drink they already know."],
+    ) == "repeats an opening"
+    assert short_product_phrase("ADOPT A FRAILEJON", "Donation", "Paramo") == ""
+    assert short_product_phrase("First Baptist Church", "Doormat", "Mats") == ""
+    assert short_product_phrase("Somedays It Rocks Me", "Doormat", "Mats") == ""
+
+
+def test_catalog_fetch_is_two_calls_with_no_retry():
+    calls = []
+
+    def get(url, timeout=5, headers=None, allow_redirects=True):
+        calls.append((url, timeout))
+        return _Response(404, {})
+
+    collect_product_facts(
+        "slow.example", brand="Slow", allow_storeleads=False,
+        get=get, sleep=lambda _s: None, guard=lambda url: url,
+    )
+    assert len(calls) == 2
+    assert "sort_by=best-selling" in calls[0][0]
+    assert calls[0][0].endswith("/products.json?limit=50") or "products.json?limit=50" in calls[1][0]
+    assert all(timeout <= 5 for _url, timeout in calls)
+
+
 def test_natural_phrase_is_lowercase_with_an_article():
     assert natural_product_phrase("Olive Wood Serving Boards", "ArtisRaw") == "the olive wood serving boards"
     assert natural_product_phrase("Olive Wood Board - Large") == "the olive wood board"

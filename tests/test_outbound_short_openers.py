@@ -71,8 +71,7 @@ def test_over_long_opener_is_regenerated_once_then_held():
         if len(calls) == 1:
             return _words(30, "Huppy", "sells", "oral", "care")
         return (
-            "Huppy's oral care line is easy to picture, and a small set would "
-            "give a new shopper one clear way to try it."
+            "Huppy's oral care line gives a new shopper one product to remember."
         )
 
     line, source = op.write_opener({**LEAD, "domain": "retry.com"}, CONTACT, llm=llm)
@@ -133,11 +132,8 @@ def test_rich_pair_over_the_max_is_regenerated_once_then_left_empty():
     calls = {"n": 0}
     long_opener = _words(30, "Huppy", "sells", "toothpaste", "tabs")
     short = {
-        "opener": (
-            "Huppy's toothpaste tabs are easy to picture, and a small set would "
-            "give a new shopper one clear way to try them."
-        ),
-        "angle": "A small set of toothpaste tabs gives a new shopper an easy way to try Huppy.",
+        "opener": "Huppy's toothpaste tabs give a new shopper one product to remember.",
+        "angle": "Listing photos of the toothpaste tabs give a new shopper a reason to look.",
     }
 
     def llm(_prompt):
@@ -228,9 +224,13 @@ def test_trial_offer_never_claims_or_assumes_amazon():
         "Huppy sells on Amazon.", trial,
     )
     assert op.opener_hold_reason(
-        "Huppy's toothpaste tabs could be sold as a small set a new shopper can try.",
+        "Huppy's toothpaste tabs give a new shopper one product to remember.",
         trial,
     ) == ""
+    assert op.opener_hold_reason(
+        "A small set would give new shoppers a way to try it today.",
+        trial,
+    ) == "repeated opener tic"
     for claim in (
         "Shoppers reorder on Amazon.",
         "Your Amazon store is ready.",

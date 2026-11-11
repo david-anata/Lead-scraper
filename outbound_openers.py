@@ -47,12 +47,58 @@ MIN_WORDS = 6
 # "Anata // Trial Offer // Oct 2026". Same id as the Instantly push constant.
 TRIAL_OFFER_CAMPAIGN_ID = "e5f5046b-07e4-41ad-a395-79cf8766ccd0"
 
+_COPY_TIC = re.compile(
+    r"\bsmall set\b|\beasy to picture\b|\brecent\b|\bi noticed\b|"
+    r"\bone clear start\b|\bsimple place to start\b",
+    re.I,
+)
+
+
+def copy_tic(text: str) -> str:
+    """A repeated tic the model must not send, or empty."""
+
+    if _COPY_TIC.search(text or ""):
+        return "repeated opener tic"
+    return ""
+
+
+def opening_words(text: str, count: int = 3) -> str:
+    return " ".join((text or "").lower().split()[:count])
+
+
+def closing_clause(text: str) -> str:
+    """The last clause, which is what makes a batch sound like one template."""
+
+    raw = (text or "").strip().rstrip(".").lower()
+    if "," in raw:
+        return raw.rsplit(",", 1)[-1].strip()
+    words = raw.split()
+    return " ".join(words[-6:])
+
+
+def variety_clash(text: str, prior: list[str]) -> str:
+    """True when this opener repeats another line's opening or closing."""
+
+    if not text or not prior:
+        return ""
+    opening = opening_words(text)
+    closing = closing_clause(text)
+    for old in prior:
+        if opening and opening == opening_words(old):
+            return "repeats an opening"
+        if closing and closing == closing_clause(old):
+            return "repeats a closing"
+    return ""
+
+
 BANNED_PHRASES = (
     "hope this finds you", "hope you're well", "hope you are well", "game-changing",
     "game changing", "revolutionary", "cutting-edge", "cutting edge", "synergy",
     "i came across your", "touch base", "circle back", "reaching out",
     # Template tics the model fell into on the first live run.
-    "i noticed", "we noticed", "building something", "something special",
+    "i noticed", "we noticed", "small set", "easy to picture",
+    "one clear start", "simple place to start",
+    "building something", "something special",
     "i'm curious", "we're curious", "curious how", "ideal customer profile", "icp",
     "social momentum",
 )
@@ -252,6 +298,9 @@ def validate(
     stuffed = stuffed_copy_reason(raw)
     if stuffed:
         return False, stuffed
+    tic = copy_tic(raw)
+    if tic:
+        return False, tic
     t = clean(raw)
     if not t:
         return False, "empty"
@@ -1150,6 +1199,12 @@ def _product_title(lead: dict[str, Any], facts: list[str], brand: str) -> str:
             title = _shopper_phrase(fact.split(":", 1)[1], brand)
             if title:
                 return title
+    profile = lead.get("store_profile") if isinstance(lead.get("store_profile"), dict) else {}
+    stored = profile.get("most_recently_published_product")
+    if isinstance(stored, dict):
+        title = _shopper_phrase(str(stored.get("title") or ""), brand)
+        if title:
+            return title
     return _shopper_phrase(_scraped_product(lead), brand)
 
 
@@ -1779,6 +1834,8 @@ def opener_hold_reason(opener: str, lead: Optional[dict[str, Any]] = None) -> st
         return "opener is a question"
     if _BACKEND_COPY.search(text):
         return "opener names backend technology instead of a shopper-visible fact"
+    if copy_tic(text):
+        return copy_tic(text)
     if _ANATA_CATEGORY.match(text):
         return "opener is a category filler with no shopper-visible fact"
     if _SAW_CATEGORY.match(text):
