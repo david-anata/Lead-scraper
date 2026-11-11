@@ -185,7 +185,7 @@ _DRUG_SUBJECT = re.compile(
 )
 _PAIN_CLAIM = re.compile(r"\bpain\b", re.I)
 _SPARE_PART = re.compile(
-    r"\b(?:replacement|refill|spare|accessor(?:y|ies)|parts|"
+    r"\b(?:replacement|refill|spare|parts|"
     r"side brush(?:es)?|main brush(?:es)?|roller brush(?:es)?|brush covers?|"
     r"filters?|cleaning solutions?|mop pads?)\b",
     re.I,
@@ -1082,6 +1082,7 @@ def products_for_handles(
     sleep: Callable[[float], None] = time.sleep,
     guard: Optional[Callable[[str], str]] = None,
     limit: int = 20,
+    budget: float = 12,
 ) -> list[dict[str, Any]]:
     """Real product records for the best-selling handles, in that order.
 
@@ -1089,17 +1090,33 @@ def products_for_handles(
     page is not used as the join, because the handle often sits past page one.
     """
 
-    found: list[dict[str, Any]] = []
-    for handle in handles:
-        if skip_product_handle(handle) or len(found) >= limit:
-            continue
+    from concurrent.futures import ThreadPoolExecutor
+
+    deadline = time.monotonic() + budget
+    wanted = [handle for handle in handles if handle and not skip_product_handle(handle)][:limit]
+
+    def fetch_one(handle: str) -> tuple[str, list[dict[str, Any]]]:
+        if time.monotonic() >= deadline:
+            return handle, []
         payload = fetch_shopify_path(
             domain, f"/products/{handle}.json",
-            get=get, sleep=sleep, guard=guard, timeout=5, attempts=1,
+            get=get, sleep=sleep, guard=guard, timeout=min(5, max(0.5, deadline - time.monotonic())),
+            min_interval=0, attempts=1,
         )
         raw = payload.get("product") if isinstance(payload, dict) else None
         rows = parse_shopify_products({"products": [raw]}) if isinstance(raw, dict) else []
-        found.extend(rows)
+        return handle, rows
+
+    if not wanted or time.monotonic() >= deadline:
+        return []
+    fetched: dict[str, list[dict[str, Any]]] = {}
+    workers = min(8, len(wanted))
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        for handle, rows in pool.map(fetch_one, wanted):
+            fetched[handle] = rows
+    found: list[dict[str, Any]] = []
+    for handle in wanted:
+        found.extend(fetched.get(handle) or [])
     return found
 
 
@@ -1150,11 +1167,28 @@ def product_pain_claim(item: dict[str, Any]) -> bool:
 
 
 def spare_part(item: dict[str, Any]) -> bool:
-    """A replacement or accessory, not the product the shop is known for."""
+    """A replacement or accessory part, not the product the shop is known for.
+
+    A product type of Accessories is not enough. Marble switch plates are
+    tagged that way and are the shop's real products.
+    """
 
     if not isinstance(item, dict):
         return False
     return bool(_SPARE_PART.search(f"{item.get('title') or ''} {item.get('product_type') or ''}"))
+
+
+def accessory_tagged(item: dict[str, Any]) -> bool:
+    blob = f"{item.get('product_type') or ''} {' '.join(str(tag) for tag in (item.get('tags') or []))}"
+    return bool(re.search(r"\baccessor", blob, re.I))
+
+
+def mostly_accessories(items: list[dict[str, Any]]) -> bool:
+    """True when most of a long best-seller list is only tagged Accessories."""
+
+    if len(items) < 3:
+        return False
+    return sum(1 for item in items if accessory_tagged(item)) / len(items) >= 0.5
 
 
 def catalog_blocked_reason(
@@ -1314,9 +1348,11 @@ def collect_product_facts(
             item for item in json_rows
             if not product_health_claim(item) and not product_pain_claim(item)
         ]
-        if any(not spare_part(item) for item in writing):
+        if mostly_accessories(writing):
             writing = [item for item in writing if not spare_part(item)]
-        elif writing and all(spare_part(item) for item in writing):
+        elif any(not spare_part(item) and not accessory_tagged(item) for item in writing):
+            writing = [item for item in writing if not spare_part(item) and not accessory_tagged(item)]
+        elif writing and all(spare_part(item) or accessory_tagged(item) for item in writing):
             writing = []
         catalog = _catalog_rows(writing) if pick == "best-selling" else []
         blocked = catalog_blocked_reason(checked, brand, html)

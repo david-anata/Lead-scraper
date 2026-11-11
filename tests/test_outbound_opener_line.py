@@ -556,6 +556,93 @@ def test_brush_covers_are_spares_and_an_all_accessory_list_is_labeled():
     assert facts["products"] == []
 
 
+def test_voice_grader_hype_words_and_an_unsupported_blend():
+    facts = LineFacts(
+        brand="Autumn Sons Baking", product="Chocolate Chunk Cookie Mix",
+        detail="The only ingredients you need are a small amount of water and oil.",
+        recipe="amz_on",
+    )
+    prompt = grader_prompt(facts, "Chocolate Chunk Cookie Mixes from Autumn Sons Baking need just water and oil.")
+    assert "two checks" in prompt.lower()
+    assert "mesmerizing cascade" in prompt
+    assert "60 days" in prompt
+    assert "water and oil" in prompt
+    climber = LineFacts(brand="Rita", product="Hana Ear Climber", detail="a cascade of shimmer", recipe="replatform")
+    assert hard_reason("The Hana ear climber creates a mesmerizing cascade.", climber) == "hype"
+    pack = LineFacts(brand="Perfy", product="Variety Pack", detail="Fruit Punch and Blood Orange Yuzu.", recipe="trial_offer")
+    assert hard_reason("The variety pack blends fruit punch and blood orange yuzu.", pack) == "unsupported verb"
+    assert hard_reason("superPeptide serum calms redness.", LineFacts(product="SuperPeptide Serum", brand="Pure")) == "lowercase opening"
+
+
+def test_yacon_outranks_a_dietary_bullet_and_a_benefit_only_body_is_skipped():
+    _name, detail, _kind = extract_detail(
+        "Baked Organic Beet and Yacon Chips",
+        "Oil-free and gluten-free. Yacon is the Andean root in every chip.",
+        brand="Paramo Snacks",
+    )
+    assert "yacon" in detail.lower()
+    assert "gluten" not in detail.lower()
+    serum = {"title": "GHK Copper Peptide Serum", "body": "Calming redness and soothing sensitive skin. Deep wrinkle reduction."}
+    chips = {"title": "Beet Chips", "body": "Yacon is the root in the chip."}
+    picked = pick_line_facts([serum, chips], brand="Pure & Cimple")
+    assert "Beet" in picked.product or "yacon" in picked.detail.lower()
+
+
+def test_a_capitalized_bullet_is_its_own_sentence_and_material_wins():
+    _name, detail, _kind = extract_detail(
+        "Higgins",
+        "Crafted from premium acetate and stainless steel Ultra-light high quality prescription lenses",
+        brand="Hip Optical",
+    )
+    assert "acetate" in detail.lower()
+    assert "ultra-light" not in detail.lower()
+
+
+def test_accessory_tagged_switch_plates_stay_when_they_are_the_shop():
+    from outbound_product_facts import collect_product_facts
+
+    class Response:
+        def __init__(self, status, payload):
+            self.status_code = status
+            self._payload = payload
+            self.text = payload if isinstance(payload, str) else ""
+
+        def json(self):
+            return self._payload
+
+    plates = {"products": [
+        {"title": f"Plate {index}", "handle": f"plate-{index}", "product_type": "Accessories",
+         "tags": ["Accessories"], "body_html": "Cut from marble.", "variants": [{"available": True}],
+         "vendor": "American Tile Depot"}
+        for index in range(3)
+    ]}
+
+    def get(url, timeout=5, headers=None, allow_redirects=True):
+        if "best-sellers" in url or "bestsellers" in url:
+            return Response(200, plates)
+        return Response(404, {})
+
+    facts = collect_product_facts(
+        "plates.example", brand="American Tile Depot", allow_storeleads=False,
+        get=get, sleep=lambda _s: None, guard=lambda url: url, homepage_html="<html></html>",
+    )
+    assert facts["catalog_skip"] != "no_bestseller_product"
+    assert facts["products"]
+
+
+def test_handle_fetches_stop_when_the_lookup_budget_is_spent():
+    from outbound_product_facts import products_for_handles
+
+    calls = []
+
+    def get(url, timeout=5, headers=None, allow_redirects=True):
+        calls.append(url)
+        return type("Response", (), {"status_code": 404, "text": "", "json": lambda self: {}})()
+
+    assert products_for_handles("slow.example", ["higgins", "jax"], get=get, sleep=lambda _s: None, budget=0) == []
+    assert calls == []
+
+
 def test_the_default_model_is_the_fast_non_reasoning_grok():
     from outbound_opener_line import GRADER_MODEL
 
@@ -570,7 +657,7 @@ def test_a_detail_comes_from_the_body_and_not_the_product_name():
     assert shopper_name("Coffee Bar® Single 3.5 oz Packaged Bar") == "Coffee Bar"
     assert shopper_name("Organic Baked Beet and Yacon Chips") == "Organic Baked Beet and Yacon Chips"
     assert shopper_name("Inova Professional Keratin Treatment One-Step Kera-Quik. 0% formaldehyde") == (
-        "Inova Professional Keratin Treatment One-Step Kera-Quik"
+        "One-Step Kera-Quik"
     )
     assert shopper_name("2018 Edition - Pixel Art Kit by Pix Perfect") == "Pixel Art Kit"
 

@@ -70,10 +70,19 @@ _INVENTED = re.compile(
 )
 _BENEFIT_LIST = re.compile(
     r"\b(?:firming|elasticity|wrinkles?|fine lines?|reduce frizz|manageability|"
-    r"enhance shine|anti-aging|anti aging)\b",
+    r"enhance shine|anti-aging|anti aging|redness|soothing|sensitive skin|calming)\b",
     re.I,
 )
-_HYPE = re.compile(r"\b(?:perfect|amazing|obsessed)\b", re.I)
+_HYPE = re.compile(
+    r"\b(?:perfect|amazing|obsessed|mesmerizing|exquisite|stunning|breathtaking|"
+    r"premium|leading-edge|cutting-edge|elevate|luxurious|game-changer)\b"
+    r"|\bhigh[- ]quality\b",
+    re.I,
+)
+_DIETARY = re.compile(
+    r"\b(?:oil-free|gluten-free|non-gmo|vegan|sugar-free|no sugars?)\b",
+    re.I,
+)
 _NONFOOD = re.compile(r"\b(?:soap|candle|balm|wax|lotion)\b", re.I)
 _VENDOR_CATEGORY = re.compile(
     r"\b(?:tinted|polarized|eyeglasses|sunglasses|frames|optical|readers)\b"
@@ -176,6 +185,13 @@ def shopper_name(title: str) -> str:
         named = [half for half in halves if _NOUN.search(half)]
         raw = named[-1] if named else halves[-1]
     raw = re.sub(r"\bby\b.+$", "", raw, flags=re.I)
+    words = raw.split()
+    if len(words) >= 6:
+        tail = re.search(r"((?:[A-Z][\w'-]*-){1,}[\w'-]+(?:\s+[A-Z][\w'-]+){0,3})$", raw)
+        if tail:
+            raw = tail.group(1)
+    if raw and raw[0].islower():
+        raw = raw[0].upper() + raw[1:]
     return " ".join(raw.split())
 
 
@@ -258,6 +274,8 @@ def _sentences(text: str) -> list[str]:
         lambda match: match.group(1) + "\u0000",
         raw,
     )
+    if not re.search(r"[.!?]", raw):
+        raw = re.sub(r"([a-z])\s+([A-Z])", r"\1. \2", raw)
     raw = raw.replace("\n", ". ")
     found: list[str] = []
     for part in re.split(r"[.!?;]+", raw):
@@ -280,17 +298,21 @@ def _score_clause(clause: str, product_words: set[str]) -> int:
 
     if not clause or _MARKETING_OPEN.search(clause) or _SIZE_DETAIL.search(clause):
         return 0
+    novel = _novel_words(clause, product_words)
+    novel_text = " ".join(novel)
     concrete = bool(
         _HOW_USED.search(clause)
-        or _find_phrase(clause, _MATERIALS)
-        or _find_phrase(clause, _FLAVORS)
+        or _find_phrase(novel_text, _MATERIALS)
+        or _find_phrase(novel_text, _FLAVORS)
+        or re.search(r"\b(?:acetate|stainless|yacon|ghk|collagen|hyaluronic|cedarwood|vetiver)\b", novel_text, re.I)
     )
     if _BENEFIT_LIST.search(clause) and not concrete:
         return 0
-    novel = _novel_words(clause, product_words)
-    if not novel:
+    if _DIETARY.search(clause) and not concrete:
+        return 1
+    if not novel and not concrete:
         return 0
-    score = len(novel)
+    score = len(novel) or 1
     if concrete:
         score += 6
     return score
@@ -494,8 +516,12 @@ def hard_reason(line: str, facts: LineFacts) -> str:
     raw = " ".join((line or "").split())
     if not raw:
         return "empty"
+    if re.match(r"^[a-z]", raw):
+        return "lowercase opening"
     if len(raw.split()) > 22:
         return "too long"
+    if re.search(r"\bblends?\b", raw, re.I) and not re.search(r"\bblend", facts.detail or "", re.I):
+        return "unsupported verb"
     needed = main_nouns(facts.product, facts.brand)
     low = raw.lower()
     if needed and not all(token in low for token in needed):
@@ -567,10 +593,12 @@ def writer_prompt(facts: LineFacts, *, rejection: str = "", previous: str = "") 
         f"Product: {facts.product}\n"
         f"Detail: {facts.detail} ({facts.detail_kind})\n"
         f"{campaign}\n"
-        "Say one specific thing plainly, in about 20 words. "
-        "Use the product name and one detail. Do not restate the catalog sentence "
-        "and do not list several benefits. "
-        "Do not guess what shoppers will do, do not critique the store, and do not invent a benefit.\n"
+        "Sound like a person who just looked at the product and noticed one thing. "
+        "About 20 words. Use a varied opening such as 'Love that...', 'Noticed...', "
+        "'...looks sturdy enough for...', or 'Nice that...'. "
+        "Do not write a flat 'Product does X' catalog statement. "
+        "Do not restate the catalog sentence or list several benefits. "
+        "Do not claim you used or bought it.\n"
         f"Examples of the voice, each a different shape:\n{_EXAMPLES}\n"
         f"{extra}"
         "Return only the sentence."
@@ -579,11 +607,12 @@ def writer_prompt(facts: LineFacts, *, rejection: str = "", previous: str = "") 
 
 def grader_prompt(facts: LineFacts, line: str) -> str:
     return (
-        "Grade this cold-email line. Brand and product name are known facts. "
-        "Do not fail because those names are missing from the source. "
-        "Check only that the detail claim is supported by the source sentence. "
-        "Fail a made-up specific, a detail pinned on the wrong ingredient, "
-        "a catalog copy, and a long line that stacks several claims.\n"
+        "Grade this cold-email line in two checks.\n"
+        "Facts: brand and product name are known. Check only that the detail claim "
+        "is supported by the source sentence. Fail a made-up specific, a verb the "
+        "source does not support, and a detail pinned on the wrong ingredient.\n"
+        "Voice: fail hype, filler, benefit or skin or health claims, ad-copy, "
+        "instruction tone, and a flat 'Product does X' catalog statement.\n"
         f"Brand: {facts.brand}\n"
         f"Product: {facts.product}\n"
         f"Source: {facts.detail}\n"
@@ -591,12 +620,11 @@ def grader_prompt(facts: LineFacts, line: str) -> str:
         "Pass:\n"
         "Love that Perfy does flavors like blood orange yuzu and turmeric.\n"
         "The olive wood mugs from ArtisRaw look sturdy enough for daily use.\n"
+        "Chocolate Chunk Cookie Mixes from Autumn Sons Baking need just water and oil.\n"
         "Fail:\n"
         "The coffee bar soap is worth a closer look.\n"
-        "I like the cherry flavor in Perfy Cherry Cola (12 Cans).\n"
-        "I just bought these chips on Amazon.\n"
-        "Fail invented actions, hype, a detail that only restates the name, "
-        "a raw catalog title, and empty filler.\n"
+        "The Hana Ear Climber creates a mesmerizing cascade of shimmer along your ear.\n"
+        "The Dreame L10s Ultra Robot Vacuum delivers up to 60 days of hands-free cleaning.\n"
         'Return JSON {"pass": false, "reason": "short reason"}.'
     )
 
@@ -648,7 +676,8 @@ def compose_line(
     queue = [facts] + [item for item in (alternatives or []) if item is not facts]
     hard = {
         "grounding", "invented action", "hype", "flavor", "backend", "url",
-        "health claim", "amazon presence", "too long", "model_timeout", "model_error",
+        "health claim", "amazon presence", "too long", "lowercase opening",
+        "unsupported verb", "model_timeout", "model_error",
     }
 
     def _attempt(candidate: LineFacts, rejection: str, previous: str) -> tuple[str, str]:
