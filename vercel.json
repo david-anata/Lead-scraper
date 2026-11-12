@@ -42,6 +42,10 @@
       "schedule": "0 * * * *"
     },
     {
+      "path": "/api/jobs/search-console/export",
+      "schedule": "0 14 * * 1"
+    },
+    {
       "path": "/api/jobs/content/run",
       "schedule": "0 * * * *"
     },
