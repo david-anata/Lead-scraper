@@ -124,8 +124,7 @@ class StaleHubSpotDealsJob:
         try:
             blocks = _build_digest_blocks(stale, as_of=as_of, stale_days=stale_days)
             text = f":warning: {len(stale)} stale HubSpot deal(s) (no inbound >{stale_days}d)"
-            self.slack_client.post_message(text=text, blocks=blocks)
-            result.digest_posted = True
+            logger.info("[stale_hs_deals] digest not posted to Slack: %s blocks=%s", text, len(blocks))
         except Exception:
             logger.exception("[stale_hs_deals] Slack digest failed")
 

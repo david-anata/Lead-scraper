@@ -14,8 +14,8 @@ does not change that routing and does not move a contact already in Instantly.
 Filler recipes are queued unless stored signals prove a v2 recipe.
 ``OUTBOUND_INSTANTLY_CAMPAIGN_ID`` is not a destination, even when it still
 names Trial Offer Oct. There is no fallback to the retired campaign.
-``redo_partner`` contacts are stored and not pushed. A Slack summary posts
-after each call that did something.
+``redo_partner`` contacts are stored and not pushed. The run summary,
+including bounce counts, is written to the log. It is not posted to Slack.
 
 Limits, all overridable with env vars. Defaults are the approved caps, so a
 deploy changes nothing until the env vars are set:
@@ -214,7 +214,12 @@ def run_enrich_job(
     post_slack: Optional[Callable[[str], Any]] = None,
     in_instantly: Optional[Callable[[str], Optional[bool]]] = None,
 ) -> dict[str, Any]:
-    """One scheduled call. Never raises."""
+    """One scheduled call. Never raises.
+
+    ``post_slack`` is accepted so existing callers keep working. The routine
+    summary is written to the log and is not passed to that callback.
+    """
+    del post_slack
     import outbound_contacts as _oc
     import outbound_enrich as _oe
     import outbound_instantly_push as _ip
@@ -314,7 +319,9 @@ def run_enrich_job(
     )
 
     if report.companies_tried or report.pushed:
-        _notify_slack(post_slack, summary_text(out))
+        # Counts, bounces, and Instantly skips stay in the log. #sales is for
+        # a person who has to act, not for this hourly status line.
+        logger.info("[outbound-enrich-job] summary\n%s", summary_text(out))
     logger.info("[outbound-enrich-job] %s", {k: v for k, v in out.items() if k != "report"})
     return out
 
@@ -421,6 +428,35 @@ def run_scheduled_missed_enrich_check(request: Request) -> dict:
 @router.post("/missed-run", operation_id="outbound_enrich_missed_run_post")
 def run_scheduled_missed_enrich_check_post(request: Request) -> dict:
     return run_scheduled_missed_enrich_check(request)
+
+
+def run_clay_status_cleanup(*, apply: bool) -> dict[str, Any]:
+    """List or delete this bot's old outbound status posts. Dry-run unless apply."""
+
+    from sales_support_agent.config import load_settings
+    from sales_support_agent.services.sales_slack_cleanup import cleanup_outbound_status_posts
+
+    settings = load_settings()
+    return cleanup_outbound_status_posts(
+        token=str(getattr(settings, "slack_bot_token", "") or ""),
+        apply=apply,
+    )
+
+
+@router.get("/clay-status-posts", operation_id="outbound_enrich_clay_status_posts_get")
+def list_clay_status_posts(request: Request) -> dict[str, Any]:
+    """Auth-protected dry run. Lists matches and deletes nothing."""
+
+    _require_scheduler_auth(request)
+    return run_clay_status_cleanup(apply=False)
+
+
+@router.post("/clay-status-posts", operation_id="outbound_enrich_clay_status_posts_post")
+def delete_clay_status_posts(request: Request, apply: bool = False) -> dict[str, Any]:
+    """Delete matches only when ``apply=true``. The default is a dry run."""
+
+    _require_scheduler_auth(request)
+    return run_clay_status_cleanup(apply=apply)
 
 
 # Abby calls this. The lease table already exists (scheduled_job_runs). Nothing

@@ -40,9 +40,25 @@ def lead_info_from_db(engine):
 def slack_poster():
     from sales_support_agent.config import load_settings
     from sales_support_agent.integrations.slack import SlackClient
+    from sales_support_agent.services.sales_slack_policy import failure_kind, post_failure_once
+
     client = SlackClient(load_settings())
 
     def post(text: str) -> None:
+        kind = failure_kind(text)
+        if kind:
+            try:
+                from sales_support_agent.models.database import get_engine
+
+                post_failure_once(
+                    get_engine(),
+                    lambda body: client.post_message(text=body),
+                    kind=kind,
+                    text=text,
+                )
+            except Exception:  # noqa: BLE001
+                logger.exception("[abby] failure alert was not posted")
+            return
         try:
             client.post_message(text=text)
         except Exception:  # noqa: BLE001

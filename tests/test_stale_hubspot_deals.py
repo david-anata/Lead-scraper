@@ -112,12 +112,10 @@ class TestStaleHubSpotDealsJob(unittest.TestCase):
         self.assertFalse(result.digest_posted)
         slack.post_message.assert_not_called()
 
-    def test_digest_posted_when_enabled_and_configured(self):
+    def test_digest_is_logged_not_posted_when_enabled(self):
         result, slack = self._run(dry_run=False, slack_configured=True, digest_enabled=True)
-        self.assertTrue(result.digest_posted)
-        slack.post_message.assert_called_once()
-        call_kwargs = slack.post_message.call_args.kwargs
-        self.assertIn("stale", call_kwargs.get("text", "").lower())
+        self.assertFalse(result.digest_posted)
+        slack.post_message.assert_not_called()
 
     def test_no_stale_deals_skips_slack(self):
         # Temporarily update all deals to have a recent touch.

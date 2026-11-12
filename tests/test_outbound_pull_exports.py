@@ -107,11 +107,12 @@ def test_delivery_can_send_email_and_slack_without_changing_company_memory():
     ):
         before = outbound_memory.load_contacted(engine)
         result = deliver_completed_pull(engine, {"id": run_id, "recipe": "social_surge", "fresh": 1})
-    assert result == {"email": "sent", "slack": "sent", "sent": 2}
+    assert result == {"email": "sent", "slack": "logged", "sent": 1}
+    fake_slack.post_message.assert_not_called()
     assert outbound_memory.load_contacted(engine) == before
     history = outbound_memory.load_delivery_history(engine)
     assert {item["destination"] for item in history} == {"email", "slack"}
-    assert all(item["status"] == "sent" for item in history)
+    assert {item["destination"]: item["status"] for item in history} == {"email": "sent", "slack": "logged"}
     attachment = send.call_args.kwargs["attachments"][0]
     assert attachment["filename"] == f"anata-leads-pull-{run_id}.csv"
     assert b"fresh.com" in attachment["content"]

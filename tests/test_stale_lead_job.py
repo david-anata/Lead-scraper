@@ -202,11 +202,10 @@ class StaleLeadJobTests(unittest.TestCase):
                 ).run(dry_run=False, as_of_date=date(2026, 3, 13))
 
             self.assertEqual(result["status"], "ok")
-            self.assertTrue(result["digest_posted"])
+            self.assertFalse(result["digest_posted"])
             self.assertEqual(result["immediate_alerted"], 0)
-            self.assertEqual(result["alerted"], 1)
-            self.assertEqual(len(slack_client.messages), 1)
-            self.assertIn("<!channel>", str(slack_client.messages[0].get("text", "")))
+            self.assertEqual(result["alerted"], 0)
+            self.assertEqual(slack_client.messages, [])
         finally:
             session.close()
 
@@ -234,7 +233,7 @@ class StaleLeadJobTests(unittest.TestCase):
 
             self.assertEqual(first["immediate_alerted"], 1)
             self.assertEqual(second["immediate_alerted"], 0)
-            self.assertEqual(len(slack_client.messages), 2)
+            self.assertEqual(len(slack_client.messages), 1)
         finally:
             session.close()
 
@@ -363,9 +362,9 @@ class StaleLeadJobTests(unittest.TestCase):
                     session,
                 ).run(dry_run=False, as_of_date=date(2026, 3, 13))
 
-            self.assertTrue(first["digest_posted"])
+            self.assertFalse(first["digest_posted"])
             self.assertFalse(second["digest_posted"])
-            self.assertEqual(len(slack_client.messages), 1)
+            self.assertEqual(slack_client.messages, [])
         finally:
             session.close()
 
