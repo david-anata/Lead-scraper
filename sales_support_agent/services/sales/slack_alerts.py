@@ -208,17 +208,15 @@ def send_critical_deal_alerts(
 
     blocks = _build_blocks(batch, as_of)
     fallback = f"Sales alert: {len(batch.alerts)} deal(s) need attention. View at https://agent.anatainc.com/admin/sales/deals"
-
-    try:
-        client.post_message(text=fallback, blocks=blocks)
-    except Exception as exc:
-        logger.exception("[slack_alerts] failed to post message")
-        return {"sent": False, "error": str(exc), "deal_count": len(batch.alerts)}
-
-    kv_set_json(ALERT_COOLDOWN_KEY, {"sent_at": as_of.isoformat()})
-    logger.info("[slack_alerts] posted alert for %d deals", len(batch.alerts))
+    # This is a recurring board digest, not one deal a person must handle now.
+    logger.info(
+        "[slack_alerts] digest not posted to Slack deals=%s reps=%s text=%s blocks=%s",
+        len(batch.alerts), len(batch.by_rep), fallback, len(blocks),
+    )
     return {
-        "sent": True,
+        "sent": False,
+        "logged": True,
+        "reason": "routine deal digest is kept out of Slack",
         "deal_count": len(batch.alerts),
         "rep_count": len(batch.by_rep),
     }

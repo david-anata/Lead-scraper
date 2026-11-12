@@ -280,17 +280,14 @@ def _email_the_batch(engine, summary: dict, *, force: bool = False) -> bool:
                     detail=f"CSV attached ({len(ready)} companies)" if attachments else "No lead rows available to attach",
                 )
         if prefs.get("slack_enabled"):
-            from sales_support_agent.integrations.slack import SlackClient
-            try:
-                slack_ok = bool(SlackClient(settings).post_message(text="\n".join(lines)).get("ok"))
-            except Exception:  # noqa: BLE001
-                logger.exception("[outbound-jobs] daily Slack delivery failed")
-                slack_ok = False
-            sent = slack_ok or sent
+            logger.info(
+                "[outbound-jobs] morning digest not posted to Slack\n%s",
+                "\n".join(lines),
+            )
             outbound_memory.record_delivery_attempt(
                 engine, recipe="daily digest", destination="slack",
                 target=str(getattr(settings, "slack_channel_id", "") or "configured channel"),
-                status="sent" if slack_ok else "failed",
+                status="logged", detail="Routine digest kept out of Slack",
             )
         return sent
     except Exception:  # noqa: BLE001 - a failed email must not fail the morning

@@ -77,10 +77,12 @@ def test_runs_pushes_to_the_v2_recipe_and_posts_slack(engine):
     assert out["campaign_id"] == ""
     assert out["default_campaign_ignored"] is True
     assert seen["campaign_id"] == push.RECIPE_CAMPAIGN_MAP["amz_on"]
-    assert CAMPAIGN not in posts[0]
-    assert push.LEGACY_TRIAL_CAMPAIGN_ID not in posts[0]
-    assert push.LIVE_CAMPAIGN_ID not in posts[0]
-    assert len(posts) == 1 and "Added to Instantly: 10" in posts[0]
+    text = job.summary_text(out)
+    assert posts == []
+    assert CAMPAIGN not in text
+    assert push.LEGACY_TRIAL_CAMPAIGN_ID not in text
+    assert push.LIVE_CAMPAIGN_ID not in text
+    assert "Added to Instantly: 10" in text
 
 
 def test_missing_default_still_pushes_a_mapped_recipe(engine, monkeypatch):
@@ -100,9 +102,11 @@ def test_missing_default_still_pushes_a_mapped_recipe(engine, monkeypatch):
     )
     assert out["ran"] and out["pushed"] == 1 and out["campaign_missing"] is False
     assert seen == [push.RECIPE_CAMPAIGN_MAP["plan_upgrade"]]
-    assert not any(push.MISSING_CAMPAIGN_MESSAGE in post for post in posts)
-    assert push.LIVE_CAMPAIGN_ID not in "".join(posts)
-    assert push.LEGACY_TRIAL_CAMPAIGN_ID not in "".join(posts)
+    text = job.summary_text(out)
+    assert posts == []
+    assert push.MISSING_CAMPAIGN_MESSAGE not in text
+    assert push.LIVE_CAMPAIGN_ID not in text
+    assert push.LEGACY_TRIAL_CAMPAIGN_ID not in text
 
 
 def test_stale_trial_default_does_not_receive_filler_leads(engine, monkeypatch, caplog):
@@ -117,8 +121,10 @@ def test_stale_trial_default_does_not_receive_filler_leads(engine, monkeypatch, 
     assert out["ran"] and out["pushed"] == 0 and out["campaign_missing"] is False
     assert out["campaign_id"] == ""
     assert called == []
-    assert push.LEGACY_TRIAL_CAMPAIGN_ID not in "".join(posts)
-    assert "Queued, no matching v2 campaign: 10" in posts[0]
+    text = job.summary_text(out)
+    assert posts == []
+    assert push.LEGACY_TRIAL_CAMPAIGN_ID not in text
+    assert "Queued, no matching v2 campaign: 10" in text
     assert "OUTBOUND_INSTANTLY_CAMPAIGN_ID is unset" not in caplog.text
     assert len(oe.unpushed(engine)) == 10
 
@@ -181,7 +187,7 @@ def test_push_switch_off_finds_but_does_not_add(engine, monkeypatch):
     called = []
     out, posts = run(engine, push=lambda *a, **k: called.append(1))
     assert out["ran"] and out["pushed"] == 0 and not called
-    assert "switch is off" in posts[0]
+    assert posts == [] and "switch is off" in job.summary_text(out)
     assert len(oe.unpushed(engine)) == 10
 
 
@@ -190,7 +196,7 @@ def test_instantly_failure_reported_and_contacts_kept(engine):
         attempted=len(payload), dry_run=False, errors=["Instantly returned 500"])
     out, posts = run(engine, push=bad)
     assert out["pushed"] == 0 and out["push_problem"]
-    assert "Instantly problem" in posts[0]
+    assert posts == [] and "Instantly problem" in job.summary_text(out)
     assert len(oe.unpushed(engine)) == 10
 
 
@@ -354,7 +360,7 @@ def test_companies_already_in_instantly_are_skipped_and_cost_nothing(engine):
     rep = out["report"]
     assert rep["skipped_in_instantly"] == 2 and rep["companies_tried"] == 4
     assert rep["credits_used"] == 8 and out["pushed"] == 4
-    assert "already in Instantly: 2" in posts[0]
+    assert posts == [] and "already in Instantly: 2" in job.summary_text(out)
     # and they are remembered, so the next run does not re-check them
     again, _ = run(engine, n=6, in_instantly=lambda d: (_ for _ in ()).throw(AssertionError(d)))
     assert again["report"]["skipped_already_enriched"] == 6

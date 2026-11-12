@@ -177,8 +177,9 @@ class TestSendCriticalDealAlerts(unittest.TestCase):
                     s, SimpleNamespace(slack_bot_token="x", slack_channel_id="C1"),
                     force=True,
                 )
-        self.assertTrue(result.get("sent"))
-        mock_client.post_message.assert_called_once()
+        self.assertFalse(result.get("sent"))
+        self.assertTrue(result.get("logged"))
+        mock_client.post_message.assert_not_called()
 
 
 if __name__ == "__main__":

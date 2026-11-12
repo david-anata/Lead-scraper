@@ -143,10 +143,9 @@ def test_daily_delivery_uses_one_exact_csv_for_email_and_slack():
           patch("sales_support_agent.services.access.notify._send", send),
           patch("sales_support_agent.integrations.slack.SlackClient", return_value=slack)):
         result = deliver_daily_batch(value, batch, batches.load_batch_leads(value, [batch_id]))
-    assert result == {"email": "delivered", "slack": "delivered"}
+    assert result == {"email": "delivered", "slack": "logged"}
     assert b"exact.com" in send.call_args.kwargs["attachments"][0]["content"]
-    assert slack.upload_file.call_args.kwargs["channel"] == "CQA"
-    assert b"exact.com" in slack.upload_file.call_args.kwargs["content"]
+    slack.upload_file.assert_not_called()
 
 
 def test_existing_pull_tables_are_a_complete_no_ddl_fallback():

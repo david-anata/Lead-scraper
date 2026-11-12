@@ -36,7 +36,6 @@ def deliver_completed_pull(engine, run: dict[str, Any], *, force: bool = False,
                            test: bool = False) -> dict[str, Any]:
     """Deliver a summary without modifying lead, suppression, or Clay state."""
     from sales_support_agent.config import load_settings
-    from sales_support_agent.integrations.slack import SlackClient
     from sales_support_agent.services import outbound_memory
     from sales_support_agent.services.access import notify
 
@@ -67,20 +66,16 @@ def deliver_completed_pull(engine, run: dict[str, Any], *, force: bool = False,
         result["sent"] += sent
 
     if prefs["slack_enabled"]:
-        try:
-            response = SlackClient(settings).post_message(text=text)
-            result["slack"] = "sent" if response.get("ok") else "failed"
-            result["sent"] += 1 if response.get("ok") else 0
-            outbound_memory.record_delivery_attempt(engine, run_id=int(run.get("id") or 0),
-                recipe=str(run.get("recipe") or ""), destination="slack",
-                target=str(getattr(settings, "slack_channel_id", "") or "configured channel"),
-                status="sent" if response.get("ok") else "failed")
-        except Exception:  # noqa: BLE001
-            logger.exception("[outbound-delivery] Slack delivery failed")
-            result["slack"] = "failed"
-            outbound_memory.record_delivery_attempt(engine, run_id=int(run.get("id") or 0),
-                recipe=str(run.get("recipe") or ""), destination="slack", status="failed",
-                detail="Slack delivery raised an error")
+        # Pull totals are a status report. Keep them in the log and the
+        # delivery history, not in #sales.
+        logger.info("[outbound-delivery] pull summary not posted to Slack\n%s", text)
+        result["slack"] = "logged"
+        outbound_memory.record_delivery_attempt(
+            engine, run_id=int(run.get("id") or 0),
+            recipe=str(run.get("recipe") or ""), destination="slack",
+            target=str(getattr(settings, "slack_channel_id", "") or "configured channel"),
+            status="logged", detail="Routine pull summary kept out of Slack",
+        )
     return result
 
 
@@ -88,7 +83,6 @@ def deliver_daily_batch(engine, batch: Any, leads: list[dict[str, Any]], *,
                         force: bool = False, test: bool = False) -> dict[str, Any]:
     """Deliver the exact stored daily artifact once to each enabled destination."""
     from sales_support_agent.config import load_settings
-    from sales_support_agent.integrations.slack import SlackClient
     from sales_support_agent.services import outbound_memory
     from sales_support_agent.services.access import notify
 
@@ -130,20 +124,15 @@ def deliver_daily_batch(engine, batch: Any, leads: list[dict[str, Any]], *,
         result["email"] = "delivered" if recipients and sent == len(recipients) else "failed"
     if prefs["slack_enabled"]:
         channel = prefs.get("slack_channel") or str(getattr(settings, "slack_channel_id", "") or "")
-        try:
-            client = SlackClient(settings)
-            response = client.upload_file(
-                content=attachments[0]["content"],
-                filename=filename, title=f"Daily Leads, {batch.business_date}",
-                initial_comment=text, channel=channel,
-            )
-            result["slack"] = "delivered" if response.get("ok") else "failed"
-        except Exception:  # noqa: BLE001
-            logger.exception("[outbound-delivery] daily Slack delivery failed")
-            result["slack"] = "failed"
+        # A finished batch is a report. A batch that delivered nothing, or a
+        # recipe that failed, is posted separately by post_sales_alert.
+        logger.info(
+            "[outbound-delivery] daily batch %s not posted to Slack channel %s\n%s",
+            getattr(batch, "id", ""), channel or "default", text,
+        )
+        result["slack"] = "logged"
         outbound_memory.record_delivery_attempt(
             engine, recipe="daily_batch", destination="slack", target=channel,
-            status="sent" if result["slack"] == "delivered" else "failed",
-            detail=f"Batch {batch.id}; CSV rows {len(leads)}",
+            status="logged", detail=f"Batch {batch.id}; routine report kept out of Slack",
         )
     return result
