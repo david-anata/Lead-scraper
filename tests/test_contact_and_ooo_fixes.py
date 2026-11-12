@@ -138,6 +138,40 @@ def test_title_retry_stays_inside_the_credit_budget():
     assert spent.reason == "Credit budget reached."
 
 
+def test_credit_hold_saves_the_spent_search_and_stays_eligible():
+    engine = _engine()
+    calls = []
+
+    def find(domain, *, api_key, max_contacts=2, credit_budget=None, **kwargs):
+        calls.append((domain, credit_budget))
+        return oc.FindResult(
+            domain=domain, credits_used=1, contacts=[], reason="Credit budget reached.",
+        )
+
+    first = oe.run_enrichment(
+        engine, [{"domain": "brand.com", "brand": "Brand", "recipe": "amz_on", "country": "US"}],
+        api_key="k", credit_budget=1, find=find,
+        write=lambda *_a, **_k: ("line", "ai"), already_in_instantly=lambda _d: False,
+    )
+    assert first.stopped_reason == "Credit budget reached."
+    assert first.credits_used == 1
+    with engine.connect() as conn:
+        status, credits = conn.execute(text(
+            "SELECT status, credits_used FROM outbound_enriched WHERE domain = 'brand.com'"
+        )).one()
+    assert status == "credit_hold" and credits == 1
+    assert "brand.com" not in oe.enriched_domains(engine)
+    assert oe.enriched_since(engine, datetime(2026, 11, 1))["credits"] == 1
+    second = oe.run_enrichment(
+        engine, [{"domain": "brand.com", "brand": "Brand", "recipe": "amz_on", "country": "US"}],
+        api_key="k", credit_budget=1, find=find,
+        write=lambda *_a, **_k: ("line", "ai"), already_in_instantly=lambda _d: False,
+    )
+    assert calls[0][0] == "brand.com" and calls[1][0] == "brand.com"
+    assert second.credits_used == 1
+    assert oe.enriched_since(engine, datetime(2026, 11, 1))["credits"] == 2
+
+
 def test_conflict_update_refreshes_enriched_at():
     engine = _engine()
     oe._record_domain(engine, "old.com", "none", 0, 0, "search returned NO_RESULTS")
