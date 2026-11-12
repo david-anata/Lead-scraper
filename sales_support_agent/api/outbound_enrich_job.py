@@ -295,6 +295,7 @@ def run_enrich_job(
             # signal-matched fillers are the only pushes.
             campaign_id="", dry_run=not push_on,
             find=find, write=write, push=push,
+            country_signals=_oe.storefront_country_signals,
             deadline=time.monotonic() + _TIME_BUDGET_SECONDS,
             # Never touch a company Clay (or anything else) already put in Instantly.
             already_in_instantly=in_instantly or _ip.domain_in_instantly,

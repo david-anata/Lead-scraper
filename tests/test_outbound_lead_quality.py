@@ -9,6 +9,21 @@ import outbound_pipeline as pipeline
 import outbound_reengage as reengage
 
 
+def test_topup_splits_a_stored_full_name_before_keeping_the_lead():
+    result = reengage.select_topup([{
+        "id": "julie",
+        "email": "julie@brand.com",
+        "status": 3,
+        "first_name": "Julie Mitchell",
+        "last_name": "",
+        "title": "Founder",
+        "campaign": "old-campaign",
+    }])
+    assert result["rejected"] == {}
+    assert result["eligible"][0]["first_name"] == "Julie"
+    assert result["eligible"][0]["last_name"] == "Mitchell"
+
+
 def test_title_rank_drops_associate_and_non_buyers_and_keeps_founders():
     assert contacts.title_rank("E-commerce Merchandise Associate") is None
     assert contacts.title_rank("Marketing & Support Associate") is None
@@ -201,7 +216,7 @@ def test_personalization_stays_off_until_the_flag_and_then_stays_factual(monkeyp
     assert before_facts.rich_phrases == ()
     before, _source = openers.write_opener(lead)
     assert "Klaviyo" not in before
-    after_lead = {**lead, "rich_personalization": True}
+    after_lead = {**lead, "rich_personalization": True, "template_fallback": True}
     openers._OPENERS_BY_DOMAIN.clear()
     openers._ANGLES_BY_DOMAIN.clear()
     after, source = openers.write_opener(after_lead)
@@ -227,6 +242,7 @@ def test_rich_lines_sound_like_a_person_and_never_lead_with_a_negative(monkeypat
         "categories": "sports",
         "amazon_absent": True,
         "rich_personalization": True,
+        "template_fallback": True,
         "store_profile": {
             "store_locator_page": "https://northtrampoline.com/pages/stores",
             "apps": [{"name": "Klaviyo: Email Marketing"}],
@@ -301,6 +317,7 @@ def test_a_lone_product_is_kept_and_a_review_app_is_not_called_reviews(monkeypat
         "brand": "Example",
         "domain": "example-soap.com",
         "rich_personalization": True,
+        "template_fallback": True,
         "store_profile": {
             "most_recently_published_product": {
                 "title": "Cedar Soap",
@@ -314,8 +331,10 @@ def test_a_lone_product_is_kept_and_a_review_app_is_not_called_reviews(monkeypat
     angle, _angle_source = openers.write_brand_angle(product_only)
     facts = openers.collect_facts(product_only)
     assert "Cedar Soap" in facts.rich_phrases[0]
-    assert source == "none"
-    assert line == "" and angle == ""
+    assert source == "fallback"
+    assert "cedar soap" in line.lower() and "October" not in line
+    assert "amazon" not in line.lower()
+    assert angle and angle != line
 
     installed = {
         "brand": "Example",
@@ -339,7 +358,10 @@ def test_a_lone_product_is_kept_and_a_review_app_is_not_called_reviews(monkeypat
 def test_style_validator_rejects_digits_dashes_urls_tech_and_low_ratings():
     from outbound_personalization import style_violation
 
-    assert style_violation("Parents leave thousands of reviews.") == ""
+    assert style_violation("Parents leave thousands of happy reviews.") == ""
+    assert style_violation("Too short.") == "too short"
+    assert style_violation("A line with  a doubled space in the sentence here.") == "repr or placeholder"
+    assert style_violation("The catalog is ['apparel'] and nothing else today.") == "repr or placeholder"
     assert style_violation("Plans start at $99.") == "digit"
     assert style_violation("A smart bottle — with coaching.") == "em dash"
     assert style_violation("See https://brand.com/pages for it.") == "url"
@@ -551,6 +573,47 @@ def _hq_store(name: str, **extra: object) -> dict:
     }
     store.update(extra)
     return store
+
+
+def test_four_catalog_storefronts_are_non_us_before_copy():
+    """Martha Jackson, GLO, Rivieras, and Pedro García must not reach copy.
+
+    A StoreLeads country_code of US is not a headquarters. The .co.uk
+    domain, a non-USD catalog currency, and a non-English storefront
+    language are enough to hold the lead.
+    """
+
+    bare = {
+        "marthajackson.co.uk": ("Martha Jackson", "", ""),
+        "glo910.com": ("GLO", "", ""),
+        "rivieras.com": ("Rivieras", "", ""),
+        "pedrogarcia.com": ("Pedro García", "", ""),
+    }
+    # Without a location, currency, or language, only the ccTLD is decisive.
+    assert pipeline.copy_country_reason({
+        "name": "marthajackson.co.uk", "merchant_name": "Martha Jackson", "country_code": "US",
+    }) == "non_us"
+    for domain, (brand, _currency, _language) in bare.items():
+        if domain.endswith(".co.uk"):
+            continue
+        assert pipeline.copy_country_reason({
+            "name": domain, "merchant_name": brand, "country_code": "US",
+        }) == "", domain
+    observed = {
+        "marthajackson.co.uk": ("Martha Jackson", "GBP", "en"),
+        "glo910.com": ("GLO", "EUR", "es"),
+        "rivieras.com": ("Rivieras", "EUR", "fr"),
+        "pedrogarcia.com": ("Pedro García", "EUR", "es"),
+    }
+    for domain, (brand, currency, language) in observed.items():
+        store = {
+            "name": domain,
+            "merchant_name": brand,
+            "country_code": "US",
+            "currency_code": currency,
+            "language_code": language,
+        }
+        assert pipeline.copy_country_reason(store) == "non_us", domain
 
 
 def test_new_mexico_and_new_england_are_us_headquarters():

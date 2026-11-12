@@ -28,6 +28,7 @@ CAMPAIGN = "11111111-1111-4111-8111-111111111111"
 
 @pytest.fixture(autouse=True)
 def env(monkeypatch):
+    monkeypatch.setattr(oe, "storefront_country_signals", lambda domain, brand="": {})
     monkeypatch.setenv("PROSPEO_API_KEY", "k" * 20)
     monkeypatch.setenv("OUTBOUND_PUSH_ENABLED", "true")
     monkeypatch.setenv("OUTBOUND_AUTO_ENRICH", "true")
@@ -48,7 +49,11 @@ def finder(domain, *, api_key, max_contacts=2, **kw):
 
 
 def write(lead, contact=None):
-    return f"{lead['brand']} stood out. Is Amazon a real channel for you yet?", "ai"
+    brand = lead["brand"]
+    return (
+        f"{brand} makes the cherry cola, and a new shopper can tell what they sell.",
+        "ai",
+    )
 
 
 def ok_push(payload, cid, dry_run=False, **k):

@@ -329,6 +329,32 @@ def _foreign_store_name(store: dict[str, Any]) -> str:
     return ""
 
 
+def _location_country(store: dict[str, Any]) -> str:
+    """Country named in a real location or contact address, or empty."""
+
+    found: list[str] = []
+    for text in (
+        store.get("location"), store.get("city"), store.get("administrative_area_level_1"),
+    ):
+        if _delaware_registration(str(text or "")):
+            continue
+        code = _country_in_text(text)
+        if code:
+            found.append(code)
+    for address in _contact_addresses(store):
+        if _delaware_registration(address):
+            continue
+        code = _country_in_text(address)
+        if code:
+            found.append(code)
+    foreign = [code for code in found if code != "US"]
+    if foreign:
+        return foreign[0]
+    if any(code == "US" for code in found):
+        return "US"
+    return ""
+
+
 def headquarters_verdict(store: dict[str, Any]) -> tuple[str, str]:
     """(country code, reason). Reason is empty only when the code is US.
 
@@ -381,6 +407,8 @@ def headquarters_verdict(store: dict[str, Any]) -> tuple[str, str]:
         if code == "US" and name_country:
             return name_country, f"headquarters country is {name_country} from store name"
         if code == "US" and not _location_is_delaware_only(store):
+            # Reported on the Clay row. Eligibility still ignores this when
+            # there is no real location and the catalog shows a non-US brand.
             return "US", ""
         if code and code != "US":
             return code, f"headquarters country is {code} from primary domain country_code"
@@ -473,6 +501,18 @@ def _phone_countries(store: dict[str, Any]) -> list[str]:
     return found
 
 
+def _storefront_language(store: dict[str, Any]) -> str:
+    """Primary storefront language, such as ``es`` or ``fr``. English is empty."""
+
+    raw = str(store.get("language_code") or store.get("locale") or "").strip().lower().replace("_", "-")
+    if not raw:
+        return ""
+    language = raw.split("-", 1)[0]
+    if language in {"en", "us"} or len(language) != 2:
+        return ""
+    return language
+
+
 def _locale_country(store: dict[str, Any]) -> str:
     raw = str(store.get("language_code") or store.get("locale") or "").strip().lower().replace("_", "-")
     if "-" not in raw:
@@ -522,6 +562,9 @@ def _clear_non_us_reason(store: dict[str, Any]) -> str:
             return f".{suffix} domain and ships to {tld_country}"
     if tld_country and tld_country != "US":
         return f".{suffix} domain is a {tld_country} storefront"
+    language = _storefront_language(store)
+    if language:
+        return f"storefront language is {language}"
     named = _foreign_store_name(store)
     if named:
         return f"store name reads as {named}"
@@ -538,14 +581,31 @@ def country_eligibility(store: dict[str, Any]) -> tuple[bool, str]:
     """
 
     code, reason = headquarters_verdict(store)
-    if code == "US":
+    located = _location_country(store)
+    if located == "US":
         return True, ""
-    if code:
+    if located:
+        return False, f"headquarters country is {located} from location"
+    if code and code != "US":
         return False, reason
+    # A US country_code with no street or city is not a headquarters.
     clear = _clear_non_us_reason(store)
     if clear:
         return False, f"headquarters country is unknown; {clear}"
     return True, "headquarters country is unknown; kept"
+
+
+def copy_country_reason(store: dict[str, Any]) -> str:
+    """``non_us`` when this store must not be enriched or copied, else empty.
+
+    The detailed headquarters reason is logged by ``passes_company_fit``.
+    Callers run this before enrich and before an opener is written.
+    """
+
+    allowed, _reason = country_eligibility(store)
+    if allowed:
+        return ""
+    return "non_us"
 
 
 def eligibility_country_by_domain(
@@ -1075,36 +1135,132 @@ _STORE_WORDS = re.compile(
     re.I,
 )
 _TRAILING_STORE = re.compile(r"(?:,|\s)+\b(?:shop|store)\b\.?$", re.I)
+_COUNTRY_SUFFIX = re.compile(
+    r"(?:,|\s)+\b(?:us|usa|u\.s\.a\.?|united states)\b\.?$",
+    re.I,
+)
 _BRAND_TLD = re.compile(r"\.(?:com|net|org|io|co|shop|store|us)$", re.I)
+_GENERIC_BRAND = frozenset({
+    "water", "home", "shop", "store", "beauty", "health", "food", "apparel",
+    "brand", "official", "sale", "the", "co", "inc", "llc", "io", "us", "usa",
+    "online", "new", "best",
+})
 _TRAILING_TAG = re.compile(r"\s*[|]\s*.*$|\s+[–—-]\s+.+$")
 
 
-def clean_brand_name(value: Any) -> str:
+def _label_from_web_address(text: str) -> str:
+    """The brand label when the whole value is a URL or a bare domain."""
+
+    raw = (text or "").strip()
+    if not raw or " " in raw:
+        return ""
+    raw = re.sub(r"^https?://", "", raw, flags=re.I)
+    raw = re.sub(r"^www\.", "", raw, flags=re.I)
+    raw = raw.split("/")[0].split("?")[0].strip(".")
+    if "." not in raw or not re.fullmatch(r"[A-Za-z0-9.-]+", raw):
+        return ""
+    return raw.split(".")[0].replace("-", " ").strip()
+
+
+def _brand_token(part: str) -> str:
+    """Title-case a token unless it is a short acronym or a clean stylized name."""
+
+    if not part:
+        return ""
+    if "-" in part:
+        bits = [bit for bit in part.split("-") if bit]
+        if bits and all(re.fullmatch(r"[A-Z]{1,3}|[A-Z][a-z]+", bit) for bit in bits):
+            return part
+    if re.fullmatch(r"[A-Z]{2,3}", part):
+        return part
+    if re.fullmatch(r"[A-Z][a-z]+(?:[A-Z][a-z]+)+", part):
+        return part
+    if re.fullmatch(r"[A-Z][a-z]+", part):
+        return part
+    return part[:1].upper() + part[1:].lower()
+
+
+def _shape_brand_case(text: str) -> str:
+    """Title-case ordinary words. A 2 or 3 letter acronym stays in caps."""
+
+    if re.fullmatch(r"[A-Z]{2,3}", text):
+        return text
+    original = text.split(" ")
+    if text.isupper() or text.islower():
+        shaped = []
+        for part in original:
+            if re.fullmatch(r"[A-Z]{2,3}", part):
+                shaped.append(part)
+            elif part:
+                shaped.append(part[:1].upper() + part[1:].lower())
+        text = " ".join(shaped)
+    return " ".join(_brand_token(part) for part in text.split(" ") if part)
+
+
+def _written_domain_brand(value: Any) -> str:
+    """Keep a brand written as ``Water.io`` when that is the display name."""
+
+    text = " ".join(str(value or "").split())
+    if not text or " " in text or text.lower().startswith("http"):
+        return ""
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9-]{0,40}\.[A-Za-z]{2,8}", text):
+        return ""
+    label = text.split(".")[0].lower()
+    if label in {"www", "shop", "store", "mail"}:
+        return ""
+    return text
+
+
+def _brand_is_usable(text: str) -> bool:
+    folded = re.sub(r"[^a-z0-9]+", " ", text.lower()).strip()
+    if not folded or len(folded) < 3:
+        return False
+    if folded in _GENERIC_BRAND:
+        return False
+    if re.search(r"\d", text):
+        return False
+    return True
+
+
+def clean_brand_name(value: Any, *, display_name: Any = "") -> str:
     """A company name safe to put in an opener or an Instantly field.
 
-    Legal suffixes, store words, a trailing TLD, and a tagline after a
-    separator come off. ALL CAPS and all-lowercase names are title-cased.
-    Mixed case such as REV Gum or MyBevi is left as written.
+    Web addresses, legal suffixes, country suffixes (US, USA), store words,
+    and a tagline after a separator come off. A 2 or 3 letter acronym stays
+    in caps. A generic or tiny result falls back to ``display_name``. An
+    unusable name is empty so the lead can be held.
     """
 
-    text = " ".join(str(value or "").replace("—", " ").replace("–", " ").split())
-    text = _TRAILING_TAG.sub("", text).strip(" ,.")
-    if not text:
-        return ""
-    changed = True
-    while changed and text:
-        changed = False
-        for pattern in (_LEGAL_SUFFIX, _STORE_WORDS, _TRAILING_STORE, _BRAND_TLD):
-            nxt = pattern.sub("", text).strip(" ,.")
-            if nxt and nxt != text:
-                text = nxt
-                changed = True
-    if text.isupper() or text.islower():
-        text = " ".join(
-            (part[:1].upper() + part[1:].lower()) if part else ""
-            for part in text.split(" ")
-        )
-    return text
+    def once(raw: Any) -> str:
+        text = " ".join(str(raw or "").replace("—", " ").replace("–", " ").split())
+        text = _TRAILING_TAG.sub("", text).strip(" ,.")
+        web = _label_from_web_address(text)
+        if web:
+            text = web
+        if not text:
+            return ""
+        changed = True
+        while changed and text:
+            changed = False
+            for pattern in (
+                _LEGAL_SUFFIX, _COUNTRY_SUFFIX, _STORE_WORDS, _TRAILING_STORE, _BRAND_TLD,
+            ):
+                nxt = pattern.sub("", text).strip(" ,.")
+                if nxt and nxt != text:
+                    text = nxt
+                    changed = True
+        return _shape_brand_case(text)
+
+    primary = once(value)
+    if _brand_is_usable(primary):
+        return primary
+    written = _written_domain_brand(display_name)
+    if written:
+        return written
+    fallback = once(display_name)
+    if fallback and fallback != primary and _brand_is_usable(fallback):
+        return fallback
+    return ""
 
 
 def to_clay_lead(store: dict[str, Any], *, now: Optional[datetime] = None,
@@ -1600,6 +1756,8 @@ def run_storeleads_to_clay(
                 lead["signals"] = [reason] + [
                     s for s in lead.get("signals", []) if s != reason
                 ]
+                import outbound_recipes as _recipes
+                _recipes.annotate_trial_signal(lead, store, now=now, settings=settings)
             # Amazon last, so a real finding about their own listings wins over
             # the recipe's guess at why now.
             if amazon_check is not None:

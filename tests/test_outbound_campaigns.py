@@ -115,14 +115,14 @@ def test_push_pending_uses_the_table_and_holds_cut_recipes(engine):
         engine,
         SimpleNamespace(email="a@on.com", domain="on.com", first_name="A", last_name="B",
                         title="Founder", linkedin_url="", email_status=""),
-        "On sells on Amazon.", "test",
+        "On's shoes are already on Amazon, and the listing should lead with them.", "test",
         {"brand": "On", "categories": "", "recipe": "amz_on", "tier": "B"},
     )
     oe._record_person(
         engine,
         SimpleNamespace(email="a@plan.com", domain="plan.com", first_name="A", last_name="B",
                         title="Founder", linkedin_url="", email_status=""),
-        "Plan sells a glass bottle.", "test",
+        "Plan's glass bottle gives a new shopper one product to remember.", "test",
         {"brand": "Plan", "categories": "", "recipe": "plan_upgrade", "tier": "B"},
     )
     sent = {}
@@ -146,7 +146,7 @@ def test_push_pending_falls_back_when_the_table_is_empty(engine):
         engine,
         SimpleNamespace(email="a@plan.com", domain="plan.com", first_name="A", last_name="B",
                         title="Founder", linkedin_url="", email_status=""),
-        "Plan sells a glass bottle.", "test",
+        "Plan's glass bottle gives a new shopper one product to remember.", "test",
         {"brand": "Plan", "categories": "", "recipe": "plan_upgrade", "tier": "B"},
     )
     sent = {}
@@ -169,7 +169,7 @@ def test_push_pending_falls_back_when_the_table_cannot_be_read(engine, monkeypat
         engine,
         SimpleNamespace(email="a@off.com", domain="off.com", first_name="A", last_name="B",
                         title="Founder", linkedin_url="", email_status=""),
-        "Not on Amazon.", "test",
+        "Off's glass bottle gives a new shopper one product to remember.", "test",
         {"brand": "Off", "categories": "", "recipe": "amz_off", "tier": "B"},
     )
     sent = {}

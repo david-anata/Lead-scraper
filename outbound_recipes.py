@@ -16,6 +16,7 @@ without a live key.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Optional
@@ -103,14 +104,143 @@ def _parse_app_date(value: Any) -> Optional[datetime]:
 
 
 def _app_id(app: dict[str, Any]) -> str:
-    """StoreLeads app id: platform + token, e.g. shopify.rebuy."""
+    """StoreLeads app id as stored on a domain, e.g. shopify.rebuy."""
     token = str(app.get("token") or "").strip()
     if not token:
         return ""
-    if token.startswith("shopify."):
-        return token
+    if token.startswith("shopify.") or token.startswith("1."):
+        return "shopify." + token.split(".", 1)[1]
     platform = str(app.get("platform") or "shopify").strip() or "shopify"
+    if platform == "shopify":
+        return f"shopify.{token}"
     return f"{platform}.{token}"
+
+
+def filter_app_id(token: str) -> str:
+    """Id for f:app_installed_at and f:app_uninstalled_at.
+
+    Those filters return zero rows for ``shopify.rebuy``. The same call with
+    ``1.rebuy`` returns the stores. ``f:an`` accepts both, which hid the bug.
+    """
+
+    raw = str(token or "").strip()
+    if not raw:
+        return ""
+    if raw.startswith("1."):
+        return raw
+    if raw.startswith("shopify."):
+        return "1." + raw.split(".", 1)[1]
+    if "." in raw:
+        return "1." + raw.split(".", 1)[1]
+    return f"1.{raw}"
+
+
+TRIAL_OFFER_SIGNALS = ("churned_tool", "category", "sold_through_retailers")
+
+
+def active_trial_signal(settings: Optional[dict[str, Any]] = None) -> str:
+    """The one Trial Offer signal David has switched on."""
+
+    priority = [
+        part.strip()
+        for part in str(setting(settings, "trial_offer.signal_priority") or "").split(",")
+        if part.strip() in TRIAL_OFFER_SIGNALS
+    ]
+    active = str(setting(settings, "trial_offer.active_signal") or "").strip()
+    if active in priority:
+        return active
+    return priority[0] if priority else ""
+
+
+def _removed_growth_app(store: dict[str, Any], now: datetime,
+                        settings: Optional[dict[str, Any]] = None) -> bool:
+    """True when any growth tool was removed inside the churn window."""
+
+    days = _int(settings, "churned_tool.window_days")
+    for app in store.get("apps") or []:
+        if not isinstance(app, dict) or _app_id(app) not in GROWTH_APP_TOKENS:
+            continue
+        removed = _parse_app_date(app.get("removed_at"))
+        if removed is None:
+            continue
+        age = (now - removed).days
+        if 0 <= age <= days:
+            return True
+    return False
+
+
+def _has_category(store: dict[str, Any]) -> bool:
+    raw = store.get("categories") or store.get("category") or ""
+    if isinstance(raw, (list, tuple)):
+        raw = " ".join(str(item) for item in raw)
+    return bool(str(raw).strip())
+
+
+def _sold_through_retailers(store: dict[str, Any]) -> bool:
+    if str(store.get("retailer_page") or "").strip() or str(store.get("store_locator_page") or "").strip():
+        return True
+    features = store.get("features") or []
+    if isinstance(features, (list, tuple)):
+        blob = " ".join(str(item.get("name") if isinstance(item, dict) else item) for item in features)
+    else:
+        blob = str(features)
+    if re.search(r"wholesale|retailers page|store locator", blob, re.I):
+        return True
+    channels = store.get("sales_channels") or []
+    names = []
+    if isinstance(channels, (list, tuple)):
+        for item in channels:
+            names.append(str(item.get("name") if isinstance(item, dict) else item))
+    else:
+        names.append(str(channels))
+    return any("faire" in name.lower() for name in names)
+
+
+def qualifying_trial_signal(
+    store: dict[str, Any],
+    now: Optional[datetime] = None,
+    settings: Optional[dict[str, Any]] = None,
+) -> str:
+    """The active Trial Offer signal on this store, or empty."""
+
+    moment = now or datetime.now(timezone.utc)
+    active = active_trial_signal(settings)
+    if active == "churned_tool" and _removed_growth_app(store, moment, settings):
+        return active
+    if active == "category" and _has_category(store):
+        return active
+    if active == "sold_through_retailers" and _sold_through_retailers(store):
+        return active
+    return ""
+
+
+def annotate_trial_signal(
+    lead: dict[str, Any],
+    store: dict[str, Any],
+    *,
+    now: Optional[datetime] = None,
+    settings: Optional[dict[str, Any]] = None,
+) -> dict[str, Any]:
+    """Record the one Trial Offer signal when no v2 campaign already claims the store.
+
+    Signal campaigns keep the store. A lead with no signal stays unmarked, so
+    it cannot fall into Trial Offer just because its recipe is icp_baseline.
+    """
+
+    import outbound_instantly_push as push
+
+    if push.route_tokens_for_store(store, now=now):
+        return lead
+    signal = qualifying_trial_signal(store, now, settings)
+    if not signal:
+        return lead
+    token = f"trial_offer:{signal}"
+    signals = [str(item) for item in (lead.get("signals") or [])]
+    if token not in signals:
+        signals.append(token)
+    lead["signals"] = signals
+    lead["trial_signal"] = signal
+    return lead
 
 
 # ---- tunables ----------------------------------------------------------------
@@ -135,6 +265,10 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "plan_upgrade.window_days": 180,
     "replatformed.window_days": 180,
     "churned_tool.window_days": 30,
+    # Trial Offer is the offer plus exactly one of these signals. David switches
+    # the active signal here. Catalog size is not on the list.
+    "trial_offer.active_signal": "churned_tool",
+    "trial_offer.signal_priority": "churned_tool,category,sold_through_retailers",
     # Amazon marketplace check. A brand losing control of its own listings is a
     # real "why now", but a wrong claim is worse than no claim, so the gates are
     # deliberately conservative and every one of them is tunable in the app.
@@ -296,7 +430,7 @@ def _growth_queries(now: datetime, settings=None) -> list[dict[str, Any]]:
     window = _iso(now - timedelta(days=_int(settings, "new_growth_app.window_days")))
     return [
         {
-            "f:app_installed_at": token,
+            "f:app_installed_at": filter_app_id(token),
             "f:app_installed_at:min": window,
             "sort": "-er,rank",
         }
@@ -323,16 +457,13 @@ def churn_tokens_for(now: datetime, settings=None) -> list[str]:
 def _churn_queries(now: datetime, settings=None) -> list[dict[str, Any]]:
     """One uninstall query per tool.
 
-    The date format and the shopify. prefix already match the docs (the same
-    timestamp helper is what plan_upgrade and replatformed use successfully).
-    What zeroed this recipe is stacking f:it=email plus the employee bounds on
-    an already single-app, 30-day filter: that intersection returned an empty
-    200. Email and headcount are still required by store_matches_icp.
+    Install and uninstall filters want ``1.<token>``. ``shopify.<token>`` returns
+    zero rows. Email and headcount are still required by store_matches_icp.
     """
     window = _iso(now - timedelta(days=_int(settings, "churned_tool.window_days")))
     return [
         {
-            "f:app_uninstalled_at": token,
+            "f:app_uninstalled_at": filter_app_id(token),
             "f:app_uninstalled_at:min": window,
             "f:it": None,
             "f:empcmin": None,

@@ -315,17 +315,28 @@ def resolve_recipe_campaign(
         chosen = specific[0]
     else:
         amazon = [item for item in matches if item in {"amz_on", "amz_off"}]
-        if len(set(amazon)) != 1:
-            if name in blocked_names:
-                return "", "blocked", ""
+        if len(set(amazon)) == 1:
+            chosen = amazon[0]
+        else:
+            chosen = ""
+    if chosen:
+        if chosen in blocked_names:
+            return "", "blocked", ""
+        target = campaign_for_recipe(chosen, campaign_map=campaign_map)
+        if not target:
             return "", "queued", ""
-        chosen = amazon[0]
-    if chosen in blocked_names:
+        return target, "routed", chosen
+    trial_signal = ""
+    for item in signals or []:
+        text = str(item or "").strip()
+        if text.startswith("trial_offer:"):
+            trial_signal = text.split(":", 1)[1].strip()
+            break
+    if trial_signal in {"churned_tool", "category", "sold_through_retailers"}:
+        return LEGACY_TRIAL_CAMPAIGN_ID, "routed", "trial_offer"
+    if name in blocked_names:
         return "", "blocked", ""
-    target = campaign_for_recipe(chosen, campaign_map=campaign_map)
-    if not target:
-        return "", "queued", ""
-    return target, "routed", chosen
+    return "", "queued", ""
 
 
 def dry_run_route_plan(
@@ -353,7 +364,7 @@ def dry_run_route_plan(
         if status not in by_status:
             status = "queued"
         by_status[status] += 1
-        if _closed_to_new_leads(campaign_id):
+        if _closed_to_new_leads(campaign_id) and _route != "trial_offer":
             legacy_or_hold += 1
         elif status == "routed" and campaign_id:
             routed[campaign_id] = routed.get(campaign_id, 0) + 1
@@ -369,14 +380,16 @@ def dry_run_route_plan(
 def friendly_category(raw: Any) -> str:
     """StoreLeads paths ("/Home & Garden/Gardening & Landscaping, /Business & ...")
     become the words the email reads: "gardening & landscaping"."""
-    if isinstance(raw, (list, tuple)):
-        raw = ", ".join(str(r) for r in raw)
+    from outbound_personalization import as_text
+
+    raw = as_text(raw)
     paths = [p.strip() for p in str(raw or "").split(",") if p.strip()]
     if not paths:
         return ""
     preferred = [p for p in paths if not p.lower().startswith("/business & industrial")] or paths
     leaf = [seg for seg in preferred[0].split("/") if seg.strip()]
-    return leaf[-1].strip().lower() if leaf else ""
+    text = leaf[-1].strip().lower().replace("_", " ") if leaf else ""
+    return " ".join(text.split())
 
 
 def protected_campaigns() -> set[str]:
@@ -401,22 +414,37 @@ def _company_name(lead: dict[str, Any]) -> str:
 def build_lead(contact: dict[str, Any], lead: dict[str, Any], opener: str) -> dict[str, Any]:
     """One Instantly lead. Field names match the sequence variables:
     {{firstName}}, {{companyName}}, {{personalization}}, {{category}}, {{brandAngle}}."""
-    category = friendly_category(lead.get("categories") or "") or str(lead.get("niche") or "").strip().lower()
+    from outbound_contacts import split_person_name
+    from outbound_openers import plain_category
+
+    category = friendly_category(lead.get("categories") or "")
+    if not category or "_" in category:
+        category = plain_category(lead.get("categories") or lead.get("niche") or "")
+    if "_" in category:
+        category = category.replace("_", " ")
     angle = str(contact.get("brand_angle") or lead.get("brand_angle") or "").strip()
+    first_name, last_name = split_person_name(
+        contact.get("first_name") or "", contact.get("last_name") or "",
+    )
+    variables = {
+        "category": category,
+        "signal": str(lead.get("recipe") or "").strip(),
+        "tier": str(lead.get("tier") or "").strip(),
+        "contact_title": str(contact.get("title") or "").strip(),
+        "brandAngle": angle,
+    }
+    trial_signal = str(lead.get("trial_signal") or "").strip()
+    if trial_signal:
+        variables["trial_signal"] = trial_signal
     return {
         "email": str(contact.get("email") or "").strip().lower(),
-        "first_name": str(contact.get("first_name") or "").strip(),
-        "last_name": str(contact.get("last_name") or "").strip(),
+        "first_name": first_name,
+        "last_name": last_name,
         "company_name": _company_name(lead),
         "website": str(lead.get("domain") or "").strip(),
         "personalization": opener,
-        "custom_variables": {
-            "category": category,
-            "signal": str(lead.get("recipe") or "").strip(),
-            "tier": str(lead.get("tier") or "").strip(),
-            "contact_title": str(contact.get("title") or "").strip(),
-            "brandAngle": angle,
-        },
+        "custom_variables": variables,
+        "trial_signal": trial_signal,
     }
 
 
@@ -436,6 +464,20 @@ class PushOutcome:
         return f"Instantly accepted {self.created}, skipped {self.skipped} of {self.attempted}."
 
 
+def _qualified_trial_batch(leads: list[dict[str, Any]], campaign_id: str) -> bool:
+    """True when every lead was qualified for Trial Offer by one recorded signal."""
+
+    if not is_legacy_trial_campaign(campaign_id) or not leads:
+        return False
+    allowed = {"churned_tool", "category", "sold_through_retailers"}
+    for lead in leads:
+        variables = lead.get("custom_variables") if isinstance(lead.get("custom_variables"), dict) else {}
+        signal = str(lead.get("trial_signal") or variables.get("trial_signal") or "").strip()
+        if signal not in allowed:
+            return False
+    return True
+
+
 def push_leads(
     leads: list[dict[str, Any]],
     campaign_id: str,
@@ -451,7 +493,7 @@ def push_leads(
     if not campaign_id:
         out.reason = "No campaign id."
         return out
-    if _closed_to_new_leads(campaign_id):
+    if _closed_to_new_leads(campaign_id) and not _qualified_trial_batch(leads, campaign_id):
         out.reason = TRIAL_CLOSED_REASON
         return out
     if campaign_id in protected_campaigns():

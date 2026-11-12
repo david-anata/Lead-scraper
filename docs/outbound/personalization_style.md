@@ -6,8 +6,9 @@ shopper-visible fact sheet from the StoreLeads record and the examples
 below. The code then checks the lines. A thin record, a restricted
 category such as wine, or a high vendor count (a multi-brand retailer)
 gets no lines and is flagged. If the model line fails a check, the
-fallback is a short category sentence, or nothing when that is not safe.
-A line over the hard word max is not replaced. It is left empty and the lead is held.
+fallback is one shopper-visible idea when the record has a product, story,
+review, retail store, or social presence. A category code is not that idea.
+A line outside the word range is regenerated once, then that same idea is used.
 
 The StoreLeads key the code reads is `STORELEADS_API_KEY`. It is not set
 on the Vercel project anata-agent-staging. Do not invent another name.
@@ -29,16 +30,18 @@ estimated_sales, visits, rank, and employee_count never appear in the copy.
 
 ## Rules
 
-- Opener (`{{personalization}}`): one sentence of about 20 words, never more than 25. A longer line is regenerated once, then the lead is held.
-- brandAngle: one sentence of about 15 words, never more than 20. Same regenerate-once-then-hold rule. It does not repeat the opener and never starts with "Anata helps".
-- Only mention Amazon when a fact says the brand sells there, except on a Trial Offer. A Trial Offer line must not claim or assume the brand already sells on Amazon: no "your Amazon store", "your listings", or "already on Amazon". The brand angle may mention Amazon as an opportunity, such as a bundle that gives new Amazon shoppers an easy way to try the products.
+- Opener (`{{personalization}}`): one sentence of about 20 words, at least 6 and never more than 25. It suggests one specific idea. A line outside that range is regenerated once, then replaced by the deterministic idea when a shopper-visible fact exists.
+- brandAngle: one sentence of about 15 words, at least 6 and never more than 20. Same regenerate-once rule. It does not repeat the opener and never starts with "Anata helps".
+- Only the amz_on segment may say the brand is on Amazon. A Trial Offer opener must not mention Amazon. Its angle may mention new Amazon shoppers as an opportunity and must not say the brand is already there: no "on Amazon", "your Amazon store", "your listings", or "already on Amazon".
+- Never output a raw category code, and never use the "stood out while I was looking at {code} brands" template. The opener is not a question, because the next line is "That's the kind of idea we bring."
+- companyName has no web address and no Inc, LLC, or Co suffix. Odd casing is title-cased. firstName is a first name only, and a full name is split.
 - The examples below show voice. Live lines stay inside the word caps above.
 - No digits. Write numbers as words.
-- No em dashes, no URLs, and nothing that is not in the fact sheet.
+- No em dashes, no spaced hyphens (` - `), no URLs, and nothing that is not in the fact sheet.
 - No negative lead, such as "does not sell on Amazon".
 - No hype, such as "perfect moment" or "maximize".
 - Never cite a low rating.
-- For every recipe, and especially plan_upgrade and replatform: never name platforms, plans, apps, tools, or ad pixels, and never say "moved" or "upgraded" or give dates of backend changes. Use shopper-visible facts: products, story, design details, review volume, stockists, social, international site versions, and "subscribe option".
+- For every recipe: never name platforms, plans, apps, tools, bids, automation, direct-to-consumer, or ad pixels, and never say "moved" or "upgraded" or give dates of backend changes. Use shopper-visible facts: products, story, design details, review volume, stockists, and social presence. Platform data may still decide who gets emailed.
 
 ## Approved examples
 

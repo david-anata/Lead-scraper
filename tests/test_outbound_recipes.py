@@ -58,25 +58,25 @@ class TriggerWindowTests(unittest.TestCase):
         # f:app_installed_at accepts one app id. A comma list returns zero rows,
         # so each app is its own call and the date is a server filter.
         p = rc.recipe("new_growth_app").params(WED)
-        self.assertIn(p["f:app_installed_at"], rc.GROWTH_APP_TOKENS)
+        self.assertTrue(p["f:app_installed_at"].startswith("1."))
         self.assertNotIn(",", p["f:app_installed_at"])
-        self.assertTrue(p["f:app_installed_at"].startswith("shopify."))
+        self.assertIn("shopify." + p["f:app_installed_at"].split(".", 1)[1], rc.GROWTH_APP_TOKENS)
         self.assertTrue(p["f:app_installed_at:min"].startswith("2026-07-15"))
         self.assertNotIn("f:an", p)
         self.assertIsNotNone(rc.recipe("new_growth_app").client_filter)
         queried = [item["f:app_installed_at"] for item in rc.recipe("new_growth_app").param_sets(WED)]
-        self.assertEqual(sorted(queried), sorted(rc.GROWTH_APP_TOKENS))
+        self.assertEqual(sorted(queried), sorted(rc.filter_app_id(token) for token in rc.GROWTH_APP_TOKENS))
         self.assertEqual(len(queried), len(set(queried)))
 
     def test_churned_tool_uses_30_day_window(self):
         p = rc.recipe("churned_tool").params(WED)
         self.assertTrue(p["f:app_uninstalled_at:min"].startswith("2026-06-29"))
-        self.assertTrue(p["f:app_uninstalled_at"].startswith("shopify."))
+        self.assertTrue(p["f:app_uninstalled_at"].startswith("1."))
         sets = rc.recipe("churned_tool").param_sets(WED)
         self.assertEqual(len(sets), len(rc.GROWTH_APP_TOKENS))
         self.assertEqual(
             {item["f:app_uninstalled_at"] for item in sets},
-            set(rc.GROWTH_APP_TOKENS),
+            {rc.filter_app_id(token) for token in rc.GROWTH_APP_TOKENS},
         )
 
     def test_plan_upgrade_targets_plus_in_180_days(self):
@@ -253,7 +253,7 @@ class ClientFilterTests(unittest.TestCase):
     def test_no_app_list_is_ever_sent_to_the_install_filter(self):
         for params in rc.recipe("new_growth_app").param_sets(WED):
             self.assertNotIn(",", params["f:app_installed_at"])
-            self.assertTrue(params["f:app_installed_at"].startswith("shopify."))
+            self.assertTrue(params["f:app_installed_at"].startswith("1."))
 
     def test_recent_install_is_kept(self):
         r = rc.recipe("new_growth_app")

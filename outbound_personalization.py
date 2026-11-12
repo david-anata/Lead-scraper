@@ -18,6 +18,10 @@ from typing import Any, Callable, Optional
 
 logger = logging.getLogger(__name__)
 
+
+class ModelTimeout(TimeoutError):
+    """The opener model did not answer within the lead budget."""
+
 HIGH_RATING = 4.5
 RETAILER_VENDOR_COUNT = 25
 # Same hard caps as outbound_openers. About 20 and 15 is the aim.
@@ -50,32 +54,27 @@ _NEGATIVE = re.compile(
     re.I,
 )
 _URL = re.compile(r"https?://|www\.", re.I)
+_REPR = re.compile(r"\[|\]|\{|\}|\b(?:none|nan|null)\b|\{\{", re.I)
 _SUBSCRIBE_APPS = ("recharge", "skio", "smartrr", "subscription")
 
 _EXAMPLES = """
-Lovevery, selling on Amazon. Opener: Lovevery's stage-based Play Kits are a smart way to sell toys, and with more than half a million TikTok followers, a lot of parents probably discover you there and then go looking on Amazon. That search is the moment your Amazon store either catches them or loses them to a lookalike Montessori toy.
-Angle: The play-stage videos you already make for YouTube and Pinterest could double as Amazon listing video, helping parents pick the right toy for their child's age without leaving the page.
+Opener: Your adai dosa mix caught my eye. It's not something I see from many brands.
+Angle: I would use one photo of the dosa mix and leave the rest of the page alone.
 
-REV Gum, selling on Amazon and in stores. Opener: Caffeine and electrolytes in a sugar-free gum is an easy thing to explain in one line, and I noticed REV is already on convenience store shelves and gopuff alongside your Amazon store. People who try a pack at the counter often go to reorder online, and Amazon is usually the first place they check.
-Angle: Leaning into the electrolyte side and the multi-pack value on Amazon could set REV apart from shoppers who are only comparing plain caffeine gums.
+Opener: The chocolate chunk cookie mix is the one I would come back for.
+Angle: The cookie mix is what I would put in the ad.
 
-Water.io, not yet using Amazon as the hook. Opener: A smart bottle that comes with free hydration coaching in an app is an easy idea to get behind, and your reviews show buyers are happy with it. Products like this, where people want to understand how it works before buying, do well on Amazon when the listing shows the app clearly.
-Angle: Putting the companion app front and center in the Amazon images could set Water.io apart from the plain tracker bottles shoppers compare it against.
+Opener: Love that Perfy does flavors like blood orange yuzu instead of another plain cola.
+Angle: Show that flavor before any other can.
 
-Happy Viking. Opener: A plant-based shake that covers protein, fiber and probiotics in one go is a simple promise, and thousands of reviews near five stars suggest Happy Viking keeps it. That kind of loyalty usually means there are a lot more people out there who would love it if they found it.
-Angle: Plenty of protein shoppers start their search on Amazon, and a subscribe option there would let new fans settle into the same daily habit your current customers already have.
+Opener: Inova's clarifying shampoo is the one I would tell a friend about.
+Angle: A shopper can understand the shampoo from a single listing image.
 
-Joybees. Opener: The honeycomb footbed and Popinz charms make Joybees an easy yes for families, and it's great to see you in stores and on sites beyond the US. Shoes that are washable and easy to slip on are exactly what busy parents reach for.
-Angle: Pairing Popinz charms with clogs or sandals as ready-made gift sets on Amazon could turn a single shoe purchase into a bigger, more fun first order.
+Opener: RSL's shave cream is a specific thing, not a general grooming line.
+Angle: The cream is a concrete product for the first listing.
 
-Wove Made. Opener: Sending couples a replica ring to try on at home before you build the real one is such a thoughtful idea. It takes a lot of the nerves out of one of the biggest purchases people ever make.
-Angle: Ready-to-ship wedding bands or fine jewelry pieces could be Wove's entry point on Amazon, introducing couples to the brand before they book a design consultation.
-
-Krazy Kreations. Opener: Krazy Kreations is known among card makers for its vinyl outline stickers, and the handmade micro-fine glitter paper is a lovely detail. The crafting ideas you share on YouTube and Pinterest make it easy to see what people can make with them.
-Angle: Low-priced craft supplies tend to work better on Amazon as themed or seasonal kits, which makes each order worth shipping and gives crafters a reason to come back.
-
-JaxKelly. Opener: Shower Affirmations is such a memorable product, and thousands of reviews averaging close to five stars say your customers agree. You're already on Etsy and in wholesale, so Amazon would just be one more place where those reviews do the selling.
-Angle: Shower Affirmations make an easy gift, so an Amazon setup built around gifting seasons could carry them next to the jewelry for shoppers who never come across your Etsy shop.
+Opener: Biggs and Featherbelle's bar soap has a scent a shopper can name.
+Angle: That bar soap is what I would build the ad around.
 """.strip()
 
 
@@ -86,6 +85,8 @@ class FactSheet:
     brand: str = ""
     category: str = ""
     recipe: str = ""
+    product: str = ""
+    catalog: list[dict[str, Any]] = field(default_factory=list)
     facts: list[str] = field(default_factory=list)
     blocked: str = ""
     high_rating: bool = False
@@ -94,6 +95,38 @@ class FactSheet:
     @property
     def thin(self) -> bool:
         return not self.facts
+
+
+def as_text(value: Any) -> str:
+    """A display string. Lists, dicts, and nulls never become a Python repr."""
+
+    if value is None or isinstance(value, bool):
+        return ""
+    if isinstance(value, float):
+        if value != value:
+            return ""
+        return ""
+    if isinstance(value, int):
+        return ""
+    if isinstance(value, dict):
+        for key in ("name", "title", "value", "description"):
+            text = as_text(value.get(key))
+            if text:
+                return text
+        return ""
+    if isinstance(value, (list, tuple, set)):
+        parts: list[str] = []
+        for item in value:
+            text = as_text(item)
+            if text and text not in parts:
+                parts.append(text)
+        return ", ".join(parts)
+    text = " ".join(str(value).replace("\x00", " ").split())
+    if text.lower() in {"none", "nan", "null"}:
+        return ""
+    if text[:1] in "{[":
+        return ""
+    return text
 
 
 def _words_for_count(value: Any) -> str:
@@ -115,7 +148,7 @@ def _words_for_count(value: Any) -> str:
 
 
 def _clean_blurb(text: str, brand: str) -> str:
-    raw = " ".join(str(text or "").split())
+    raw = as_text(text)
     if not raw:
         return ""
     if _PROMO.search(raw):
@@ -199,15 +232,27 @@ def _high_review(store: dict[str, Any]) -> tuple[bool, str]:
 def fact_sheet(lead: dict[str, Any]) -> FactSheet:
     """Curated shopper-visible facts. Tech and traffic stats are left out."""
 
+    from outbound_pipeline import clean_brand_name
+
     store = _record(lead)
-    brand = str(store.get("merchant_name") or lead.get("brand") or store.get("name") or "").strip()
-    category = str(store.get("categories") or lead.get("categories") or lead.get("niche") or "")
+    display = as_text(
+        lead.get("display_brand") or store.get("site_name") or store.get("name")
+    )
+    brand = clean_brand_name(
+        as_text(store.get("merchant_name") or lead.get("brand") or store.get("name")),
+        display_name=display or lead.get("brand") or "",
+    )
+    if not brand or brand.lower() == "this brand":
+        brand = clean_brand_name(lead.get("brand") or "", display_name=display) or display
+    if brand.lower() == "this brand":
+        brand = ""
+    category = as_text(store.get("categories") or lead.get("categories") or lead.get("niche"))
     recipe = str(lead.get("recipe") or "").strip()
     from outbound_openers import trial_offer_lead
 
     trial = trial_offer_lead(lead)
     sheet = FactSheet(
-        brand=brand or "This brand", category=category, recipe=recipe, trial_offer=trial,
+        brand=brand, category=category, recipe=recipe, trial_offer=trial,
     )
     if _RESTRICTED.search(category) or _RESTRICTED.search(brand):
         sheet.blocked = "restricted category"
@@ -221,27 +266,48 @@ def fact_sheet(lead: dict[str, Any]) -> FactSheet:
         return sheet
 
     facts: list[str] = []
-    for key in ("description", "title"):
-        blurb = _clean_blurb(str(store.get(key) or ""), brand)
+    catalog = store.get("catalog_products")
+    if not isinstance(catalog, list):
+        catalog = lead.get("catalog_products") if isinstance(lead.get("catalog_products"), list) else []
+    catalog = [item for item in catalog if isinstance(item, dict) and item.get("title")]
+    if catalog:
+        from outbound_product_facts import catalog_blocked_reason
+
+        blocked = catalog_blocked_reason(catalog, brand)
+        if blocked:
+            sheet.blocked = blocked
+            return sheet
+        sheet.catalog = catalog[:5]
+        sheet.facts = [str(item.get("title") or "") for item in sheet.catalog]
+        return sheet
+    phrase = as_text(store.get("product_phrase") or lead.get("product_phrase"))
+    if phrase:
+        # The picker already chose the short noun phrase. A catalog title,
+        # including the newest product, must not reach the model.
+        sheet.product = phrase
+        sheet.facts = [phrase]
+        return sheet
+    for key in ("description",):
+        blurb = _clean_blurb(as_text(store.get(key)), brand)
         if blurb:
             facts.append(blurb)
             break
     product = store.get("most_recently_published_product")
     if isinstance(product, dict):
-        title = _clean_blurb(str(product.get("title") or ""), brand)
-        if title:
-            facts.append(f"recent product: {title}")
-    channels = _channel_names(store)
-    for name in ("Amazon", "Etsy", "Faire"):
-        if name == "Amazon" and trial:
-            continue
-        if any(name.lower() in item.lower() for item in channels):
-            facts.append(f"sells on {name}")
+        title = _clean_blurb(as_text(product.get("title")), brand)
+        if title and "recent" not in title.lower():
+            facts.append(title)
+    # Amazon presence is copy only for the amz_on segment. Other channel
+    # names decide who is emailed and stay out of the fact sheet.
+    if recipe == "amz_on" and not trial:
+        channels = _channel_names(store)
+        if any("amazon" in item.lower() for item in channels):
+            facts.append("sells on Amazon")
     if str(store.get("store_locator_page") or "").strip():
         facts.append("has a store locator")
     if str(store.get("retailer_page") or "").strip():
         facts.append("sold through retailers")
-    feature_text = " ".join(str(item) for item in (store.get("features") or []))
+    feature_text = as_text(store.get("features"))
     if re.search(r"wholesale", feature_text, re.I):
         facts.append("sells wholesale")
     if re.search(r"retail|store locator", feature_text, re.I) and "has a store locator" not in facts:
@@ -254,8 +320,8 @@ def fact_sheet(lead: dict[str, Any]) -> FactSheet:
     for item in store.get("contact_info") or []:
         if not isinstance(item, dict):
             continue
-        kind = str(item.get("type") or "").strip()
-        bio = _clean_blurb(str(item.get("description") or ""), brand)
+        kind = as_text(item.get("type"))
+        bio = _clean_blurb(as_text(item.get("description")), brand)
         reach = _words_for_count(item.get("followers"))
         if bio:
             social_bits.append(f"{kind} bio: {bio}" if kind else bio)
@@ -264,7 +330,7 @@ def fact_sheet(lead: dict[str, Any]) -> FactSheet:
     facts.extend(social_bits[:3])
     abroad = []
     for item in list(store.get("ships_to_countries") or []) + list(store.get("locs") or []):
-        label = str(item or "").strip()
+        label = as_text(item)
         if label and label.upper() not in {"US", "USA"} and label not in abroad:
             abroad.append(label)
     for host in store.get("cluster_domains") or []:
@@ -288,6 +354,33 @@ def fact_sheet(lead: dict[str, Any]) -> FactSheet:
     return sheet
 
 
+def _bare_product_opening(text: str, phrase: str) -> bool:
+    """True when the opener starts on the raw product title."""
+
+    raw = (text or "").strip()
+    named = " ".join((phrase or "").split())
+    if not raw or not named:
+        return False
+    if re.match(r"^(?:the|a|an|i|i'd|i’d|your|love)\b", raw, re.I):
+        return False
+    return raw.lower().startswith(named.lower())
+
+
+def _ungrounded_benefit(text: str, catalog_text: str) -> bool:
+    """True when the line claims an effect the catalog text does not say."""
+
+    blob = (catalog_text or "").lower()
+    for word in re.findall(
+        r"\b(?:cool|cools|soothe|soothes|heal|heals|relieve|relieves|boost|boosts|"
+        r"fast|instantly|overnight)\b",
+        text or "",
+        re.I,
+    ):
+        if re.search(rf"\b{re.escape(word.lower())}\b", blob) is None:
+            return True
+    return False
+
+
 def style_violation(
     text: str,
     *,
@@ -295,43 +388,112 @@ def style_violation(
     recipe: str = "",
     high_rating: bool = False,
     trial_offer: bool = False,
+    retail: bool = False,
+    catalog_text: str = "",
+    product_phrase: str = "",
 ) -> str:
     """Empty when the line is allowed. Otherwise a short reason."""
 
     raw = (text or "").strip()
     if not raw:
         return "empty"
-    if "—" in raw or "–" in raw:
+    if "—" in raw or "–" in raw or " - " in raw:
         return "em dash"
+    if _REPR.search(raw) or "  " in raw:
+        return "repr or placeholder"
     if re.search(r"\d", raw):
         return "digit"
     if _URL.search(raw):
         return "url"
-    if "?" in raw:
+    if "?" in raw or re.match(r"^(?:is|are|do|does|did|can|could|would|will)\b", raw, re.I):
         return "question"
+    if re.search(r"\bstood out\b|\bwhile i was looking at\b", raw, re.I):
+        return "stood out template"
+    if re.search(r"\b[a-z0-9]+_[a-z0-9_]+\b", raw, re.I):
+        return "slug"
     if _HYPE.search(raw):
         return "hype"
     if _NEGATIVE.search(raw):
         return "negative lead"
-    if _TECH.search(raw) or _BACKEND.search(raw):
+    from outbound_openers import BACKEND_LANGUAGE
+
+    if _TECH.search(raw) or _BACKEND.search(raw) or BACKEND_LANGUAGE.search(raw):
         return "tech or backend change"
     if _LOW_RATING.search(raw):
         return "low rating"
     if re.search(r"\bstars?\b|\brating\b", raw, re.I) and not high_rating:
         return "low rating"
-    from outbound_openers import sentence_count, trial_amazon_claim, trial_offer_lead
+    from outbound_openers import (
+        MIN_WORDS,
+        _AMAZON_WORD,
+        sentence_count,
+        trial_amazon_claim,
+        trial_offer_lead,
+    )
 
+    if role == "angle" and raw.lower().startswith("anata helps"):
+        return "anata helps"
+    trial = trial_offer or trial_offer_lead({"recipe": recipe})
+    recipe_key = (recipe or "").strip().lower().replace("-", " ").replace("_", " ")
+    if trial and (_AMAZON_WORD.search(raw) or trial_amazon_claim(raw)):
+        return "claims the brand already sells on Amazon"
+    if recipe_key == "amz off":
+        if re.search(
+            r"\balready (?:on amazon|sells? on amazon|selling on amazon)\b"
+            r"|\byour amazon\b|\btheir amazon\b|\blive on amazon\b|\bsells on amazon\b",
+            raw, re.I,
+        ):
+            return "claims the brand already sells on Amazon"
+    elif recipe_key != "amz on" and (_AMAZON_WORD.search(raw) or trial_amazon_claim(raw)):
+        return "claims the brand already sells on Amazon"
     words = raw.split()
     limit = ANGLE_MAX_WORDS if role == "angle" else OPENER_MAX_WORDS
     if len(words) > limit:
         return "too long"
-    if sentence_count(raw) > 1:
-        return "more than one sentence"
-    trial = trial_offer or trial_offer_lead({"recipe": recipe})
-    if trial and trial_amazon_claim(raw):
-        return "claims the brand already sells on Amazon"
-    if role == "angle" and raw.lower().startswith("anata helps"):
-        return "anata helps"
+    if len(words) < MIN_WORDS:
+        return "too short"
+    sentence_limit = 2 if role == "opener" else 1
+    if sentence_count(raw) > sentence_limit:
+        return "more than two sentences" if role == "opener" else "more than one sentence"
+    if re.search(
+        r"\bpick up right away\b|\bshoppers will\b|\bwill love\b|\bguaranteed to\b|"
+        r"\bnew shoppers can\b|\bshoppers can (?:spot|picture)\b|\bcan picture\b",
+        raw, re.I,
+    ):
+        return "guesses what shoppers will do"
+    if re.search(
+        r"\b(?:support|supports|improve|improves|relief|relieve|relieves)\w*\b.{0,40}"
+        r"\b(?:health|wellness|pain|body)\b"
+        r"|\btotal body health\b",
+        raw, re.I,
+    ):
+        return "health claim"
+    if re.search(r"\bplain snack\b|\benough of a product\b", raw, re.I):
+        return "put-down"
+    if re.search(r"\bhas that\b.{0,60}\blook\b", raw, re.I):
+        return "garbled phrase"
+    if _bare_product_opening(raw, product_phrase):
+        return "bare product title"
+    if catalog_text and _ungrounded_benefit(raw, catalog_text):
+        return "guessed benefit"
+    if re.search(r"\bthis brand\b|\blineup\b", raw, re.I):
+        return "generic brand or category label"
+    if re.search(r"\bin the snack aisle\b|\bon the shelf\b|\bat the store\b", raw, re.I):
+        return "made-up sighting"
+    if not retail and re.search(r"\bsaw\b.{0,30}\bat\b", raw, re.I):
+        return "made-up sighting"
+    if re.search(r"\bfirst image\b|\bshould be the first\b", raw, re.I):
+        return "tells the brand what their first image should be"
+    from outbound_openers import copy_tic
+
+    tic = copy_tic(raw)
+    if tic:
+        return tic
+    from outbound_openers import stuffed_copy_reason
+
+    stuffed = stuffed_copy_reason(raw)
+    if stuffed:
+        return stuffed
     if recipe:
         # Every recipe keeps the same ban. plan_upgrade and replatform are
         # the ones David called out; the check is not limited to them.
@@ -340,57 +502,99 @@ def style_violation(
     return ""
 
 
-def _category_lines(sheet: FactSheet) -> tuple[str, str]:
-    from outbound_openers import _category_phrase
-
-    category = _category_phrase(sheet.category) or ""
-    brand = sheet.brand or "This brand"
-    if not category or _RESTRICTED.search(category):
-        return "", ""
-    opener = f"Saw {brand} in {category}, a category where shoppers already compare options."
-    angle = f"Shoppers already compare {category}."
-    if style_violation(
-        opener, role="opener", recipe=sheet.recipe, high_rating=False, trial_offer=sheet.trial_offer,
-    ):
-        return "", ""
-    if style_violation(
-        angle, role="angle", recipe=sheet.recipe, high_rating=False, trial_offer=sheet.trial_offer,
-    ):
-        return "", ""
-    return opener, angle
-
-
 def _prompt(sheet: FactSheet) -> str:
-    facts = "\n".join(f"- {fact}" for fact in sheet.facts)
+    from outbound_openers import plain_category
+
+    category = plain_category(sheet.category) or "unknown"
+    if sheet.catalog:
+        lines = []
+        for index, item in enumerate(sheet.catalog, start=1):
+            lines.append(
+                f"{index}. Title: {item.get('title') or ''}. "
+                f"Type: {item.get('product_type') or ''}. "
+                f"Description: {item.get('body') or ''}"
+            )
+        facts = "\n".join(lines)
+    elif sheet.product:
+        facts = f"- {sheet.product}"
+    else:
+        facts = "\n".join(f"- {fact}" for fact in sheet.facts)
     if sheet.trial_offer:
         amazon_rule = (
-            "This is a Trial Offer. Do not claim or assume the brand already sells on Amazon. "
-            "Never write 'your Amazon store', 'your listings', or 'already on Amazon'. "
-            "The angle may mention Amazon as an opportunity, for example: "
-            "A milk and nut butter bundle could give new Amazon shoppers an easy way to try both. "
+            "This is a Trial Offer. The opener and the angle must not mention Amazon "
+            "and must not claim the brand already sells on Amazon. Never write "
+            "'on Amazon', 'your Amazon store', 'your listings', or 'already on Amazon'. "
+            "The angle talks about the listing, a product image, or an ad, without naming Amazon. "
+            "Say new shoppers, and do not guess what they can see or do. "
+        )
+    elif sheet.recipe in {"amz_on", "amz on"}:
+        amazon_rule = (
+            "This brand is in the amz_on segment, so the line may say it is on Amazon "
+            "when a fact supports that. The angle may mention Amazon listings, images, or ads. "
+            "Never assume a product that is not in the facts. "
+        )
+    elif sheet.recipe in {"amz_off", "amz off"}:
+        amazon_rule = (
+            "This brand is not on Amazon yet. The angle may talk about launching on Amazon. "
+            "Do not claim they already sell there. "
         )
     else:
         amazon_rule = (
-            "Only mention Amazon when a fact says the brand sells there. Never assume they do. "
+            "Do not mention Amazon. The angle talks about the listing, a product image, "
+            "or an ad, without naming Amazon. "
         )
     return (
         f"Brand: {sheet.brand}\n"
-        f"Category: {sheet.category or 'unknown'}\n"
-        "Shopper-visible facts:\n"
-        f"{facts}\n\n"
-        "Write JSON with keys opener and angle. Use only the facts above. "
+        f"Category: {category}\n"
+        + (
+            "Products a shopper can see:\n"
+            f"{facts}\n"
+            "Pick ONE of these. Return JSON with keys product_phrase, opener, and angle. "
+            "product_phrase is the natural way a shopper would name that product, using words "
+            "from the title, type, or description. Do not shorten it into catalog junk.\n"
+            if sheet.catalog else
+            (
+                f"Product, said the way a shopper would: {sheet.product}\n"
+                if sheet.product else
+                "Shopper-visible facts:\n"
+                f"{facts}\n"
+            )
+        )
+        + "\n"
+        "Write JSON with keys product_phrase, opener, and angle. "
+        "Use only the brand and one product from the list above. "
+        "Do not invent a product, a store, a result, or a number. "
+        "Do not say you saw the product in a store or a snack aisle unless the facts name a retailer. "
+        "Name the brand in only one of the two lines, and use an apostrophe when the brand owns the next word. "
+        "Do not say This brand, and do not call the products a lineup. "
+        "The product phrase is the product name, not a tagline from the page. "
+        "Do not guess what shoppers will do. Do not critique the store. "
+        "Do not paraphrase the product description or list ingredients the way the label does. "
+        "Say one plain thing a person would say after looking at that product. "
+        "Do not say recent, newest, I noticed, small set, easy to picture, "
+        "one clear start, or simple place to start. "
+        "Do not start the opener on the raw product title. Start with 'The', 'Your', or a short human line. "
+        "Do not claim a health benefit, relief, or an effect the catalog text does not state. "
+        "Do not put the product down. Never write 'plain snack' or 'enough of a product'. "
+        "Do not twist a phrase from the site into broken English. "
+        "The angle must not copy one shape. Do not repeat 'main image' or 'clear product to center on'. "
+        "Do not write 'an ad can stay on X so the photo carries the message'. "
+        "Sound like a person who looked at their store. Plain and warm. "
         f"{amazon_rule}"
-        "Opener is one sentence of about 20 words, never more than 25, in Abby's voice. "
-        "Angle is one sentence of about 15 words, never more than 20. "
-        "The angle must not repeat the opener and must not start with Anata helps. "
-        "No digits, no em dashes, no URLs, no hype, no platform, plan, app, pixel, "
-        "or the words moved or upgraded. "
+        "Opener: one or two short sentences, about 25 words max, and at least 6 words. "
+        "Angle: one sentence of about 15 words, never more than 20, and at least 6 words. "
+        "It must not restate the opener, must not start with Anata helps, "
+        "and must not tell them what their first image should be or critique the store. "
+        "No digits, no em dashes, no spaced hyphens, no URLs, no hype, no questions, "
+        "no category slugs, and never the words 'stood out'. "
+        "No app installs, automation, bids, direct-to-consumer, platform names, "
+        "platform moves, plan upgrades, pixels, or change dates. "
         "A subscribe option may be named. Never name a review app. "
         "Cite reviews only when the facts say the average is close to five stars. "
         "Do not invent products, stores, or follower counts.\n\n"
         f"Examples of the voice:\n{_EXAMPLES}\n\n"
         "The examples show voice only. Do not copy their length. "
-        "The opener must be one sentence of about 20 words and never more than 25. "
+        "The opener must be one sentence of about 20 words, never more than 25, or two short sentences. "
         "The angle must be one sentence of about 15 words and never more than 20."
     )
 
@@ -415,6 +619,32 @@ def _parse_pair(raw: str) -> tuple[str, str]:
     return str(payload.get("opener") or "").strip(), str(payload.get("angle") or "").strip()
 
 
+def _parse_copy(raw: str) -> tuple[str, str, str]:
+    """``(product_phrase, opener, angle)`` from the model JSON."""
+
+    text = (raw or "").strip()
+    if text.startswith("```"):
+        text = re.sub(r"^```(?:json)?", "", text).strip()
+        text = re.sub(r"```$", "", text).strip()
+    try:
+        payload = json.loads(text)
+    except json.JSONDecodeError:
+        match = re.search(r"\{.*\}", text, re.S)
+        if not match:
+            return "", "", ""
+        try:
+            payload = json.loads(match.group(0))
+        except json.JSONDecodeError:
+            return "", "", ""
+    if not isinstance(payload, dict):
+        return "", "", ""
+    return (
+        str(payload.get("product_phrase") or "").strip(),
+        str(payload.get("opener") or "").strip(),
+        str(payload.get("angle") or "").strip(),
+    )
+
+
 def _call_model(prompt: str, api_key: Optional[str]) -> str:
     from sales_support_agent.services.llm_client import llm_client
 
@@ -433,14 +663,20 @@ def generate(
     lead: dict[str, Any],
     *,
     llm: Optional[Callable[[str], str]] = None,
+    grader: Optional[Callable[[str], str]] = None,
     api_key: Optional[str] = None,
+    batch: Optional[list[str]] = None,
+    angles: Optional[list[str]] = None,
+    allow_retry: Optional[Callable[[], bool]] = None,
 ) -> tuple[str, str, str]:
-    """Return (opener, angle, source). Source is ai, fallback, or none.
+    """Return (line, unused angle, source).
 
-    Thin, restricted, and multi-brand records get no lines. A failed model
-    line falls back to a short category sentence when the category itself is safe.
-    A line over the hard word max is regenerated once, then left empty so the lead is held.
+    The code picks one product and one detail. The model writes one sentence.
+    A grader may ask for one rewrite. There is no template line.
+    ``batch``, ``angles``, and ``allow_retry`` are ignored. Variety is not scored.
     """
+
+    from outbound_opener_line import compose_line, line_fact_candidates
 
     sheet = fact_sheet(lead)
     if sheet.blocked:
@@ -448,42 +684,37 @@ def generate(
             "[outbound-personalization] %s flagged: %s",
             sheet.brand, sheet.blocked,
         )
+        if sheet.blocked == "blocked_category":
+            return "", "", "skipped:blocked_category"
         return "", "", "none"
-    prompt = _prompt(sheet)
-    model = llm
-    if model is None:
+    store = lead.get("store_profile") if isinstance(lead.get("store_profile"), dict) else {}
+    products = list(sheet.catalog)
+    if not products and sheet.product:
+        products = [{"title": sheet.product, "body": sheet.product}]
+    candidates = line_fact_candidates(
+        products,
+        brand=sheet.brand,
+        recipe=sheet.recipe,
+        vendors=store.get("vendors") if isinstance(store.get("vendors"), list) else None,
+        domain=str(lead.get("domain") or ""),
+    )
+    facts = candidates[0]
+    lead["opener_facts"] = facts.as_text()
+    if facts.skip:
+        lead["grader_reason"] = facts.skip
+        return "", "", f"skipped:{facts.skip}"
+    writer = llm
+    if writer is None:
         from sales_support_agent.services.llm_client import llm_available
 
         if llm_available(api_key=api_key):
-            model = lambda text: _call_model(text, api_key)  # noqa: E731
-    if model is not None:
-        why = ""
-        for _attempt in range(2):
-            try:
-                opener, angle = _parse_pair(model(prompt))
-            except Exception:  # noqa: BLE001
-                logger.exception("[outbound-personalization] model call failed")
-                break
-            why = style_violation(
-                opener, role="opener", recipe=sheet.recipe,
-                high_rating=sheet.high_rating, trial_offer=sheet.trial_offer,
-            ) or style_violation(
-                angle, role="angle", recipe=sheet.recipe,
-                high_rating=sheet.high_rating, trial_offer=sheet.trial_offer,
-            )
-            if opener and angle and not why and opener.strip() != angle.strip():
-                return opener, angle, "ai"
-            prompt = (
-                prompt
-                + f"\n\nRejected ({why or 'empty'}). Write a different pair that follows every rule. "
-                "Opener: one sentence, about 20 words, never more than 25. "
-                "Angle: one sentence, about 15 words, never more than 20."
-            )
-        logger.info("[outbound-personalization] model line rejected (%s)", why or "empty")
-        if why == "too long":
-            return "", "", "none"
-    opener, angle = _category_lines(sheet)
-    if opener and angle:
-        return opener, angle, "fallback"
-    logger.info("[outbound-personalization] %s flagged: no safe line", sheet.brand)
-    return "", "", "none"
+            writer = lambda text: _call_model(text, api_key)  # noqa: E731
+    if writer is None:
+        return "", "", "skipped:no_model"
+    result = compose_line(
+        facts, writer=writer, grader=grader or writer, alternatives=candidates[1:],
+    )
+    lead["opener_facts"] = result.facts
+    lead["grader_pass"] = result.grader_pass
+    lead["grader_reason"] = result.grader_reason
+    return result.line, "", result.source

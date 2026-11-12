@@ -218,9 +218,13 @@ def select_topup(leads: list[dict[str, Any]], *, suppressed: Optional[set[str]] 
         import outbound_contacts as contacts
 
         title = _lead_title(lead)
+        first_name, last_name = contacts.split_person_name(
+            str(lead.get("first_name") or ""),
+            str(lead.get("last_name") or ""),
+        )
         quality = contacts.lead_quality_reason(
             email=email,
-            first_name=str(lead.get("first_name") or "").strip(),
+            first_name=first_name,
             title=title,
             require_title=False,
         )
@@ -230,8 +234,8 @@ def select_topup(leads: list[dict[str, Any]], *, suppressed: Optional[set[str]] 
         eligible.append({
             "id": str(lead.get("id") or lead.get("lead_id") or "").strip(),
             "email": email,
-            "first_name": str(lead.get("first_name") or "").strip(),
-            "last_name": str(lead.get("last_name") or "").strip(),
+            "first_name": first_name,
+            "last_name": last_name,
             "company_name": str(lead.get("company_name") or lead.get("company") or "").strip(),
             "title": title,
             "website": str(lead.get("website") or lead.get("company_domain") or "").strip(),

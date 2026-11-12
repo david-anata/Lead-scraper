@@ -427,6 +427,18 @@ def _order_leads_for_enrich(engine, general: list[dict[str, Any]], *, since_utc)
     return ordered
 
 
+def storefront_country_signals(domain: str, brand: str = "") -> dict[str, Any]:
+    """Currency and language from the public storefront, before enrich or copy."""
+
+    from outbound_product_facts import collect_product_facts
+
+    facts = collect_product_facts(domain, brand=brand, allow_storeleads=False)
+    return {
+        "currency_code": facts.get("currency_code") or "",
+        "language_code": facts.get("language_code") or "",
+    }
+
+
 def run_enrichment(
     engine,
     leads: list[dict[str, Any]],
@@ -444,6 +456,7 @@ def run_enrichment(
     deadline: Optional[float] = None,
     clock: Optional[Callable[[], float]] = None,
     already_in_instantly: Optional[Callable[[str], Optional[bool]]] = None,
+    country_signals: Optional[Callable[..., dict[str, Any]]] = None,
 ) -> EnrichReport:
     import time as _time
     clock = clock or _time.monotonic
@@ -508,7 +521,27 @@ def run_enrichment(
         country = str(lead.get("country") or lead.get("country_code") or "").strip().upper()
         if country == "UK":
             country = "GB"
-        if country and country != "US":
+        from outbound_pipeline import copy_country_reason
+
+        gate_store = {
+            "name": domain,
+            "merchant_name": lead.get("brand") or "",
+            "country_code": "" if country == "US" else country,
+        }
+        if isinstance(lead.get("store_profile"), dict):
+            gate_store.update({
+                key: lead["store_profile"].get(key)
+                for key in ("currency_code", "language_code", "city", "location")
+                if lead["store_profile"].get(key)
+            })
+        if country_signals is not None and not gate_store.get("currency_code") and not gate_store.get("language_code"):
+            try:
+                signals = country_signals(domain, str(lead.get("brand") or "")) or {}
+                gate_store["currency_code"] = signals.get("currency_code") or ""
+                gate_store["language_code"] = signals.get("language_code") or ""
+            except Exception:  # noqa: BLE001
+                logger.exception("[outbound-enrich] storefront country signals failed for %s", domain)
+        if country and country != "US" or copy_country_reason(gate_store):
             report.skipped_not_us += 1
             try:
                 _record_domain(engine, domain, "not_us", 0, 0, "StoreLeads country is not US.")
@@ -880,9 +913,15 @@ def push_pending(engine, campaign_id: str, *, dry_run: bool = True, limit: int =
         for person in allowed:
             email = str(person.get("email") or "").strip().lower()
             domain = str(person.get("domain") or "").strip().lower()
+            first_name, last_name = _contacts.split_person_name(
+                str(person.get("first_name") or ""),
+                str(person.get("last_name") or ""),
+            )
+            person["first_name"] = first_name
+            person["last_name"] = last_name
             quality = _contacts.lead_quality_reason(
                 email=email,
-                first_name=str(person.get("first_name") or ""),
+                first_name=first_name,
                 title=str(person.get("title") or ""),
                 require_title=True,
                 recipe=str(person.get("recipe") or ""),
@@ -956,11 +995,20 @@ def push_pending(engine, campaign_id: str, *, dry_run: bool = True, limit: int =
         if status == "blocked":
             held += 1
             continue
-        if status != "routed" or not target or _push._closed_to_new_leads(target):
+        trial_signal = ""
+        for item in signals:
+            text = str(item or "").strip()
+            if text.startswith("trial_offer:"):
+                trial_signal = text.split(":", 1)[1].strip()
+        qualified_trial = route_name == "trial_offer" and bool(trial_signal)
+        if status != "routed" or not target or (
+            _push._closed_to_new_leads(target) and not qualified_trial
+        ):
             queued += 1
             continue
         lead = {"domain": person["domain"], "brand": person["brand"], "categories": person["category"],
-                "recipe": route_name or recipe_name, "tier": person["tier"]}
+                "recipe": route_name or recipe_name, "tier": person["tier"],
+                "trial_signal": trial_signal}
         body = _push.build_lead(person, lead, person["opener"])
         if route_name and route_name != recipe_name:
             body["custom_variables"]["source_recipe"] = recipe_name

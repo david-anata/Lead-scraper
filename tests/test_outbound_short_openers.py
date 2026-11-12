@@ -40,7 +40,7 @@ def test_prompts_state_the_word_caps_and_one_sentence():
     prompt = personalization._prompt(sheet)
     assert "one sentence of about 20 words, never more than 25" in prompt
     assert "one sentence of about 15 words, never more than 20" in prompt
-    assert "Never assume they do." in prompt
+    assert "amz_on" in prompt and "may say it is on Amazon" in prompt
 
 
 def test_validator_enforces_the_hard_max_and_keeps_the_old_bans():
@@ -60,7 +60,12 @@ def test_validator_enforces_the_hard_max_and_keeps_the_old_bans():
     assert personalization.style_violation(
         _words(21, "Shoppers", "compare", "oral", "care"), role="angle",
     ) == "too long"
-    assert personalization.style_violation("Huppy sells oral care. Shoppers like it.") == "more than one sentence"
+    assert personalization.style_violation(
+        "Huppy sells oral care. Shoppers like it. So does everyone else."
+    ) == "more than two sentences"
+    assert personalization.style_violation(
+        "Your adai dosa mix caught my eye. It's not something I see from many brands."
+    ) == ""
 
 
 def test_over_long_opener_is_regenerated_once_then_held():
@@ -70,10 +75,12 @@ def test_over_long_opener_is_regenerated_once_then_held():
         calls.append(prompt)
         if len(calls) == 1:
             return _words(30, "Huppy", "sells", "oral", "care")
-        return "Huppy sells oral care."
+        return (
+            "Huppy's oral care line gives a new shopper one product to remember."
+        )
 
     line, source = op.write_opener({**LEAD, "domain": "retry.com"}, CONTACT, llm=llm)
-    assert source == "ai" and line == "Huppy sells oral care."
+    assert source == "ai" and "oral care" in line and len(line.split()) <= 25
     assert len(calls) == 2
     assert "too long" in calls[1]
     assert "never more than 25" in calls[0]
@@ -104,10 +111,10 @@ def test_over_long_angle_is_regenerated_once_then_held():
         calls.append(prompt)
         if len(calls) == 1:
             return _words(24, "Anata", "helps", "Huppy", "grow", "oral", "care")
-        return "Anata helps Huppy grow oral care."
+        return "A small oral care set would give a new shopper an easy way to try Huppy."
 
     angle, source = op.write_brand_angle({**LEAD, "domain": "angle-retry.com"}, CONTACT, llm=llm)
-    assert source == "ai" and angle == "Anata helps Huppy grow oral care."
+    assert source == "ai" and "oral care" in angle and len(angle.split()) <= 20
     assert len(calls) == 2
     assert "too long" in calls[1]
     assert "never more than 20" in calls[0]
@@ -126,34 +133,24 @@ def test_over_long_angle_is_regenerated_once_then_held():
 
 
 def test_rich_pair_over_the_max_is_regenerated_once_then_left_empty():
-    lead = {**LEAD, "domain": "rich.com", "description": "Toothpaste tabs for daily brushing"}
-    calls = {"n": 0}
-    long_opener = _words(30, "Huppy", "sells", "toothpaste", "tabs")
-    short = {
-        "opener": "Huppy sells toothpaste tabs.",
-        "angle": "Shoppers reorder toothpaste tabs.",
-    }
+    lead = {**LEAD, "domain": "rich.com", "catalog_products": [
+        {"title": "Cherry Cola", "body": "Brewed with turmeric."},
+    ]}
 
     def llm(_prompt):
-        calls["n"] += 1
-        if calls["n"] == 1:
-            return json.dumps({"opener": long_opener, "angle": short["angle"]})
-        return json.dumps(short)
-
-    opener, angle, source = personalization.generate(lead, llm=llm)
-    assert calls["n"] == 2 and source == "ai"
-    assert opener == short["opener"] and angle == short["angle"]
-
-    calls["n"] = 0
-
-    def still_long(_prompt):
-        calls["n"] += 1
-        return json.dumps({"opener": long_opener, "angle": short["angle"]})
+        return "The cherry cola is a bright soda with turmeric in the can."
 
     opener, angle, source = personalization.generate(
-        {**lead, "domain": "rich-held.com"}, llm=still_long,
+        lead, llm=llm, grader=lambda _prompt: json.dumps({"pass": True, "reason": "specific"}),
     )
-    assert calls["n"] == 2 and source == "none" and opener == "" and angle == ""
+    assert source == "ai" and "cherry cola" in opener.lower() and angle == ""
+
+    opener, angle, source = personalization.generate(
+        {**lead, "domain": "rich-held.com", "template_fallback": True},
+        llm=lambda _prompt: "The cherry cola is worth a closer look.",
+        grader=lambda _prompt: json.dumps({"pass": False, "reason": "filler"}),
+    )
+    assert source == "skipped:grader" and opener == "" and angle == ""
 
 
 def test_trial_offer_never_claims_or_assumes_amazon():
@@ -183,14 +180,22 @@ def test_trial_offer_never_claims_or_assumes_amazon():
     prompt = personalization._prompt(sheet)
     assert "Trial Offer" in prompt
     assert "already sells on Amazon" in prompt
-    assert "new Amazon shoppers" in prompt
+    assert "new Amazon shoppers" not in prompt
+    assert "new shoppers" in prompt
     assert "your Amazon store" in prompt and "your listings" in prompt
     assert "already on Amazon" in prompt
-    assert "new Amazon shoppers" in op._ANGLE_SYSTEM
+    assert "new Amazon shoppers" not in op._ANGLE_SYSTEM
+    assert "new shoppers" in op._ANGLE_SYSTEM
     opportunity = (
-        "A milk and nut butter bundle could give new Amazon shoppers an easy way to try both."
+        "A milk and nut butter bundle could give new shoppers an easy way to try both."
     )
-    assert op.validate(opportunity, max_words=op.ANGLE_MAX_WORDS, trial_offer=True)[0]
+    assert op.validate(
+        opportunity, max_words=op.ANGLE_MAX_WORDS, trial_offer=True, role="angle",
+    )[0]
+    assert not op.validate(
+        "A bundle could give new Amazon shoppers an easy way to try both.",
+        max_words=op.ANGLE_MAX_WORDS, trial_offer=True, role="angle",
+    )[0]
     assert personalization.style_violation(opportunity, role="angle", recipe="trial_offer") == ""
     assert op.angle_hold_reason(opportunity, trial) == ""
 
@@ -200,7 +205,7 @@ def test_trial_offer_never_claims_or_assumes_amazon():
         calls.append(prompt)
         return "Huppy lists toothpaste tabs on Amazon."
 
-    line, source = op.write_opener(trial, CONTACT, llm=claim_amazon)
+    line, source = op.write_opener({**trial, "template_fallback": True}, CONTACT, llm=claim_amazon)
     assert "amazon" not in line.lower()
     assert source == "fallback"
     assert len(calls) == 2
@@ -210,7 +215,14 @@ def test_trial_offer_never_claims_or_assumes_amazon():
     assert "already sells on Amazon" in op.opener_hold_reason(
         "Huppy sells on Amazon.", trial,
     )
-    assert op.opener_hold_reason("Huppy sells toothpaste tabs.", trial) == ""
+    assert op.opener_hold_reason(
+        "Huppy's toothpaste tabs give a new shopper one product to remember.",
+        trial,
+    ) == ""
+    assert op.opener_hold_reason(
+        "A small set would give new shoppers a way to try it today.",
+        trial,
+    ) == "repeated opener tic"
     for claim in (
         "Shoppers reorder on Amazon.",
         "Your Amazon store is ready.",
@@ -224,9 +236,9 @@ def test_trial_offer_never_claims_or_assumes_amazon():
     angle, angle_source = op.write_brand_angle(
         {**trial, "domain": "trial-angle.example"},
         CONTACT,
-        llm=lambda _prompt: "A bundle could give new Amazon shoppers an easy way to try oral care.",
+        llm=lambda _prompt: "A bundle could give new shoppers an easy way to try oral care.",
     )
-    assert angle_source == "ai" and "Amazon" in angle and "already" not in angle.lower()
+    assert angle_source == "ai" and "amazon" not in angle.lower() and "shoppers" in angle.lower()
 
     confirmed, confirmed_source = op.write_opener(
         {
@@ -242,3 +254,71 @@ def test_trial_offer_never_claims_or_assumes_amazon():
     assert "backend" in op.opener_hold_reason(
         "Huppy upgraded their store plan.", {"brand": "Huppy"},
     )
+
+
+def test_a_short_budget_does_not_retry_or_relabel_a_rejected_line():
+    calls = {"n": 0}
+
+    def llm(_prompt):
+        calls["n"] += 1
+        return "The cherry cola is worth a closer look."
+
+    def grader(_prompt):
+        return json.dumps({"pass": False, "reason": "filler"})
+
+    lead = {**LEAD, "catalog_products": [{"title": "Cherry Cola", "product_type": "Soda", "body": "Brewed with turmeric."}]}
+    _opener, _angle, source = personalization.generate(lead, llm=llm, grader=grader, allow_retry=lambda: False)
+    assert calls["n"] == 2
+    assert source == "skipped:grader"
+
+
+def test_a_model_timeout_stays_a_timeout():
+    def llm(_prompt):
+        raise personalization.ModelTimeout("slow")
+
+    lead = {**LEAD, "catalog_products": [{"title": "Cherry Cola", "product_type": "Soda", "body": "Brewed with turmeric."}]}
+    assert personalization.generate(lead, llm=llm)[2] == "skipped:model_timeout"
+
+
+def test_the_first_dry_run_call_is_capped_and_a_timeout_is_not_a_missing_product():
+    import importlib.util
+    import time
+
+    spec = importlib.util.spec_from_file_location(
+        "dry_run_openers", "scripts/dry_run_openers.py",
+    )
+    dry = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(dry)
+    import os
+    os.environ.pop("OUTBOUND_OPENER_LEAD_BUDGET", None)
+    os.environ.pop("OUTBOUND_OPENER_FIRST_CALL", None)
+    os.environ.pop("OUTBOUND_OPENER_TIMEOUT", None)
+    seen = []
+
+    def llm(_prompt, timeout_s=30):
+        seen.append(timeout_s)
+        raise personalization.ModelTimeout("slow")
+
+    row = dry.render_row(
+        {"domain": "huppy.com", "brand": "Huppy", "first_name": "Ann", "recipe": "amz_on"},
+        facts={"source": "products.json", "products": [{"title": "Cherry Cola", "product_type": "Soda", "body": "Brewed with turmeric."}]},
+        llm=llm,
+        deadline=time.monotonic() + 35,
+    )
+    assert seen and seen[0] == dry.model_timeout_seconds()
+    assert row["hold"] == "skipped:model_timeout"
+    assert dry.lead_budget_seconds() == 35
+    assert dry.opener_model_name() == "grok-4.20-0309-non-reasoning"
+
+
+def test_a_catalog_without_a_concrete_detail_skips_before_the_model():
+    calls = {"n": 0}
+
+    def llm(_prompt):
+        calls["n"] += 1
+        return "The tooth tabs are worth a closer look."
+
+    lead = {**LEAD, "catalog_products": [{"title": "Tooth Tabs", "product_type": "Tabs"}]}
+    _line, _angle, source = personalization.generate(lead, llm=llm)
+    assert calls["n"] == 0
+    assert source == "skipped:no_product_detail"

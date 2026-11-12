@@ -435,7 +435,7 @@ class TestRecipeFanOut(unittest.TestCase):
             max_new=5, throttle_seconds=0, recipe=rc.recipe("new_growth_app"),
             now=now, fetch_page=fetch,
         )
-        self.assertEqual(sorted(seen), sorted(rc.GROWTH_APP_TOKENS))
+        self.assertEqual(sorted(seen), sorted(rc.filter_app_id(token) for token in rc.GROWTH_APP_TOKENS))
 
 
 if __name__ == "__main__":
