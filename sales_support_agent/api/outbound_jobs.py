@@ -22,6 +22,7 @@ import os
 import secrets
 from uuid import uuid4
 from datetime import datetime
+from datetime import datetime as _wall_clock
 from typing import Any
 from threading import Event, Thread
 from zoneinfo import ZoneInfo
@@ -229,6 +230,34 @@ def lease_status_for(result: dict | None) -> str:
     return "failed"
 
 
+def credit_recovered_runs(recipe_runs: list[dict], leads: list[dict]) -> None:
+    """Count reattached companies on the recipe row that owns them."""
+
+    counts: dict[str, int] = {}
+    for lead in leads:
+        key = str(lead.get("recipe") or "unknown").strip() or "unknown"
+        counts[key] = counts.get(key, 0) + 1
+    for key, count in counts.items():
+        match = next((run for run in recipe_runs if str(run.get("recipe_key") or "") == key), None)
+        if match is None:
+            recipe_runs.append({
+                "recipe_key": key,
+                "recipe_label": key,
+                "status": "complete",
+                "fresh": count,
+                "matched": count,
+                "scanned": 0,
+                "skipped_seen": 0,
+                "error": "",
+            })
+            continue
+        match["fresh"] = int(match.get("fresh") or 0) + count
+        match["matched"] = int(match.get("matched") or 0) + count
+        if str(match.get("status") or "") == "skipped":
+            match["status"] = "complete"
+            match["error"] = ""
+
+
 def _rerun_requested(request: Request) -> bool:
     """True when an operator is replaying an unfinished business day.
 
@@ -239,6 +268,33 @@ def _rerun_requested(request: Request) -> bool:
 
     raw = str(request.query_params.get("rerun") or "").strip().lower()
     return raw in {"1", "true", "yes"}
+
+
+def _explicit_rerun_target(request: Request) -> tuple[str, int]:
+    """``business_date`` or ``batch_id`` on a rerun. Both require ``rerun=1``.
+
+    A normal cron call does not pass either. An explicit target can only reopen
+    a running or failed scheduled batch; it does not create a new day.
+    """
+
+    business_date = str(request.query_params.get("business_date") or "").strip()
+    raw_id = str(request.query_params.get("batch_id") or "").strip()
+    if business_date and (
+        len(business_date) != 10 or business_date[4] != "-" or business_date[7] != "-"
+        or not business_date.replace("-", "").isdigit()
+    ):
+        raise HTTPException(status_code=400, detail="business_date must be YYYY-MM-DD.")
+    batch_id = 0
+    if raw_id:
+        if not raw_id.isdigit() or int(raw_id) <= 0:
+            raise HTTPException(status_code=400, detail="batch_id must be a positive whole number.")
+        batch_id = int(raw_id)
+    if (business_date or batch_id) and not _rerun_requested(request):
+        raise HTTPException(
+            status_code=400,
+            detail="Pass rerun=1 to reopen a batch by business_date or batch_id.",
+        )
+    return business_date, batch_id
 
 
 _APP_URL = "https://agent.anatainc.com"
@@ -604,6 +660,24 @@ def run_morning_routine(*, now: datetime | None = None, scan_limit: int = _SCAN_
                 "skipped_seen": result.skipped_already_contacted,
             })
 
+    if engine is not None:
+        recovered, already_pushed = outbound_batches.orphan_leads_for_batch(engine, batch_id)
+        have = {str(lead.get("domain") or "").strip().lower() for lead in all_leads}
+        fresh_orphans = [
+            lead for lead in recovered
+            if str(lead.get("domain") or "").strip().lower() not in have
+        ]
+        if fresh_orphans:
+            credit_recovered_runs(recipe_runs, fresh_orphans)
+            all_leads.extend(fresh_orphans)
+            out["recovered_companies"] = len(fresh_orphans)
+            out["pulled"] += len(fresh_orphans)
+            logger.info(
+                "[outbound-jobs] reattached %s orphan companies onto batch %s",
+                len(fresh_orphans), batch_id,
+            )
+        if already_pushed:
+            out["skipped_already_pushed"] = already_pushed
     recipe_runs = outbound_batches.merge_recipe_runs(recipe_runs)
     batch = outbound_batches.finalize_batch(
         engine, batch_id=batch_id, recipe_runs=recipe_runs, leads=all_leads,
@@ -731,13 +805,14 @@ def _require_scheduler_auth(request: Request) -> None:
 def run_scheduled_outbound(request: Request) -> dict:
     """Run the daily outbound batch from Vercel Cron or an internal operator.
 
-    ``?rerun=1`` replays America/Denver's current business date outside the
-    7am window. Auth is unchanged. A batch that already finalized
-    (``ready``, ``needs_review``, ``delivered``) is not pulled again. A
-    ``running`` or ``failed`` batch is reopened. Do not delete that row first.
+    ``?rerun=1`` replays outside the 7am window. ``business_date=YYYY-MM-DD``
+    or ``batch_id=`` picks an unfinished scheduled batch. A finished batch
+    is refused. Companies saved before that batch's finalize failed are
+    attached to the file. Auth is unchanged. Do not delete the batch row first.
     """
 
     _require_scheduler_auth(request)
+    target_date, target_batch_id = _explicit_rerun_target(request)
     now = datetime.now(ZoneInfo(_TZ))
     engine = None
     try:
@@ -757,13 +832,39 @@ def run_scheduled_outbound(request: Request) -> dict:
             "local_time": now.isoformat(),
         }
     if rerun:
-        logger.info("[outbound-jobs] same-day rerun requested for %s", _today(now))
+        logger.info("[outbound-jobs] rerun requested for %s", target_date or _today(now))
 
     from sales_support_agent.models.database import get_engine
 
     if engine is None:
         engine = get_engine()
-    run_key = _today(now)
+    explicit = bool(target_date or target_batch_id)
+    if explicit:
+        from sales_support_agent.services import outbound_batches
+
+        chosen = outbound_batches.scheduled_batch(
+            engine, business_date=target_date, batch_id=target_batch_id,
+        )
+        if chosen is None:
+            detail = "No scheduled batch matches that business_date or batch_id."
+            if target_date and target_batch_id:
+                detail = (
+                    f"Batch {target_batch_id} is not the scheduled batch for {target_date}."
+                )
+            raise HTTPException(status_code=409, detail=detail)
+        if not outbound_batches.batch_is_reopenable(chosen.status):
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"Batch {chosen.id} for {chosen.business_date} is {chosen.status}. "
+                    "Only a running or failed batch can be reopened."
+                ),
+            )
+        year, month, day = (int(part) for part in chosen.business_date.split("-"))
+        now = _wall_clock(year, month, day, hour, tzinfo=ZoneInfo(_TZ))
+        run_key = chosen.business_date
+    else:
+        run_key = _today(now)
     lease = claim_scheduled_job(
         engine,
         job_key="outbound_morning",
@@ -787,7 +888,7 @@ def run_scheduled_outbound(request: Request) -> dict:
             topup = {"reason": "topup failed", "added": 0, "dry_run": True}
 
     try:
-        if _already_ran_today(engine, now):
+        if not explicit and _already_ran_today(engine, now):
             result = {"ran": False, "reason": "daily marker already exists"}
         else:
             result = run_morning_routine(now=now)

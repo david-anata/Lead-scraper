@@ -336,22 +336,22 @@ No quotes, no trailing slash, and no extra spaces.
 
 The daily job is `GET` or `POST` `/api/jobs/outbound-morning/run`. It only pulls when the America/Denver hour matches the saved pull hour (7 by default). `?rerun=1` is the same job outside that hour.
 
-The business date is America/Denver today. There is no date parameter. A call after midnight Denver opens the new day and does not touch the previous batch.
+Without a date, the business date is America/Denver today. After midnight Denver, name the unfinished batch explicitly. `business_date` and `batch_id` are accepted only with `rerun=1`, and only a `running` or `failed` scheduled batch is reopened. A finished batch (`ready`, `needs_review`, or `delivered`) is refused. The call does not create a new batch for that date.
 
-Do not delete or reset the batch row first. A `running` or `failed` batch for that date is reopened. A batch that already finalized (`ready`, `needs_review`, or `delivered`) is left alone and the call returns `today's daily batch already exists`.
+Do not delete or reset the batch row first.
 
 Auth is unchanged: `Authorization: Bearer $CRON_SECRET` or `X-Internal-Api-Key: $SALES_AGENT_INTERNAL_API_KEY`.
 
-On 2026-11-11 the 14:00Z run left batch 12 `running` after `outbound_daily_batch_runs_pkey` rejected a second `plan_upgrade` row. The scheduler lease `outbound_morning` / `2026-11-11` is `failed`, so this call can take it. Run it only while the Denver date is still 2026-11-11, and only after the fix is deployed:
+On 2026-11-11 the 14:00Z run left batch 12 `running` after `outbound_daily_batch_runs_pkey` rejected a second `plan_upgrade` row. Sourcing had already saved 42 `amz_on` companies in `outbound_contacted_domains` (`source` `campaign:amz_on`). None of those domains have an enriched contact or an Instantly `pushed_at`. The 2026-11-12 batch already finished, so the recovery call has to name 2026-11-11. Deploy this change first, then:
 
 ```bash
 curl --fail --silent --show-error --max-time 3500 \
-  -X POST "https://agent.anatainc.com/api/jobs/outbound-morning/run?rerun=1" \
+  -X POST "https://agent.anatainc.com/api/jobs/outbound-morning/run?rerun=1&business_date=2026-11-11" \
   -H "X-Internal-Api-Key: $SALES_AGENT_INTERNAL_API_KEY"
 ```
 
-`GET` with `Authorization: Bearer $CRON_SECRET` is the same call. One runner at a time. If the response says the routine is already running or complete, the lease is still held; wait for it instead of deleting batch 12.
+`batch_id=12` instead of `business_date` is the same reopen. `GET` with `Authorization: Bearer $CRON_SECRET` is the same call. One runner at a time. If the response says the routine is already running or complete, the lease for `2026-11-11` is still held. Do not delete batch 12.
 
-The failed attempt had already saved 42 `amz_on` companies in `outbound_contacted_domains` (`source` `campaign:amz_on`) before the batch write rolled back. The rerun skips those domains. They are not copied onto the new batch file. `outbound_pull_runs` for that attempt is empty. This rerun does not change send caps, campaign status, or copy.
+The rerun puts those 42 companies on batch 12. A domain already on another batch stays on that batch. A domain already pushed to Instantly is left off the file. This does not change send caps, campaign status, or copy.
 
-The Daily Leads button uses the same routine and the same lease. It stays available while today's batch is `running` or `failed`.
+The Daily Leads button uses the same routine and the same lease for today. It stays available while today's batch is `running` or `failed`. The November 11 file is the dated URL above.

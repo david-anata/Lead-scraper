@@ -305,6 +305,153 @@ def materialize_recipes(engine: Any, weekday: int, settings: dict[str, Any]) -> 
 _REOPENABLE_STATUSES = frozenset({"running", "failed"})
 
 
+def scheduled_batch(engine: Any, *, business_date: str = "", batch_id: int = 0) -> DailyBatch | None:
+    """The scheduled batch for a date or id, without creating one."""
+
+    if engine is None or not _tables_available(engine):
+        return None
+    if batch_id:
+        try:
+            batch = get_batch(engine, int(batch_id))
+        except LookupError:
+            return None
+        if batch.trigger != "scheduled":
+            return None
+        if business_date and batch.business_date != business_date:
+            return None
+        return batch
+    if not business_date:
+        return None
+    with engine.connect() as conn:
+        found = conn.execute(text(
+            f"SELECT id FROM {_BATCHES} WHERE business_date=:date AND trigger='scheduled'"
+        ), {"date": business_date}).scalar()
+    if not found:
+        return None
+    return get_batch(engine, int(found))
+
+
+def _stamp(value: Any) -> str:
+    """A timestamp string both SQLite and Postgres can compare."""
+
+    text_value = str(value or "").strip().replace("T", " ")
+    for marker in ("+", "Z"):
+        if marker in text_value:
+            text_value = text_value.split(marker, 1)[0].strip()
+    return text_value[:26]
+
+
+def orphan_leads_for_batch(engine: Any, batch_id: int) -> tuple[list[dict[str, Any]], int]:
+    """Leads saved during an unfinished batch that never landed on a file.
+
+    Campaign sourcing writes ``outbound_contacted_domains`` before finalize.
+    On 2026-11-11 that write committed 42 ``amz_on`` companies and the batch
+    insert then rolled back, so a rerun that treats the contacted table as
+    "already delivered" would freeze an empty file. Rows from that attempt
+    are attached again. A domain already on another batch stays there. A
+    domain whose contact was already pushed to Instantly stays off this file
+    so the rerun cannot send it twice.
+    """
+
+    if engine is None or not _tables_available(engine):
+        return [], 0
+    try:
+        batch = get_batch(engine, int(batch_id))
+    except LookupError:
+        return [], 0
+    started = _stamp(batch.started_at)
+    if not started:
+        return [], 0
+    with engine.connect() as conn:
+        nxt = conn.execute(text(f"""SELECT started_at FROM {_BATCHES}
+            WHERE id != :id AND started_at > :started
+            ORDER BY started_at ASC, id ASC LIMIT 1"""),
+            {"id": int(batch_id), "started": started}).scalar()
+    ended = _stamp(nxt)
+    pushed_ready = False
+    try:
+        with engine.connect() as conn:
+            conn.execute(text("SELECT 1 FROM outbound_enriched_contacts LIMIT 1"))
+        pushed_ready = True
+    except Exception:  # noqa: BLE001 - the push table is not part of every database
+        pushed_ready = False
+    params: dict[str, Any] = {"batch_id": int(batch_id), "started": started}
+    end_sql = ""
+    if ended:
+        end_sql = "AND d.first_seen_at < :ended"
+        params["ended"] = ended
+    pushed_sql = ""
+    if pushed_ready:
+        pushed_sql = """
+            AND NOT EXISTS (
+                SELECT 1 FROM outbound_enriched_contacts p
+                WHERE lower(p.domain) = lower(d.domain) AND p.pushed_at IS NOT NULL
+            )"""
+    try:
+        with engine.connect() as conn:
+            rows = conn.execute(text(f"""SELECT d.domain, d.source, d.tier, d.signals, d.brand,
+                d.niche, d.country, d.score, d.reason, d.recipe, d.revenue_cents, d.categories
+                FROM outbound_contacted_domains d
+                WHERE d.first_seen_at >= :started
+                {end_sql}
+                AND NOT EXISTS (
+                    SELECT 1 FROM {_BATCH_COMPANIES} c
+                    WHERE c.domain = d.domain AND c.batch_id != :batch_id
+                )
+                {pushed_sql}
+                ORDER BY d.domain"""), params).fetchall()
+            pushed = 0
+            if pushed_ready:
+                pushed = int(conn.execute(text(f"""SELECT COUNT(*)
+                    FROM outbound_contacted_domains d
+                    WHERE d.first_seen_at >= :started
+                    {end_sql}
+                    AND NOT EXISTS (
+                        SELECT 1 FROM {_BATCH_COMPANIES} c
+                        WHERE c.domain = d.domain AND c.batch_id != :batch_id
+                    )
+                    AND EXISTS (
+                        SELECT 1 FROM outbound_enriched_contacts p
+                        WHERE lower(p.domain) = lower(d.domain) AND p.pushed_at IS NOT NULL
+                    )"""), params).scalar() or 0)
+    except Exception:  # noqa: BLE001
+        logger.exception("[outbound-batches] could not read orphan leads for batch %s", batch_id)
+        return [], 0
+    leads: list[dict[str, Any]] = []
+    for row in rows:
+        recipe = str(row[9] or "").strip()
+        if not recipe:
+            source = str(row[1] or "")
+            recipe = source.split(":", 1)[1].strip() if source.startswith("campaign:") else source
+        try:
+            signals = json.loads(row[3] or "[]")
+        except (TypeError, ValueError):
+            signals = []
+        if not isinstance(signals, list):
+            signals = []
+        leads.append({
+            "domain": str(row[0] or "").strip().lower(),
+            "source": row[1] or "",
+            "tier": row[2] or "",
+            "signals": signals,
+            "brand": row[4] or "",
+            "niche": row[5] or "",
+            "country": row[6] or "",
+            "score": int(row[7] or 0),
+            "reason": row[8] or "",
+            "recipe": recipe or "unknown",
+            "revenue_cents": int(row[10] or 0),
+            "estimated_sales_yearly_cents": int(row[10] or 0),
+            "categories": row[11] or "",
+        })
+    if leads or pushed:
+        logger.info(
+            "[outbound-batches] batch %s recovers %s orphan companies, %s already pushed",
+            batch_id, len(leads), pushed,
+        )
+    return leads, pushed
+
+
 def batch_is_reopenable(status: str) -> bool:
     """True when a same-day run may take this batch over again.
 

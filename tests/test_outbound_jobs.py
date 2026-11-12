@@ -450,6 +450,100 @@ class MorningRoutineTests(unittest.TestCase):
         self.assertEqual(retried["batch_id"], failed.id)
         self.assertEqual(outbound_batches.get_batch(failed_engine, failed.id).status, "ready")
 
+    def test_a_failed_finalize_rerun_puts_the_42_orphans_on_batch_12(self):
+        """2026-11-11: 42 amz_on rows were saved, finalize rolled back, none were pushed."""
+        import outbound_pipeline as op
+        from sqlalchemy import text
+
+        from sales_support_agent.services import outbound_batches, outbound_memory
+
+        now = datetime(2026, 11, 11, 9, tzinfo=DENVER)
+        engine = create_engine("sqlite://", future=True)
+        outbound_batches.ensure_tables(engine)
+        for day in range(1, 12):
+            outbound_batches.create_batch(
+                engine, business_date=f"2026-10-{day:02d}", trigger="scheduled",
+                recipe_count=0, correlation_id=f"pad-{day}",
+            )
+        batch_id, created = outbound_batches.create_batch(
+            engine, business_date="2026-11-11", trigger="scheduled",
+            recipe_count=2, correlation_id="batch-12",
+        )
+        self.assertTrue(created)
+        self.assertEqual(batch_id, 12)
+        orphans = [
+            {"domain": f"amz-on-{index}.example", "brand": f"Brand {index}", "recipe": "amz_on"}
+            for index in range(42)
+        ]
+        outbound_memory.record_leads(engine, orphans, source="campaign:amz_on")
+        outbound_memory.record_leads(engine, [
+            {"domain": "old.example", "brand": "Old", "recipe": "amz_on"},
+            {"domain": "pushed.example", "brand": "Pushed", "recipe": "amz_on"},
+            {"domain": "stolen.example", "brand": "Stolen", "recipe": "amz_on"},
+        ], source="campaign:amz_on")
+        with engine.begin() as conn:
+            conn.execute(text(
+                "UPDATE outbound_contacted_domains SET first_seen_at='2020-01-01 00:00:00' "
+                "WHERE domain='old.example'"
+            ))
+            conn.execute(text(
+                "CREATE TABLE outbound_enriched_contacts ("
+                "email TEXT, domain TEXT, pushed_at TEXT, campaign_id TEXT)"
+            ))
+            conn.execute(text(
+                "INSERT INTO outbound_enriched_contacts (email, domain, pushed_at, campaign_id) "
+                "VALUES ('a@pushed.example', 'pushed.example', '2026-11-11 14:05:00', "
+                "'8e0df427-1f18-43ac-b0c6-e8ea787123d7')"
+            ))
+        later_id, _later = outbound_batches.create_batch(
+            engine, business_date="2026-11-12", trigger="scheduled",
+            recipe_count=1, correlation_id="nov-12",
+        )
+        later = outbound_batches.finalize_batch(
+            engine, batch_id=later_id,
+            recipe_runs=[{"recipe_key": "amz_on", "status": "complete", "fresh": 1}],
+            leads=[{"domain": "stolen.example", "brand": "Stolen", "recipe": "amz_on"}],
+            filename="anata-daily-leads-2026-11-12.csv",
+        )
+        self.assertEqual(later.unique_companies, 1)
+        empty = {"recorded": 0, "leads": [], "recipes": [], "campaigns": []}
+        saved_csv = op.leads_to_csv
+
+        def boom(_leads):
+            raise RuntimeError(
+                'duplicate key value violates unique constraint "outbound_daily_batch_runs_pkey"'
+            )
+
+        op.leads_to_csv = boom
+        try:
+            with self.assertRaises(RuntimeError):
+                self._run_with_campaigns(
+                    recipes=[], catalog=[], sourced=empty, pull_calls=[], now=now, engine=engine,
+                )
+        finally:
+            op.leads_to_csv = saved_csv
+        failed = outbound_batches.get_batch(engine, 12)
+        self.assertEqual(failed.status, "failed")
+        self.assertEqual(outbound_batches.load_batch_leads(engine, [12]), [])
+        _same, retried = self._run_with_campaigns(
+            recipes=[], catalog=[], sourced=empty, pull_calls=[], now=now, engine=engine,
+        )
+        self.assertTrue(retried["ran"], retried.get("reason"))
+        self.assertEqual(retried["batch_id"], 12)
+        self.assertEqual(retried["recovered_companies"], 42)
+        finished = outbound_batches.get_batch(engine, 12)
+        self.assertEqual(finished.status, "ready")
+        self.assertEqual(finished.unique_companies, 42)
+        domains = {lead["domain"] for lead in outbound_batches.load_batch_leads(engine, [12])}
+        self.assertEqual(domains, {row["domain"] for row in orphans})
+        self.assertNotIn("pushed.example", domains)
+        self.assertNotIn("old.example", domains)
+        self.assertNotIn("stolen.example", domains)
+        runs = {row["recipe_key"]: row for row in outbound_batches.batch_runs(engine, 12)}
+        self.assertEqual(runs["amz_on"]["fresh"], 42)
+        self.assertEqual(runs["amz_on"]["status"], "complete")
+        self.assertEqual(outbound_batches.get_batch(engine, later_id).unique_companies, 1)
+
 
 class ScheduledRouteTests(unittest.TestCase):
     def setUp(self):
@@ -629,6 +723,82 @@ class ScheduledRouteTests(unittest.TestCase):
                 "SELECT status FROM scheduled_job_runs WHERE job_key='outbound_morning' AND run_key='2026-11-11'"
             )).scalar_one()
         self.assertEqual(status, "failed")
+
+    def test_rerun_can_name_batch_12_and_refuses_a_finished_day(self):
+        import os
+        from unittest.mock import patch
+
+        from sales_support_agent.services import outbound_batches
+
+        engine = self._lease_engine()
+        outbound_batches.ensure_tables(engine)
+        batch_id, _created = outbound_batches.create_batch(
+            engine, business_date="2026-11-11", trigger="scheduled",
+            recipe_count=2, correlation_id="open",
+        )
+        ready_id, _ready = outbound_batches.create_batch(
+            engine, business_date="2026-11-12", trigger="scheduled",
+            recipe_count=1, correlation_id="done",
+        )
+        outbound_batches.finalize_batch(
+            engine, batch_id=ready_id,
+            recipe_runs=[{"recipe_key": "amz_on", "status": "complete", "fresh": 150}],
+            leads=[{"domain": "today.example", "brand": "Today", "recipe": "amz_on"}],
+            filename="anata-daily-leads-2026-11-12.csv",
+        )
+        calls = []
+
+        class Afternoon:
+            @classmethod
+            def now(cls, tz):
+                return datetime(2026, 11, 12, 15, tzinfo=tz)
+
+        def ran(**kwargs):
+            calls.append(kwargs.get("now"))
+            return {"ran": True, "pulled": 42, "scanned": 0, "reason": "", "batch_id": batch_id}
+
+        with patch.dict(os.environ, {"CRON_SECRET": "cron-test-key"}), patch.object(
+            jobs, "datetime", Afternoon
+        ), patch(
+            "sales_support_agent.models.database.get_engine", return_value=engine
+        ), patch.object(jobs, "run_morning_routine", side_effect=ran):
+            bare = self.client.post(
+                "/api/jobs/outbound-morning/run?business_date=2026-11-11",
+                headers={"X-Internal-Api-Key": "internal-test-key"},
+            )
+            self.assertEqual(bare.status_code, 400)
+            self.assertEqual(calls, [])
+            replay = self.client.post(
+                "/api/jobs/outbound-morning/run?rerun=1&business_date=2026-11-11",
+                headers={"X-Internal-Api-Key": "internal-test-key"},
+            )
+            by_id = self.client.get(
+                f"/api/jobs/outbound-morning/run?rerun=1&batch_id={batch_id}",
+                headers={"Authorization": "Bearer cron-test-key"},
+            )
+            finished = self.client.post(
+                "/api/jobs/outbound-morning/run?rerun=1&business_date=2026-11-12",
+                headers={"X-Internal-Api-Key": "internal-test-key"},
+            )
+            mismatch = self.client.post(
+                f"/api/jobs/outbound-morning/run?rerun=1&batch_id={batch_id}&business_date=2026-11-12",
+                headers={"X-Internal-Api-Key": "internal-test-key"},
+            )
+        self.assertEqual(replay.status_code, 200, replay.text)
+        self.assertEqual(replay.json()["run_key"], "2026-11-11")
+        self.assertEqual(calls[0].date().isoformat(), "2026-11-11")
+        # The first call already finished the 2026-11-11 lease as succeeded.
+        # batch_id still names an unfinished batch, so the lease can be reclaimed.
+        self.assertEqual(by_id.status_code, 200, by_id.text)
+        self.assertEqual(by_id.json()["run_key"], "2026-11-11")
+        self.assertEqual(finished.status_code, 409, finished.text)
+        self.assertIn("Only a running or failed batch", finished.json()["detail"])
+        self.assertIn(str(ready_id), finished.json()["detail"])
+        self.assertEqual(mismatch.status_code, 409, mismatch.text)
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(
+            outbound_batches.get_batch(engine, ready_id).status, "ready",
+        )
 
 
 if __name__ == "__main__":
