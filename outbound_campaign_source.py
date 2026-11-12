@@ -31,7 +31,10 @@ logger = logging.getLogger(__name__)
 COMPANY_CAP = 300
 CREDIT_CAP = 1100
 _SOURCE_ORDER = ("amz_on", "amz_off", "plan_upgrade", "replatform")
-_ENRICH_FIRST = ("amz_on", "plan_upgrade", "replatform")
+# amz_off sits next to amz_on so each run gives both a turn. plan_upgrade
+# and replatform stay in the same rotation instead of waiting until the
+# Amazon recipes are finished.
+_ENRICH_FIRST = ("amz_on", "amz_off", "plan_upgrade", "replatform")
 _MAX_PAGES = 5
 # About $1M a year, the ICP floor. The live amz_on row is $10k-$20k a month.
 # That band produced 4 verified buyers out of 166 enriched companies on Nov 6.

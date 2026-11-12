@@ -28,11 +28,6 @@ UNCHANGED_VERCEL_CRONS = [
     {"path": "/api/vercel-cron/building-operations", "schedule": "20 * * * *"},
     {"path": "/api/vercel-cron/finance-sync", "schedule": "10 */2 * * *"},
     {"path": "/api/jobs/outbound-morning/run", "schedule": "0 * * * 1-5"},
-    {"path": "/api/jobs/outbound-enrich/at-1415", "schedule": "15 14 * * 1-5"},
-    {"path": "/api/jobs/outbound-enrich/at-1515", "schedule": "15 15 * * 1-5"},
-    {"path": "/api/jobs/outbound-enrich/at-1615", "schedule": "15 16 * * 1-5"},
-    {"path": "/api/jobs/outbound-enrich/at-1715", "schedule": "15 17 * * 1-5"},
-    {"path": "/api/jobs/outbound-enrich/run", "schedule": "30 20 * * 1-5"},
     {"path": "/api/jobs/outbound-enrich/missed-run", "schedule": "30 15 * * 1-5"},
     {"path": "/api/jobs/abby/run", "schedule": "*/5 * * * *"},
     {"path": "/api/jobs/instantly/analytics-sync", "schedule": "0 12 * * *"},
@@ -73,4 +68,4 @@ def test_stale_lead_schedules_are_paused_and_other_crons_are_unchanged() -> None
     assert crons == UNCHANGED_VERCEL_CRONS
     assert PAUSED_VERCEL_CRON_PATH not in {item["path"] for item in crons}
     assert PAUSED_SCHEDULE not in {item["schedule"] for item in crons}
-    assert len(crons) == 24
+    assert len(crons) == 19

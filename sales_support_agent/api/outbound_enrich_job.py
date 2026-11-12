@@ -3,7 +3,9 @@
 Approved by David on 2026-10-22: run into the live Instantly campaign, up to
 120 companies and 250 Prospeo credits a day.
 
-Vercel Cron calls this a few times each weekday morning. Each call tries
+Abby's every-5-minute cron is the only enrich scheduler. It claims one
+run per America/Denver hour, so a weekday hour cannot run twice. The
+old :15 and 20:30 enrich crons are not on the schedule. Each call tries
 brands from active ``outbound_campaigns`` recipes first, oldest unenriched
 first and within that campaign's remaining ``daily_cap``, interleaved so
 one recipe cannot spend the run. Baseline and every other recipe follow,
@@ -35,9 +37,9 @@ then never invoked, including on a deploy where the morning comma-hour cron
 and the weekday ``1-5`` crons did run. ``/run`` stays as one temporary
 20:30 UTC recovery (``30 20 * * 1-5``).
 
-Those cron paths stay registered. Abby's every-5-minute job also calls
-``maybe_run_enrich_from_abby`` directly, because Vercel has not been invoking
-the enrich paths. The first Abby tick runs enrich when no attempt has
+The at-* and /run routes stay registered for a manual call. They go through
+the same hourly claim as Abby, so they cannot start a second run in an hour
+Abby already took. The first Abby tick runs enrich when no attempt has
 succeeded today or in the last 6 hours. After that, enrich runs at most once
 per America/Denver hour on weekdays. ``OUTBOUND_AUTO_ENRICH`` is still required.
 
@@ -353,7 +355,7 @@ def run_missed_enrich_check(
         logger.exception("[outbound-enrich-job] could not check whether enrich ran today")
         message = (
             "Outbound enrich watchdog could not read today's activity. "
-            "Check /api/jobs/outbound-enrich/at-1415."
+            "Abby runs enrich once per Denver hour."
         )
         logger.error("[outbound-enrich-job] %s", message)
         _notify_slack(post_slack, message)
@@ -368,9 +370,8 @@ def run_missed_enrich_check(
     message = (
         "Outbound enrich has not recorded a run today (America/Denver). "
         "outbound_enriched has no new rows since midnight, and scheduled_job_runs "
-        "has no outbound-enrich row. Weekday crons: "
-        "/api/jobs/outbound-enrich/at-1415, at-1515, at-1615, and at-1715 "
-        "(14:15, 15:15, 16:15, and 17:15 UTC)."
+        "has no outbound-enrich row. Abby runs enrich once per Denver hour "
+        "from /api/jobs/abby/run."
     )
     logger.error("[outbound-enrich-job] %s", message)
     _notify_slack(post_slack, message)
@@ -383,15 +384,14 @@ def run_missed_enrich_check(
 
 
 def run_scheduled_enrich(request: Request) -> dict:
-    """Called by Vercel Cron (GET, ``Authorization: Bearer $CRON_SECRET``).
+    """Manual enrich trigger. Shares Abby's one-run-per-hour claim.
 
-    The check is ``_require_scheduler_auth``, the same function Abby uses.
-    ``VERCEL_CRON_ENABLED_JOBS`` is not read. A value there does not skip
-    this route. POST accepts the same credentials for an operator trigger.
+    These paths are not on the Vercel cron schedule. Abby is the scheduler.
+    A call during an hour Abby already claimed does not start a second run.
     """
 
     _require_scheduler_auth(request)
-    return {"status": "ok", "details": run_enrich_job()}
+    return {"status": "ok", "details": maybe_run_enrich_from_abby()}
 
 
 # One route per method. A single route with methods ["GET", "POST"] reuses the

@@ -278,7 +278,9 @@ def _cron_client(monkeypatch):
 
 def test_route_requires_scheduler_auth(monkeypatch):
     called = []
-    monkeypatch.setattr(job, "run_enrich_job", lambda: called.append(1) or {"ran": False})
+    monkeypatch.setattr(
+        job, "maybe_run_enrich_from_abby", lambda: called.append(1) or {"ran": False},
+    )
     c = _cron_client(monkeypatch)
     secret = "s" * 16
     bearer = {"Authorization": "Bearer " + secret}
@@ -311,7 +313,9 @@ def test_enabled_jobs_allowlist_does_not_block_enrich(monkeypatch):
 
     monkeypatch.setenv("VERCEL_CRON_ENABLED_JOBS", "abby")
     called = []
-    monkeypatch.setattr(job, "run_enrich_job", lambda: called.append(1) or {"ran": False})
+    monkeypatch.setattr(
+        job, "maybe_run_enrich_from_abby", lambda: called.append(1) or {"ran": False},
+    )
     response = _cron_client(monkeypatch).get(
         "/api/jobs/outbound-enrich/at-1415",
         headers={"Authorization": "Bearer " + "s" * 16},
@@ -442,7 +446,7 @@ def test_enrich_job_tries_campaign_recipes_before_newer_baseline(engine, monkeyp
     out, _posts = _run_loaded(engine, find=find, push=record)
     assert out["ran"]
     assert tried == [
-        "amzon0.com", "planup0.com", "replat0.com", "amzoff0.com", baseline[-1],
+        "amzon0.com", "amzoff0.com", "planup0.com", "replat0.com", baseline[-1],
     ]
     by_campaign = {cid: emails for cid, emails in sent}
     assert by_campaign[push.RECIPE_CAMPAIGN_MAP["amz_on"]] == ["a@amzon0.com"]
