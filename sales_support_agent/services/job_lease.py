@@ -51,8 +51,14 @@ def claim_scheduled_job(
     job_key: str,
     run_key: str,
     lease_minutes: int = 90,
+    recover_succeeded: bool = False,
 ) -> JobLease | None:
-    """Atomically claim a logical run, recovering failed or stale claims."""
+    """Atomically claim a logical run, recovering failed or stale claims.
+
+    ``recover_succeeded`` also takes a lease that was marked succeeded and has
+    not expired. The outbound morning rerun uses that when the batch itself
+    never finished. A running, unexpired lease is never stolen.
+    """
 
     now = datetime.now(timezone.utc)
     now_text = now.isoformat()
@@ -90,20 +96,25 @@ def claim_scheduled_job(
         if inserted.rowcount == 1:
             return JobLease(job_key, run_key, owner_token)
 
+        recoverable = (
+            "status IN ('failed', 'succeeded')"
+            if recover_succeeded
+            else "status = 'failed'"
+        )
         recovered = connection.execute(
             text(
-                """
+                f"""
                 UPDATE scheduled_job_runs
                    SET status = :status,
                        owner_token = :owner_token,
                        started_at = :started_at,
                        completed_at = NULL,
                        lease_expires_at = :lease_expires_at,
-                       details_json = '{}'
+                       details_json = '{{}}'
                  WHERE job_key = :job_key
                    AND run_key = :run_key
                    AND (
-                        status = 'failed'
+                        {recoverable}
                         OR lease_expires_at < :started_at
                    )
                 """

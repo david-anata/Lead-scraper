@@ -286,6 +286,11 @@ def _recipe_explicitly_enabled(recipe_key: str, settings: Optional[dict[str, Any
     return str(settings.get(f"{recipe_key}.enabled")).strip().lower() in {"1", "true", "yes", "on"}
 
 
+# The morning job already records a batch row for that campaign. A second
+# skipped row with the same recipe_key collides with outbound_daily_batch_runs_pkey.
+ALREADY_SOURCED_REASON = "active campaign filter already sources this recipe"
+
+
 def legacy_recipe_pull_reason(
     recipe_key: str,
     campaign_rows: Optional[list[dict[str, Any]]],
@@ -297,6 +302,10 @@ def legacy_recipe_pull_reason(
     schedule still runs. A held, cut, or proposed row is skipped. A live
     row that already has filters is pulled by ``source_active_campaigns``
     and is not queried again here.
+
+    ``OUTBOUND_PROTECTED_CAMPAIGN_IDS`` is not consulted. That list only
+    refuses an Instantly push. A protected campaign that is still active,
+    capped, and filtered is still "already sourced" here.
     """
 
     if campaign_rows is None:
@@ -312,7 +321,7 @@ def legacy_recipe_pull_reason(
         and _campaign_is_live(row)
     ]
     if active_sourced:
-        return "active campaign filter already sources this recipe"
+        return ALREADY_SOURCED_REASON
     if any(_campaign_is_live(row) for row in matches) or _recipe_explicitly_enabled(key, settings):
         return ""
     if matches:

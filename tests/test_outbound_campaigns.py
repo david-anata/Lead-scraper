@@ -443,6 +443,32 @@ def test_held_recipes_are_not_pulled_unless_explicitly_enabled():
     assert source.legacy_recipe_pull_reason("churned_tool", None, {}) == ""
 
 
+def test_protected_campaign_ids_do_not_change_the_sourcing_gate(monkeypatch):
+    """OUTBOUND_PROTECTED_CAMPAIGN_IDS refuses an Instantly push only.
+
+    An active filtered campaign still counts as already sourced, including
+    when its id is on that list. Pausing it here would change who gets pulled.
+    """
+
+    campaign_id = push.RECIPE_CAMPAIGN_MAP["plan_upgrade"]
+    monkeypatch.setenv("OUTBOUND_PROTECTED_CAMPAIGN_IDS", campaign_id)
+    assert campaign_id in push.protected_campaigns()
+    live = {
+        "recipe_key": "plan_upgrade",
+        "recipe_aliases": "",
+        "status": "active",
+        "daily_cap": 30,
+        "campaign_id": campaign_id,
+        "name": "plan_upgrade|standard|us_plus_90d",
+        "storeleads_filters": {"f:plan": "Shopify Plus"},
+    }
+    assert source.legacy_recipe_pull_reason("plan_upgrade", [live], {}) == source.ALREADY_SOURCED_REASON
+    paused = {**live, "status": "cut", "daily_cap": 0}
+    assert source.legacy_recipe_pull_reason("plan_upgrade", [paused], {}) == "held recipe has no live campaign"
+    throttled = {**live, "status": "throttled"}
+    assert source.legacy_recipe_pull_reason("plan_upgrade", [throttled], {}) == ""
+
+
 def test_judge_requires_150_contacted_and_does_not_change_volume():
     assert campaigns.judge_metrics(149, 5, 1, 1, 0) == (False, "insufficient")
     assert campaigns.judge_metrics(200, None, 1, 1, 0) == (False, "insufficient")

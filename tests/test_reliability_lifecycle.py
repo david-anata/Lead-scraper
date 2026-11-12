@@ -145,6 +145,13 @@ def test_job_lease_allows_one_owner_and_recovers_failure(tmp_path: Path) -> None
     retry = claim_scheduled_job(engine, job_key="daily", run_key="2026-07-27")
     assert retry is not None
     finish_scheduled_job(engine, retry, status="succeeded")
+    assert claim_scheduled_job(
+        engine, job_key="daily", run_key="2026-07-27",
+    ) is None
+    recovered = claim_scheduled_job(
+        engine, job_key="daily", run_key="2026-07-27", recover_succeeded=True,
+    )
+    assert recovered is not None
     engine.dispose()
 
 

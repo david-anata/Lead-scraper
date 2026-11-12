@@ -302,9 +302,177 @@ def materialize_recipes(engine: Any, weekday: int, settings: dict[str, Any]) -> 
     return output
 
 
+_REOPENABLE_STATUSES = frozenset({"running", "failed"})
+
+
+def scheduled_batch(engine: Any, *, business_date: str = "", batch_id: int = 0) -> DailyBatch | None:
+    """The scheduled batch for a date or id, without creating one."""
+
+    if engine is None or not _tables_available(engine):
+        return None
+    if batch_id:
+        try:
+            batch = get_batch(engine, int(batch_id))
+        except LookupError:
+            return None
+        if batch.trigger != "scheduled":
+            return None
+        if business_date and batch.business_date != business_date:
+            return None
+        return batch
+    if not business_date:
+        return None
+    with engine.connect() as conn:
+        found = conn.execute(text(
+            f"SELECT id FROM {_BATCHES} WHERE business_date=:date AND trigger='scheduled'"
+        ), {"date": business_date}).scalar()
+    if not found:
+        return None
+    return get_batch(engine, int(found))
+
+
+def _stamp(value: Any) -> str:
+    """A timestamp string both SQLite and Postgres can compare."""
+
+    text_value = str(value or "").strip().replace("T", " ")
+    for marker in ("+", "Z"):
+        if marker in text_value:
+            text_value = text_value.split(marker, 1)[0].strip()
+    return text_value[:26]
+
+
+def orphan_leads_for_batch(engine: Any, batch_id: int) -> tuple[list[dict[str, Any]], int]:
+    """Leads saved during an unfinished batch that never landed on a file.
+
+    Campaign sourcing writes ``outbound_contacted_domains`` before finalize.
+    On 2026-11-11 that write committed 42 ``amz_on`` companies and the batch
+    insert then rolled back, so a rerun that treats the contacted table as
+    "already delivered" would freeze an empty file. Rows from that attempt
+    are attached again. A domain already on another batch stays there. A
+    domain whose contact was already pushed to Instantly stays off this file
+    so the rerun cannot send it twice.
+    """
+
+    if engine is None or not _tables_available(engine):
+        return [], 0
+    try:
+        batch = get_batch(engine, int(batch_id))
+    except LookupError:
+        return [], 0
+    started = _stamp(batch.started_at)
+    if not started:
+        return [], 0
+    with engine.connect() as conn:
+        nxt = conn.execute(text(f"""SELECT started_at FROM {_BATCHES}
+            WHERE id != :id AND started_at > :started
+            ORDER BY started_at ASC, id ASC LIMIT 1"""),
+            {"id": int(batch_id), "started": started}).scalar()
+    ended = _stamp(nxt)
+    pushed_ready = False
+    try:
+        with engine.connect() as conn:
+            conn.execute(text("SELECT 1 FROM outbound_enriched_contacts LIMIT 1"))
+        pushed_ready = True
+    except Exception:  # noqa: BLE001 - the push table is not part of every database
+        pushed_ready = False
+    params: dict[str, Any] = {"batch_id": int(batch_id), "started": started}
+    end_sql = ""
+    if ended:
+        end_sql = "AND d.first_seen_at < :ended"
+        params["ended"] = ended
+    pushed_sql = ""
+    if pushed_ready:
+        pushed_sql = """
+            AND NOT EXISTS (
+                SELECT 1 FROM outbound_enriched_contacts p
+                WHERE lower(p.domain) = lower(d.domain) AND p.pushed_at IS NOT NULL
+            )"""
+    try:
+        with engine.connect() as conn:
+            rows = conn.execute(text(f"""SELECT d.domain, d.source, d.tier, d.signals, d.brand,
+                d.niche, d.country, d.score, d.reason, d.recipe, d.revenue_cents, d.categories
+                FROM outbound_contacted_domains d
+                WHERE d.first_seen_at >= :started
+                {end_sql}
+                AND NOT EXISTS (
+                    SELECT 1 FROM {_BATCH_COMPANIES} c
+                    WHERE c.domain = d.domain AND c.batch_id != :batch_id
+                )
+                {pushed_sql}
+                ORDER BY d.domain"""), params).fetchall()
+            pushed = 0
+            if pushed_ready:
+                pushed = int(conn.execute(text(f"""SELECT COUNT(*)
+                    FROM outbound_contacted_domains d
+                    WHERE d.first_seen_at >= :started
+                    {end_sql}
+                    AND NOT EXISTS (
+                        SELECT 1 FROM {_BATCH_COMPANIES} c
+                        WHERE c.domain = d.domain AND c.batch_id != :batch_id
+                    )
+                    AND EXISTS (
+                        SELECT 1 FROM outbound_enriched_contacts p
+                        WHERE lower(p.domain) = lower(d.domain) AND p.pushed_at IS NOT NULL
+                    )"""), params).scalar() or 0)
+    except Exception:  # noqa: BLE001
+        logger.exception("[outbound-batches] could not read orphan leads for batch %s", batch_id)
+        return [], 0
+    leads: list[dict[str, Any]] = []
+    for row in rows:
+        recipe = str(row[9] or "").strip()
+        if not recipe:
+            source = str(row[1] or "")
+            recipe = source.split(":", 1)[1].strip() if source.startswith("campaign:") else source
+        try:
+            signals = json.loads(row[3] or "[]")
+        except (TypeError, ValueError):
+            signals = []
+        if not isinstance(signals, list):
+            signals = []
+        leads.append({
+            "domain": str(row[0] or "").strip().lower(),
+            "source": row[1] or "",
+            "tier": row[2] or "",
+            "signals": signals,
+            "brand": row[4] or "",
+            "niche": row[5] or "",
+            "country": row[6] or "",
+            "score": int(row[7] or 0),
+            "reason": row[8] or "",
+            "recipe": recipe or "unknown",
+            "revenue_cents": int(row[10] or 0),
+            "estimated_sales_yearly_cents": int(row[10] or 0),
+            "categories": row[11] or "",
+        })
+    if leads or pushed:
+        logger.info(
+            "[outbound-batches] batch %s recovers %s orphan companies, %s already pushed",
+            batch_id, len(leads), pushed,
+        )
+    return leads, pushed
+
+
+def batch_is_reopenable(status: str) -> bool:
+    """True when a same-day run may take this batch over again.
+
+    ``ready``, ``needs_review``, and ``delivered`` already froze a file.
+    ``running`` is the 2026-11-11 batch 12 state: finalize rolled back and
+    nothing updated the row. ``failed`` is a finalize that was recorded.
+    """
+
+    return str(status or "") in _REOPENABLE_STATUSES
+
+
 def create_batch(engine: Any, *, business_date: str, trigger: str,
-                 recipe_count: int, correlation_id: str) -> tuple[int, bool]:
-    """Create a batch idempotently and return (id, created_now)."""
+                 recipe_count: int, correlation_id: str,
+                 resume_incomplete: bool = False) -> tuple[int, bool]:
+    """Create a batch idempotently and return (id, should_run).
+
+    ``should_run`` is false when a finished batch already exists for this
+    date and trigger. With ``resume_incomplete``, a ``running`` or ``failed``
+    row is reopened and ``should_run`` is true. Callers must not start a
+    second pull for a batch that already finalized.
+    """
     if not _tables_available(engine):
         from sales_support_agent.services import outbound_memory
         marker = f"{_FALLBACK_PREFIX}{trigger}"
@@ -315,6 +483,18 @@ def create_batch(engine: Any, *, business_date: str, trigger: str,
                 except (TypeError, ValueError):
                     data = {}
                 if data.get("business_date") == business_date:
+                    if resume_incomplete and batch_is_reopenable(str(data.get("status") or "")):
+                        data["status"] = "running"
+                        data["error"] = ""
+                        with engine.begin() as conn:
+                            conn.execute(text(
+                                "UPDATE outbound_pull_runs SET note=:note WHERE id=:id"
+                            ), {"note": json.dumps(data), "id": int(run["id"])})
+                        logger.info(
+                            "[outbound-batches] reopening fallback batch %s for %s",
+                            run["id"], business_date,
+                        )
+                        return int(run["id"]), True
                     return int(run["id"]), False
         note = json.dumps({"business_date": business_date, "status": "running",
                            "trigger": trigger, "recipe_count": recipe_count,
@@ -331,14 +511,152 @@ def create_batch(engine: Any, *, business_date: str, trigger: str,
             {"date": business_date, "trigger": trigger, "count": recipe_count,
              "correlation": correlation_id})
         created = bool(result.rowcount)
-        batch_id = int(conn.execute(text(f"SELECT id FROM {_BATCHES} WHERE business_date=:date AND trigger=:trigger"),
-                                    {"date": business_date, "trigger": trigger}).scalar_one())
-    return batch_id, created
+        row = conn.execute(text(
+            f"SELECT id, status FROM {_BATCHES} WHERE business_date=:date AND trigger=:trigger"
+        ), {"date": business_date, "trigger": trigger}).one()
+        batch_id = int(row[0])
+        status = str(row[1] or "")
+        if created:
+            return batch_id, True
+        if resume_incomplete and batch_is_reopenable(status):
+            conn.execute(text(f"""UPDATE {_BATCHES}
+                SET status='running', error='', completed_at=NULL
+                WHERE id=:id AND status IN ('running', 'failed')"""), {"id": batch_id})
+            current = str(conn.execute(text(
+                f"SELECT status FROM {_BATCHES} WHERE id=:id"
+            ), {"id": batch_id}).scalar_one() or "")
+            # Match on the row we just wrote. SQLite can report a zero rowcount
+            # when a stuck ``running`` row is set back to the same values.
+            if current == "running":
+                logger.info(
+                    "[outbound-batches] reopening %s batch %s for %s",
+                    status, batch_id, business_date,
+                )
+                return batch_id, True
+    return batch_id, False
+
+
+_RUN_RANK = {"complete": 3, "partial": 2, "failed": 1, "skipped": 0}
+_VOLUME_FIELDS = ("fresh", "scanned", "matched", "skipped_seen")
+
+
+def merge_recipe_runs(recipe_runs: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """One batch-run row per recipe_key.
+
+    ``outbound_daily_batch_runs`` is keyed by ``(batch_id, recipe_key)``.
+    On 2026-11-11 the morning job inserted a complete ``plan_upgrade`` row
+    from the campaign filter and a skipped ``plan_upgrade`` row from the
+    standalone recipe. Postgres rejected the second row, rolled the finalize
+    transaction back, and left the batch ``running``.
+
+    A real outcome beats a skip: complete, then partial, then failed, then
+    skipped. Two rows with the same outcome add their counts. A skipped row
+    never adds its counts onto a completed one.
+    """
+
+    chosen: dict[str, dict[str, Any]] = {}
+    order: list[str] = []
+    for run in recipe_runs:
+        key = str(run.get("recipe_key") or "").strip()
+        incoming = dict(run)
+        incoming["recipe_key"] = key
+        current = chosen.get(key)
+        if current is None:
+            chosen[key] = incoming
+            order.append(key)
+            continue
+        incoming_rank = _RUN_RANK.get(str(incoming.get("status") or ""), -1)
+        current_rank = _RUN_RANK.get(str(current.get("status") or ""), -1)
+        if incoming_rank > current_rank:
+            if not str(incoming.get("recipe_label") or "").strip():
+                incoming["recipe_label"] = current.get("recipe_label") or ""
+            if not int(incoming.get("run_id") or 0) and int(current.get("run_id") or 0):
+                incoming["run_id"] = current.get("run_id")
+            chosen[key] = incoming
+            continue
+        if incoming_rank < current_rank:
+            if not str(current.get("recipe_label") or "").strip() and incoming.get("recipe_label"):
+                current["recipe_label"] = incoming.get("recipe_label")
+            if not int(current.get("run_id") or 0) and int(incoming.get("run_id") or 0):
+                current["run_id"] = incoming.get("run_id")
+            continue
+        for field in _VOLUME_FIELDS:
+            current[field] = int(current.get(field) or 0) + int(incoming.get(field) or 0)
+        if not str(current.get("recipe_label") or "").strip() and incoming.get("recipe_label"):
+            current["recipe_label"] = incoming.get("recipe_label")
+        if not int(current.get("run_id") or 0) and int(incoming.get("run_id") or 0):
+            current["run_id"] = incoming.get("run_id")
+        left = str(current.get("error") or "").strip()
+        right = str(incoming.get("error") or "").strip()
+        if right and right != left:
+            current["error"] = f"{left}; {right}".strip("; ")[:300] if left else right
+    return [chosen[key] for key in order]
+
+
+def mark_batch_failed(engine: Any, batch_id: int, exc: BaseException) -> None:
+    """Persist a finalize failure so the batch does not stay ``running``.
+
+    The failing finalize transaction has already rolled back. This write is a
+    new transaction. It only touches a row that is still ``running``, so a
+    failure while reading a batch that already committed cannot downgrade it.
+    """
+
+    message = f"{type(exc).__name__}: {exc}".replace("\n", " ")[:500]
+    if engine is None:
+        return
+    try:
+        if not _tables_available(engine):
+            _mark_fallback_failed(engine, batch_id, message)
+            return
+        with engine.begin() as conn:
+            conn.execute(text(f"""UPDATE {_BATCHES}
+                SET status='failed', error=:error, completed_at=CURRENT_TIMESTAMP
+                WHERE id=:id AND status='running'"""),
+                {"error": message, "id": batch_id})
+    except Exception:  # noqa: BLE001
+        logger.exception("[outbound-batches] could not mark batch %s failed", batch_id)
+
+
+def _mark_fallback_failed(engine: Any, batch_id: int, message: str) -> None:
+    with engine.begin() as conn:
+        raw = conn.execute(text(
+            "SELECT recipe, note FROM outbound_pull_runs WHERE id=:id"
+        ), {"id": batch_id}).fetchone()
+    if not raw or not str(raw[0] or "").startswith(_FALLBACK_PREFIX):
+        return
+    try:
+        meta = json.loads(raw[1] or "{}")
+    except (TypeError, ValueError):
+        meta = {}
+    if not isinstance(meta, dict) or str(meta.get("status") or "running") != "running":
+        return
+    meta["status"] = "failed"
+    meta["error"] = message
+    with engine.begin() as conn:
+        conn.execute(text("UPDATE outbound_pull_runs SET note=:note WHERE id=:id"),
+                     {"note": json.dumps(meta), "id": batch_id})
 
 
 def finalize_batch(engine: Any, *, batch_id: int, recipe_runs: list[dict[str, Any]],
                    leads: Iterable[dict[str, Any]], filename: str) -> DailyBatch:
-    """Atomically freeze exact membership and the one daily CSV artifact."""
+    """Atomically freeze exact membership and the one daily CSV artifact.
+
+    Duplicate recipe keys are merged before the insert. If the write fails,
+    the batch is marked ``failed`` instead of being left ``running``.
+    """
+    recipe_runs = merge_recipe_runs(list(recipe_runs))
+    try:
+        return _finalize_batch(engine, batch_id=batch_id, recipe_runs=recipe_runs,
+                               leads=leads, filename=filename)
+    except Exception as exc:
+        logger.exception("[outbound-batches] finalize failed for batch %s", batch_id)
+        mark_batch_failed(engine, batch_id, exc)
+        raise
+
+
+def _finalize_batch(engine: Any, *, batch_id: int, recipe_runs: list[dict[str, Any]],
+                    leads: Iterable[dict[str, Any]], filename: str) -> DailyBatch:
+    """Write one finalized batch. Caller merges recipe keys and records failure."""
     import outbound_pipeline
 
     by_domain: dict[str, dict[str, Any]] = {}

@@ -2405,8 +2405,9 @@ async def outbound_run_morning(request: Request) -> Response:
     Backgrounded, because a full run is roughly half an hour of Amazon checks
     and would never return inside a request. The same routine the 7am schedule
     calls, so testing it here tests the real thing rather than a copy.
-    A second click while it is running, or after today's batch exists, does
-    not start another pull.
+    A second click while it is running, or after today's batch has finalized,
+    does not start another pull. A batch left ``running`` or ``failed`` can
+    be run again. That shares the outbound_morning lease with the cron.
     """
     from zoneinfo import ZoneInfo
 
@@ -2414,6 +2415,7 @@ async def outbound_run_morning(request: Request) -> Response:
 
     from sales_support_agent.api import outbound_jobs as _jobs
     from sales_support_agent.models.database import get_engine
+    from sales_support_agent.services.job_lease import claim_scheduled_job, finish_scheduled_job
 
     if _AMAZON_SCAN.get("running") or _jobs.morning_is_running():
         return JSONResponse(status_code=409, content={
@@ -2427,7 +2429,24 @@ async def outbound_run_morning(request: Request) -> Response:
     current = _jobs.morning_pull_status(engine, now)
     if current.get("already_ran") or current.get("status") == "running":
         return JSONResponse(status_code=200 if current.get("already_ran") else 409, content=current)
+    try:
+        lease = claim_scheduled_job(
+            engine,
+            job_key="outbound_morning",
+            run_key=now.date().isoformat(),
+            lease_minutes=240,
+            recover_succeeded=True,
+        )
+    except Exception:  # noqa: BLE001
+        logger.exception("[outbound] could not claim the morning lease")
+        return JSONResponse(status_code=503, content={
+            "ok": False, "status": "failed", "reason": "Failed: could not claim today's pull."})
+    if lease is None:
+        return JSONResponse(status_code=409, content={
+            "ok": False, "status": "running",
+            "reason": "Today's pull is already running or complete."})
     if not _jobs.begin_morning_run():
+        finish_scheduled_job(engine, lease, status="failed", details={"reason": "already running"})
         return JSONResponse(status_code=409, content={
             "ok": False, "status": "running", "reason": "Today's pull is already running."})
 
@@ -2436,12 +2455,20 @@ async def outbound_run_morning(request: Request) -> Response:
                         last="")
 
     def _go() -> None:
+        result: dict = {"ran": False, "reason": "morning routine did not finish"}
         try:
             result = _jobs.run_morning_routine()
             _jobs.finish_morning_run(result)
         except Exception as exc:  # noqa: BLE001
-            _jobs.finish_morning_run({"ran": False, "reason": str(exc)})
+            result = {"ran": False, "reason": str(exc)}
+            _jobs.finish_morning_run(result)
         finally:
+            try:
+                finish_scheduled_job(
+                    engine, lease, status=_jobs.lease_status_for(result), details=result,
+                )
+            except Exception:  # noqa: BLE001
+                logger.exception("[outbound] could not finish the morning lease")
             _AMAZON_SCAN.update(running=False, last="Morning routine finished.")
 
     return JSONResponse(

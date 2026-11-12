@@ -149,6 +149,135 @@ def test_daily_delivery_uses_one_exact_csv_for_email_and_slack():
     assert b"exact.com" in slack.upload_file.call_args.kwargs["content"]
 
 
+def _november_rows():
+    """The rows Postgres rejected for batch 12 on 2026-11-11."""
+    return [
+        {"recipe_key": "amz_on", "recipe_label": "amz_on", "status": "complete",
+         "fresh": 42, "scanned": 80, "matched": 42, "skipped_seen": 3},
+        {"recipe_key": "amz_off", "recipe_label": "amz_off", "status": "complete",
+         "fresh": 0, "scanned": 20, "matched": 0},
+        {"recipe_key": "plan_upgrade", "recipe_label": "plan_upgrade", "status": "complete",
+         "fresh": 0, "scanned": 11, "matched": 0},
+        {"recipe_key": "replatform", "recipe_label": "replatform", "status": "complete",
+         "fresh": 0, "scanned": 8, "matched": 0},
+        {"recipe_key": "plan_upgrade", "recipe_label": "Upgraded to Shopify Plus",
+         "status": "skipped", "fresh": 5, "scanned": 99,
+         "error": "active campaign filter already sources this recipe"},
+        {"recipe_key": "replatformed", "recipe_label": "Recently replatformed",
+         "status": "skipped", "fresh": 0,
+         "error": "active campaign filter already sources this recipe"},
+    ]
+
+
+def test_duplicate_recipe_keys_keep_the_complete_row():
+    merged = batches.merge_recipe_runs(list(reversed(_november_rows())))
+    by_key = {row["recipe_key"]: row for row in merged}
+    assert list(by_key) == ["replatformed", "plan_upgrade", "replatform", "amz_off", "amz_on"]
+    assert by_key["plan_upgrade"]["status"] == "complete"
+    assert by_key["plan_upgrade"]["fresh"] == 0
+    assert by_key["plan_upgrade"]["scanned"] == 11
+    assert "already sources" not in str(by_key["plan_upgrade"].get("error") or "")
+    assert by_key["replatformed"]["status"] == "skipped"
+    value = engine()
+    batch_id, _created = batches.create_batch(
+        value, business_date="2026-11-11", trigger="scheduled",
+        recipe_count=6, correlation_id="collision",
+    )
+    batch = batches.finalize_batch(
+        value, batch_id=batch_id, recipe_runs=_november_rows(), leads=[],
+        filename="anata-daily-leads-2026-11-11.csv",
+    )
+    stored = batches.batch_runs(value, batch_id)
+    assert [row["recipe_key"] for row in stored].count("plan_upgrade") == 1
+    plan = next(row for row in stored if row["recipe_key"] == "plan_upgrade")
+    assert plan["status"] == "complete" and plan["fresh"] == 0
+    assert batch.scanned == 80 + 20 + 11 + 8
+    assert batch.status == "ready"
+    assert batch.recipe_count == 5
+
+
+def test_same_outcome_rows_add_counts_and_a_skip_does_not():
+    merged = batches.merge_recipe_runs([
+        {"recipe_key": "plan_upgrade", "status": "complete", "fresh": 42, "scanned": 80},
+        {"recipe_key": "plan_upgrade", "status": "complete", "fresh": 3, "scanned": 10},
+        {"recipe_key": "amz_on", "status": "skipped", "fresh": 9, "scanned": 50,
+         "error": "held"},
+        {"recipe_key": "amz_on", "status": "complete", "fresh": 1, "scanned": 4},
+        {"recipe_key": "", "status": "failed", "fresh": 4, "error": "second"},
+        {"recipe_key": "", "status": "complete", "fresh": 1},
+    ])
+    by_key = {row["recipe_key"]: row for row in merged}
+    assert by_key["plan_upgrade"]["fresh"] == 45
+    assert by_key["plan_upgrade"]["scanned"] == 90
+    assert by_key["amz_on"]["status"] == "complete"
+    assert by_key["amz_on"]["fresh"] == 1
+    assert by_key["amz_on"]["scanned"] == 4
+    assert by_key[""]["status"] == "complete"
+    assert by_key[""]["fresh"] == 1
+
+
+def test_a_failed_finalize_marks_the_batch_failed_and_a_finished_batch_stays_finished(monkeypatch):
+    value = engine()
+    batch_id, created = batches.create_batch(
+        value, business_date="2026-11-11", trigger="scheduled",
+        recipe_count=1, correlation_id="fail",
+    )
+    same_id, created_again = batches.create_batch(
+        value, business_date="2026-11-11", trigger="scheduled",
+        recipe_count=1, correlation_id="fail-2",
+    )
+    assert created and not created_again and same_id == batch_id
+    reopened_id, reopened = batches.create_batch(
+        value, business_date="2026-11-11", trigger="scheduled",
+        recipe_count=1, correlation_id="reopen", resume_incomplete=True,
+    )
+    assert reopened_id == batch_id and reopened
+
+    def boom(_leads):
+        raise RuntimeError(
+            'duplicate key value violates unique constraint "outbound_daily_batch_runs_pkey"'
+        )
+
+    monkeypatch.setattr("outbound_pipeline.leads_to_csv", boom)
+    try:
+        batches.finalize_batch(
+            value, batch_id=batch_id, recipe_runs=[
+                {"recipe_key": "amz_on", "status": "complete", "fresh": 1},
+            ],
+            leads=[], filename="anata-daily-leads-2026-11-11.csv",
+        )
+    except RuntimeError as exc:
+        assert "outbound_daily_batch_runs_pkey" in str(exc)
+    else:
+        raise AssertionError("finalize swallowed the write failure")
+    failed = batches.get_batch(value, batch_id)
+    assert failed.status == "failed"
+    assert "outbound_daily_batch_runs_pkey" in failed.error
+    monkeypatch.undo()
+    again_id, again = batches.create_batch(
+        value, business_date="2026-11-11", trigger="scheduled",
+        recipe_count=1, correlation_id="after-fail", resume_incomplete=True,
+    )
+    assert again_id == batch_id and again
+    assert batches.get_batch(value, batch_id).status == "running"
+    ready = batches.finalize_batch(
+        value, batch_id=batch_id, recipe_runs=[
+            {"recipe_key": "amz_on", "status": "complete", "fresh": 1},
+        ],
+        leads=[{"domain": "kept.example", "brand": "Kept", "recipe": "amz_on"}],
+        filename="anata-daily-leads-2026-11-11.csv",
+    )
+    assert ready.status == "ready" and ready.unique_companies == 1
+    finished_id, finished = batches.create_batch(
+        value, business_date="2026-11-11", trigger="scheduled",
+        recipe_count=1, correlation_id="finished", resume_incomplete=True,
+    )
+    assert finished_id == batch_id and not finished
+    assert batches.get_batch(value, batch_id).status == "ready"
+    batches.mark_batch_failed(value, batch_id, RuntimeError("must not downgrade a ready batch"))
+    assert batches.get_batch(value, batch_id).status == "ready"
+
+
 def test_existing_pull_tables_are_a_complete_no_ddl_fallback():
     value = create_engine("sqlite://", future=True)
     outbound_memory.ensure_runs_table(value)
