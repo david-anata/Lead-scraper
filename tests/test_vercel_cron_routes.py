@@ -55,19 +55,15 @@ def test_vercel_crons_target_registered_job_routes() -> None:
     assert "/api/vercel-cron/website-ops" not in paths
 
 
-def test_outbound_enrich_crons_are_single_hour_and_match_the_handler() -> None:
-    """One cron per path, same shape as Abby. /run is the temporary recovery."""
+def test_outbound_enrich_runs_only_from_abby() -> None:
+    """Abby is the enrich scheduler. The old :15 and 20:30 crons are gone."""
 
     config = _cron_config()
     paths = [item["path"] for item in config["crons"]]
     assert len(paths) == len(set(paths))
     by_path = {item["path"]: item for item in config["crons"]}
-    assert by_path["/api/jobs/outbound-enrich/at-1415"]["schedule"] == "15 14 * * 1-5"
-    assert by_path["/api/jobs/outbound-enrich/at-1515"]["schedule"] == "15 15 * * 1-5"
-    assert by_path["/api/jobs/outbound-enrich/at-1615"]["schedule"] == "15 16 * * 1-5"
-    assert by_path["/api/jobs/outbound-enrich/at-1715"]["schedule"] == "15 17 * * 1-5"
-    recovery = by_path["/api/jobs/outbound-enrich/run"]
-    assert recovery["schedule"] == "30 20 * * 1-5"
+    enrich_crons = [path for path in paths if path.startswith("/api/jobs/outbound-enrich/")]
+    assert enrich_crons == ["/api/jobs/outbound-enrich/missed-run"]
     for item in config["crons"]:
         assert set(item) == {"path", "schedule"}
     assert by_path["/api/jobs/outbound-enrich/missed-run"]["schedule"] == "30 15 * * 1-5"
@@ -84,7 +80,7 @@ def test_outbound_enrich_crons_are_single_hour_and_match_the_handler() -> None:
         if path.startswith("/api/jobs/outbound-enrich/"):
             assert "," not in item["schedule"]
     # Weekday stale-lead cron is paused; the other schedules stay.
-    assert len(config["crons"]) == 24
+    assert len(config["crons"]) == 19
     assert len(config["crons"]) <= 100
 
 

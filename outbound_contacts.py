@@ -422,6 +422,20 @@ def normalize_domain(value: str) -> str:
     return company_domain(value)
 
 
+def is_platform_subdomain(value: str) -> bool:
+    """True for a storefront on a platform host, such as brand.myshopify.com.
+
+    Prospeo rejects those hosts with INVALID_FILTERS. The platform apex itself
+    is not a company and is not a storefront either.
+    """
+
+    host = normalize_host(value)
+    if not host or "." not in host:
+        return False
+    root = registrable_domain(host)
+    return bool(root in PLATFORM_REGISTRABLE and host != root)
+
+
 def search_failure_reason(status: int, data: dict[str, Any], api_key: str) -> str:
     """Prospeo search error, including filter_error, with the key removed."""
     code = (data or {}).get("error_code") or status
@@ -467,6 +481,48 @@ def _post_retrying(post: Post, url: str, *, key: str, body: dict[str, Any],
     return status, data
 
 
+def _search_filters(domain: str, *, titles: bool) -> dict[str, Any]:
+    filters: dict[str, Any] = {"company": {"websites": {"include": [domain]}}}
+    if titles:
+        filters["person_job_title"] = {"include": SEARCH_TITLES, "match_mode": "CONTAINS"}
+    return filters
+
+
+def _run_person_search(
+    domain: str,
+    *,
+    api_key: str,
+    post: Post,
+    sleep: Callable[[float], None],
+    pace_seconds: float,
+    titles: bool,
+) -> tuple[str, list[Any], int, str]:
+    """One Prospeo person search.
+
+    Returns ``(outcome, results, credits, reason)``. Outcome is ``ok``,
+    ``no_results``, ``rate``, or ``error``. A miss is not charged. A search
+    that returns people costs one credit unless Prospeo marks it free.
+    """
+
+    body = {"page": 1, "filters": _search_filters(domain, titles=titles)}
+    sleep(pace_seconds)
+    try:
+        status, data = _post_retrying(post, PROSPEO_SEARCH_URL, key=api_key, body=body, sleep=sleep)
+    except Exception as exc:  # noqa: BLE001
+        return "error", [], 0, _redact(f"search failed: {exc}", api_key)
+    if status == 429:
+        return "rate", [], 0, "Rate limit reached."
+    if status != 200 or data.get("error"):
+        reason = search_failure_reason(status, data, api_key)
+        code = str((data or {}).get("error_code") or "").upper()
+        if code == "NO_RESULTS":
+            return "no_results", [], 0, reason
+        return "error", [], 0, reason
+    found = data.get("results") or []
+    credits = 1 if found and not data.get("free") else 0
+    return "ok", found, credits, ""
+
+
 def find_contacts(
     domain: str,
     *,
@@ -476,8 +532,14 @@ def find_contacts(
     sleep: Callable[[float], None] = time.sleep,
     pace_seconds: float = 1.1,
     rank_title: Optional[Callable[[str], Optional[int]]] = None,
+    credit_budget: Optional[int] = None,
 ) -> FindResult:
-    """Return up to ``max_contacts`` verified people at ``domain``."""
+    """Return up to ``max_contacts`` verified people at ``domain``.
+
+    ``credit_budget`` is how many Prospeo credits this call may spend. None
+    means no extra limit. A NO_RESULTS search is retried once without the
+    title filter, and only when one credit remains for that search.
+    """
     domain = normalize_domain(domain)
     result = FindResult(domain=domain)
     if not api_key:
@@ -486,32 +548,34 @@ def find_contacts(
     if not domain:
         result.reason = "No domain."
         return result
+    if is_platform_subdomain(domain):
+        result.reason = "Platform subdomain is not searchable."
+        return result
     post = post or _http_post
 
-    search_body = {
-        "page": 1,
-        "filters": {
-            "company": {"websites": {"include": [domain]}},
-            "person_job_title": {"include": SEARCH_TITLES, "match_mode": "CONTAINS"},
-        },
-    }
-    sleep(pace_seconds)  # Prospeo allows about 1 request a second
-    try:
-        status, data = _post_retrying(post, PROSPEO_SEARCH_URL, key=api_key, body=search_body, sleep=sleep)
-    except Exception as exc:  # noqa: BLE001
-        result.reason = _redact(f"search failed: {exc}", api_key)
-        return result
-    if status == 429:
+    def room() -> bool:
+        return credit_budget is None or result.credits_used < credit_budget
+
+    outcome, found, credits, reason = _run_person_search(
+        domain, api_key=api_key, post=post, sleep=sleep, pace_seconds=pace_seconds, titles=True,
+    )
+    result.credits_used += credits
+    if outcome == "no_results" and room():
+        outcome, found, credits, reason = _run_person_search(
+            domain, api_key=api_key, post=post, sleep=sleep, pace_seconds=pace_seconds, titles=False,
+        )
+        result.credits_used += credits
+    if outcome == "rate":
         result.reason = "Rate limit reached."
         return result
-    if status != 200 or data.get("error"):
-        result.reason = search_failure_reason(status, data, api_key)
+    if outcome == "error":
+        result.reason = reason
+        return result
+    if outcome == "no_results":
+        result.reason = reason or "search returned NO_RESULTS"
         return result
 
-    found = data.get("results") or []
     result.candidates_seen = len(found)
-    if found and not data.get("free"):
-        result.credits_used += 1
     rank_title = rank_title or title_rank
     ranked = rank_candidates(found, rank_title)
     if not ranked:
@@ -528,6 +592,9 @@ def find_contacts(
     skipped_name = False
     for item in ranked[: max_contacts + 3]:
         if len(result.contacts) >= max_contacts:
+            break
+        if credit_budget is not None and result.credits_used >= credit_budget:
+            result.reason = "Credit budget reached."
             break
         person = item["person"]
         sleep(pace_seconds)

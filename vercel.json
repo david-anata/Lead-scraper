@@ -78,26 +78,6 @@
       "schedule": "0 * * * 1-5"
     },
     {
-      "path": "/api/jobs/outbound-enrich/at-1415",
-      "schedule": "15 14 * * 1-5"
-    },
-    {
-      "path": "/api/jobs/outbound-enrich/at-1515",
-      "schedule": "15 15 * * 1-5"
-    },
-    {
-      "path": "/api/jobs/outbound-enrich/at-1615",
-      "schedule": "15 16 * * 1-5"
-    },
-    {
-      "path": "/api/jobs/outbound-enrich/at-1715",
-      "schedule": "15 17 * * 1-5"
-    },
-    {
-      "path": "/api/jobs/outbound-enrich/run",
-      "schedule": "30 20 * * 1-5"
-    },
-    {
       "path": "/api/jobs/outbound-enrich/missed-run",
       "schedule": "30 15 * * 1-5"
     },

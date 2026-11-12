@@ -28,6 +28,7 @@ import os
 import re
 from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Iterable, Optional
+from zoneinfo import ZoneInfo
 
 import requests
 from sqlalchemy import text
@@ -192,6 +193,38 @@ def ensure_tables(engine) -> None:
         pass
 
 
+def _is_read_timeout(exc: BaseException) -> bool:
+    """True for a response read timeout, not a connect timeout or an HTTP status."""
+
+    if type(exc).__name__ in {"ReadTimeout", "ReadTimeoutError"}:
+        return True
+    text = str(exc).lower()
+    return "read timed out" in text or "read timeout" in text
+
+
+def _exception_payload(exc: BaseException) -> dict[str, Any]:
+    return {"error": str(exc)[:500], "timeout": _is_read_timeout(exc)}
+
+
+def failure_detail(status: int, data: Any) -> str:
+    """Short reason safe to store on a follow-up row and to show in Slack."""
+
+    if isinstance(data, dict):
+        for key in ("error", "message", "detail"):
+            value = data.get(key)
+            if value:
+                return str(value)[:500]
+        if data.get("timeout"):
+            return "Read timed out"
+    if status == 0:
+        return "Instantly request failed before a response"
+    return f"Instantly returned {status}"
+
+
+def is_read_timeout_result(status: int, data: Any) -> bool:
+    return status == 0 and isinstance(data, dict) and bool(data.get("timeout"))
+
+
 class Instantly:
     """Thin client. Every call returns (status, json) and never raises."""
 
@@ -201,13 +234,24 @@ class Instantly:
 
     def _call(self, method: str, path: str, **kw) -> tuple[int, Any]:
         try:
-            r = self.http.request(method, f"{API}/{path}", timeout=30,
-                                  headers={"Authorization": f"Bearer {self.key}"}, **kw)
-            return r.status_code, (r.json() if r.content else None)
+            response = self.http.request(
+                method, f"{API}/{path}", timeout=30,
+                headers={"Authorization": f"Bearer {self.key}"}, **kw,
+            )
         except Exception as exc:  # noqa: BLE001
-            logger.warning("[abby] instantly %s %s failed: %s", method, path,
-                           str(exc).replace(self.key, "<key>"))
-            return 0, None
+            redacted = str(exc).replace(self.key, "<key>") if self.key else str(exc)
+            logger.warning("[abby] instantly %s %s failed: %s", method, path, redacted)
+            payload = _exception_payload(exc)
+            payload["error"] = redacted[:500]
+            return 0, payload
+        if not getattr(response, "content", None):
+            return response.status_code, None
+        try:
+            body = response.json()
+        except Exception:  # noqa: BLE001
+            text = str(getattr(response, "text", "") or "")[:300]
+            body = {"error": "response was not json", "body": text}
+        return response.status_code, body
 
     def received_since(self, since: datetime, campaign_id: str, pages: int = 3) -> list[dict]:
         items: list[dict] = []
@@ -255,7 +299,11 @@ class Instantly:
             payload["cc_address_email_list"] = ",".join(cc)
         if extra:
             payload["additional_recipients"] = extra
-        return self._call("POST", "emails/reply", json=payload)
+        status, data = self._call("POST", "emails/reply", json=payload)
+        if is_read_timeout_result(status, data):
+            logger.warning("[abby] instantly reply read timed out; retrying once")
+            status, data = self._call("POST", "emails/reply", json=payload)
+        return status, data
 
     def set_interest(self, lead: str, value: int, campaign_id: str) -> int:
         status = self._call("POST", "leads/update-interest-status",
@@ -921,6 +969,35 @@ def _send_due_followups(engine, client: Instantly, now: datetime, run_mode: str,
     return sent
 
 
+FOLLOWUP_TIMEOUT_BACKOFF = timedelta(hours=1)
+
+
+def _post_followup_failure(engine, post_slack: Callable[[str], Any], text: str, now: datetime) -> None:
+    """Post one scheduled-follow-up failure per Denver day. The row keeps every reason."""
+
+    logger.warning("[abby] %s", text)
+    day = now.astimezone(ZoneInfo("America/Denver")).date().isoformat() if now.tzinfo else now.date().isoformat()
+    try:
+        from sales_support_agent.services.job_lease import claim_scheduled_job, finish_scheduled_job
+
+        lease = claim_scheduled_job(
+            engine, job_key="abby_followup_alert",
+            run_key=f"{day}:scheduled_followup_failed", lease_minutes=36 * 60,
+        )
+    except Exception:  # noqa: BLE001
+        logger.exception("[abby] could not claim the daily follow-up failure alert")
+        post_slack(text)
+        return
+    if lease is None:
+        logger.info("[abby] suppressed repeat follow-up failure alert: %s", text)
+        return
+    try:
+        post_slack(text)
+        finish_scheduled_job(engine, lease, status="succeeded", details={"text": text[:500]})
+    except Exception:  # noqa: BLE001
+        logger.exception("[abby] follow-up failure alert was not posted")
+
+
 def send_due_scheduled(engine, client: Instantly, now: datetime, run_mode: str,
                        post_slack: Callable[[str], Any], cap: int) -> int:
     """Send due rows from abby_followups_scheduled. Live mode only, under the daily cap.
@@ -979,11 +1056,30 @@ def send_due_scheduled(engine, client: Instantly, now: datetime, run_mode: str,
                 ), {"n": now.replace(tzinfo=None), "i": fid})
             sent += 1
         else:
-            with engine.begin() as conn:
-                conn.execute(text(
-                    "UPDATE abby_followups_scheduled SET status = :s WHERE id = :i"
-                ), {"s": f"failed {status}", "i": fid})
-            post_slack(f"Abby's scheduled follow-up to {lead} failed to send ({status}).")
+            detail = failure_detail(status, data)
+            if is_read_timeout_result(status, data):
+                due = (now + FOLLOWUP_TIMEOUT_BACKOFF).replace(tzinfo=None)
+                with engine.begin() as conn:
+                    conn.execute(text(
+                        "UPDATE abby_followups_scheduled SET status = 'pending', due_at = :d, "
+                        "detail = :detail WHERE id = :i"
+                    ), {"d": due, "detail": detail[:500], "i": fid})
+                _post_followup_failure(
+                    engine, post_slack,
+                    f"Abby's scheduled follow-up to {lead} timed out: {detail}. "
+                    f"It stays pending and retries after {due.isoformat(timespec='minutes')}.",
+                    now,
+                )
+            else:
+                with engine.begin() as conn:
+                    conn.execute(text(
+                        "UPDATE abby_followups_scheduled SET status = :s, detail = :detail WHERE id = :i"
+                    ), {"s": f"failed {status}", "detail": detail[:500], "i": fid})
+                _post_followup_failure(
+                    engine, post_slack,
+                    f"Abby's scheduled follow-up to {lead} failed to send ({status}): {detail}.",
+                    now,
+                )
     if capped:
         post_slack("Abby hit her daily cap. Scheduled follow-ups are waiting.")
     return sent

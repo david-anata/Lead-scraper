@@ -31,6 +31,9 @@ logger = logging.getLogger(__name__)
 
 _DOMAINS = "outbound_enriched"
 _PEOPLE = "outbound_enriched_contacts"
+# A paid search that stopped before a verified email. The credits count toward
+# today's cap, and the domain stays eligible for a later run to finish.
+_CREDIT_HOLD = "credit_hold"
 
 _CREATE = (
     f"""CREATE TABLE IF NOT EXISTS {_DOMAINS} (
@@ -91,20 +94,20 @@ def ensure_tables(engine) -> None:
 def enriched_domains(engine) -> set[str]:
     """Domains we will not search again.
 
-    A failed INVALID_FILTERS row is not done: the subdomain bug stored those
-    failures, and a later run has to be allowed to search the brand again.
-    A domain we already found contacts for, or already saw inside Instantly,
-    stays done even if the reason text mentions the filter error.
+    An INVALID_FILTERS row is finished. Prospeo rejected the host, and searching
+    it again every hour kept the same companies at the front of the queue.
+    A credit hold is not finished: the search was paid for, and a later run
+    may still reveal the email.
     """
     with engine.connect() as conn:
         rows = conn.execute(text(
-            f"SELECT domain, COALESCE(status, ''), COALESCE(reason, '') FROM {_DOMAINS}")).fetchall()
-    done = set()
-    for domain, status, reason in rows:
-        if "INVALID_FILTERS" in str(reason).upper() and status not in {"found", "in_instantly"}:
-            continue
-        done.add(str(domain).lower())
-    return done
+            f"SELECT domain, COALESCE(status, '') FROM {_DOMAINS}"
+        )).fetchall()
+    return {
+        str(domain).lower()
+        for domain, status in rows
+        if domain and str(status) != _CREDIT_HOLD
+    }
 
 
 def known_emails(engine) -> set[str]:
@@ -115,11 +118,21 @@ def known_emails(engine) -> set[str]:
 
 def _record_domain(engine, domain: str, status: str, found: int, credits: int, reason: str) -> None:
     with engine.begin() as conn:
+        existing = conn.execute(text(
+            f"SELECT status, COALESCE(credits_used, 0) FROM {_DOMAINS} WHERE domain = :d"
+        ), {"d": domain}).fetchone()
+        stored_credits = int(credits)
+        if existing and str(existing[0]) == _CREDIT_HOLD:
+            stored_credits += int(existing[1] or 0)
         conn.execute(text(
             f"INSERT INTO {_DOMAINS} (domain, status, contacts_found, credits_used, reason) "
             "VALUES (:d, :s, :f, :c, :r) ON CONFLICT (domain) DO UPDATE SET "
-            "status = :s, contacts_found = :f, credits_used = :c, reason = :r"),
-            {"d": domain, "s": status, "f": found, "c": credits, "r": reason[:500]})
+            "status = :s, contacts_found = :f, credits_used = :c, reason = :r, "
+            "enriched_at = CURRENT_TIMESTAMP"),
+            {
+                "d": domain, "s": status, "f": found, "c": stored_credits,
+                "r": reason[:500],
+            })
 
 
 def _record_person(engine, c: _contacts.Contact, opener: str, source: str,
@@ -206,6 +219,7 @@ class EnrichReport:
     skipped_in_instantly: int = 0
     skipped_check_failed: int = 0
     skipped_not_us: int = 0
+    skipped_platform: int = 0
     stopped_reason: str = ""
     pushed: int = 0
     suppressed: int = 0
@@ -231,6 +245,7 @@ class EnrichReport:
             "skipped_in_instantly": self.skipped_in_instantly,
             "skipped_check_failed": self.skipped_check_failed,
             "skipped_not_us": self.skipped_not_us,
+            "skipped_platform": self.skipped_platform,
             "stopped_reason": self.stopped_reason, "pushed": self.pushed,
             "suppressed": self.suppressed, "queued": self.queued,
             "push_note": self.push_note, "samples": self.samples[:10],
@@ -240,8 +255,8 @@ class EnrichReport:
 def companies_enriched_by_recipe(engine, since_utc, recipes: Iterable[str]) -> dict[str, int]:
     """Companies enriched since ``since_utc`` whose stored recipe is in ``recipes``.
 
-    A failed ``INVALID_FILTERS`` row does not count. The same domain can be
-    searched again, and it should not use up a campaign's daily cap.
+    Every recorded row counts, including an INVALID_FILTERS result. That result
+    is finished, so it is not searched again on the next run.
     """
 
     wanted = {str(recipe).strip() for recipe in recipes if str(recipe).strip()}
@@ -262,11 +277,9 @@ def companies_enriched_by_recipe(engine, since_utc, recipes: Iterable[str]) -> d
         logger.exception("[outbound-enrich] could not count enriched recipes")
         return {}
     counts: dict[str, int] = {}
-    for recipe, status, reason in rows:
+    for recipe, _status, _reason in rows:
         name = str(recipe or "").strip()
         if name not in wanted:
-            continue
-        if "INVALID_FILTERS" in str(reason).upper() and str(status) not in {"found", "in_instantly"}:
             continue
         counts[name] = counts.get(name, 0) + 1
     return counts
@@ -502,12 +515,37 @@ def run_enrichment(
             except Exception:  # noqa: BLE001
                 logger.exception("[outbound-enrich] could not mark %s", domain)
             continue
+        if _contacts.is_platform_subdomain(domain):
+            report.skipped_platform += 1
+            try:
+                _record_domain(
+                    engine, domain, "platform", 0, 0,
+                    "Platform subdomain is not searchable.",
+                )
+            except Exception:  # noqa: BLE001
+                logger.exception("[outbound-enrich] could not mark %s", domain)
+            continue
         report.companies_tried += 1
-        find_kwargs = {"api_key": api_key, "max_contacts": max_contacts}
+        find_kwargs = {
+            "api_key": api_key,
+            "max_contacts": max_contacts,
+            "credit_budget": max(0, credit_budget - report.credits_used),
+        }
         if str(lead.get("recipe") or "").strip() == "sales_org":
             find_kwargs["rank_title"] = _contacts.sales_title_rank
         res = find(domain, **find_kwargs)
         report.credits_used += res.credits_used
+        if res.reason == "Credit budget reached." and not res.contacts:
+            # Keep the spent search on the row so the next hour's cap sees it.
+            # credit_hold is not a finished domain, so a later run can complete it.
+            report.stopped_reason = res.reason
+            try:
+                _record_domain(
+                    engine, domain, _CREDIT_HOLD, 0, res.credits_used, res.reason,
+                )
+            except Exception:  # noqa: BLE001
+                logger.exception("[outbound-enrich] could not save credits for %s", domain)
+            break
         fresh = [c for c in res.contacts if c.email not in emails_seen]
         status = "found" if fresh else ("duplicate" if res.contacts else "none")
         try:

@@ -182,7 +182,7 @@ def test_email_status_is_stored_on_the_contact(engine):
     assert status == "VERIFIED"
 
 
-def test_invalid_filters_failure_is_retried_and_a_normal_miss_is_not(engine):
+def test_invalid_filters_failure_is_finished_and_a_normal_miss_is_not(engine):
     oe.ensure_tables(engine)
     oe._record_domain(engine, "petlibro.com", "none", 0, 0, "search returned INVALID_FILTERS: bad host")
     oe._record_domain(engine, "russh.com", "none", 0, 0, "No decision-maker found at this domain.")
@@ -195,8 +195,8 @@ def test_invalid_filters_failure_is_retried_and_a_normal_miss_is_not(engine):
 
     r = oe.run_enrichment(engine, [lead("petlibro.com"), lead("russh.com")], api_key="k",
                           find=find, write=opener, already_in_instantly=lambda d: False)
-    assert calls == ["petlibro.com"]
-    assert r.companies_tried == 1 and r.skipped_already_enriched == 1
+    assert calls == []
+    assert r.companies_tried == 0 and r.skipped_already_enriched == 2
 
 
 def test_old_subdomain_failure_does_not_block_the_brand(engine):
