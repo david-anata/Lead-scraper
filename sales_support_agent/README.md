@@ -168,6 +168,26 @@ stored ceiling is still the narrower $20k a month band. `amz_off` and the
 request. Enrichment tries unenriched `amz_on`, `plan_upgrade`, and
 `replatform` before `amz_off`.
 
+### Remove old #sales status posts
+
+After this is deployed, the hourly `Outbound contacts (replaces Clay)` line is no longer posted. Posts already in `#sales` (`CQRMXS339`) stay until someone runs the cleanup. It uses the Sales Agent bot token (`SLACK_BOT_TOKEN`, bot user `U0AK49FRQ3D`) and `chat.delete`. It matches only messages whose first line is exactly `Outbound contacts (replaces Clay)`. Daily Leads, send-failure alerts, held replies, and nudges are left in place. The default is a dry run.
+
+Dry run, from a machine that has the cron secret. This lists timestamps and deletes nothing:
+
+```bash
+curl -sS -H "Authorization: Bearer $CRON_SECRET" \
+  https://agent.anatainc.com/api/jobs/outbound-enrich/clay-status-posts
+```
+
+Read `matched` (about 102 for the last 30 days) and confirm every returned `text` is the status header. Then delete:
+
+```bash
+curl -sS -X POST -H "Authorization: Bearer $CRON_SECRET" \
+  "https://agent.anatainc.com/api/jobs/outbound-enrich/clay-status-posts?apply=true"
+```
+
+`X-Internal-Api-Key` is accepted in place of the bearer token. Deletes are paced at about one a second. A POST without `apply=true` is still a dry run. Run the dry run again afterward; `matched` should be 0.
+
 Monday at 7:00 America/Denver, inside the existing morning lease, a
 completed/no-reply re-engage top-up can add leads to the existing
 `abby_reengage` campaign. It stays off until

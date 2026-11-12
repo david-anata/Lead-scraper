@@ -430,6 +430,35 @@ def run_scheduled_missed_enrich_check_post(request: Request) -> dict:
     return run_scheduled_missed_enrich_check(request)
 
 
+def run_clay_status_cleanup(*, apply: bool) -> dict[str, Any]:
+    """List or delete this bot's old outbound status posts. Dry-run unless apply."""
+
+    from sales_support_agent.config import load_settings
+    from sales_support_agent.services.sales_slack_cleanup import cleanup_outbound_status_posts
+
+    settings = load_settings()
+    return cleanup_outbound_status_posts(
+        token=str(getattr(settings, "slack_bot_token", "") or ""),
+        apply=apply,
+    )
+
+
+@router.get("/clay-status-posts", operation_id="outbound_enrich_clay_status_posts_get")
+def list_clay_status_posts(request: Request) -> dict[str, Any]:
+    """Auth-protected dry run. Lists matches and deletes nothing."""
+
+    _require_scheduler_auth(request)
+    return run_clay_status_cleanup(apply=False)
+
+
+@router.post("/clay-status-posts", operation_id="outbound_enrich_clay_status_posts_post")
+def delete_clay_status_posts(request: Request, apply: bool = False) -> dict[str, Any]:
+    """Delete matches only when ``apply=true``. The default is a dry run."""
+
+    _require_scheduler_auth(request)
+    return run_clay_status_cleanup(apply=apply)
+
+
 # Abby calls this. The lease table already exists (scheduled_job_runs). Nothing
 # here creates a table or reads a new env var. 6 hours reaches across midnight
 # so a late weekday run still counts as recent early the next morning.
