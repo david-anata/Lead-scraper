@@ -177,6 +177,8 @@ class Settings:
     building_site_intake_key: str = ""
     # Private deck API (/api/decks/generate). Empty = route disabled.
     deck_api_key: str = ""
+    # Read-only Search Console export destination. Empty disables the job.
+    gsc_export_sheet_id: str = ""
     building_public_base_url: str = "https://anatabuilding.com"
     building_default_lead_owner: str = ""
     building_response_sla_hours: int = 4
@@ -614,6 +616,7 @@ def load_settings() -> Settings:
         google_sheets_spreadsheet_id=os.getenv("GOOGLE_SHEETS_SPREADSHEET_ID", "").strip(),
         google_sheets_sales_range=os.getenv("GOOGLE_SHEETS_SALES_RANGE", "").strip(),
         google_service_account_json=os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON", "").strip(),
+        gsc_export_sheet_id=os.getenv("GSC_EXPORT_SHEET_ID", "").strip(),
         canva_api_base_url=(os.getenv("CANVA_API_BASE_URL", "https://api.canva.com/rest/v1").strip() or "https://api.canva.com/rest/v1"),
         canva_authorize_url=(
             os.getenv("CANVA_AUTHORIZE_URL", "https://www.canva.com/api/oauth/authorize").strip()

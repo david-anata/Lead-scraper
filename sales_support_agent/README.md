@@ -358,6 +358,19 @@ Website ops:
 - `WP_USERNAME`
 - `WP_APPLICATION_PASSWORD`
 
+Search Console export:
+
+- `GOOGLE_SERVICE_ACCOUNT_JSON` (existing service account)
+- `WEBSITE_OPS_GSC_PROPERTY` (defaults to `sc-domain:anatainc.com`)
+- `GSC_EXPORT_SHEET_ID` (destination spreadsheet id; share it with the service account as Editor)
+
+`GET` or `POST` `/api/jobs/search-console/export` lists the Search Console properties the service account can see, then writes the last 28 days of top queries and top pages for `sc-domain:anatainc.com` and, when visible, anatabuilding.com. Each run replaces that spreadsheet's tabs, so keep the spreadsheet dedicated to this export. The job is read-only against Search Console and does not run Website Ops. Vercel calls it Mondays at 14:00 UTC (7:00 AM America/Denver standard time, 8:00 AM daylight time). Auth is `Authorization: Bearer $CRON_SECRET` or `X-Internal-Api-Key: $SALES_AGENT_INTERNAL_API_KEY`.
+
+```bash
+curl -sS -X POST "https://agent.anatainc.com/api/jobs/search-console/export" \
+  -H "Authorization: Bearer $CRON_SECRET"
+```
+
 The agent admin now includes an internal website-ops section at:
 
 - `/admin/website-ops`
@@ -404,6 +417,7 @@ uvicorn sales_support_agent.main:app --host 0.0.0.0 --port 8010 --reload
 - `POST /api/jobs/stale-leads/run`
 - `POST /api/jobs/gmail-sync/run`
 - `POST /api/jobs/daily-digest/run`
+- `GET|POST /api/jobs/search-console/export`
 - `POST /api/communications/events`
 - `POST /api/integrations/instantly/webhook`
 - `POST /admin/api/generate-deck`

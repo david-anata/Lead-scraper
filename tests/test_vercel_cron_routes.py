@@ -51,6 +51,7 @@ def test_vercel_crons_target_registered_job_routes() -> None:
     paths = {item["path"] for item in config["crons"]}
     assert "/api/jobs/content/run" in paths
     assert "/api/jobs/website-ops/run" in paths
+    assert "/api/jobs/search-console/export" in paths
     assert "/api/vercel-cron/content" not in paths
     assert "/api/vercel-cron/website-ops" not in paths
 
@@ -80,7 +81,8 @@ def test_outbound_enrich_runs_only_from_abby() -> None:
         if path.startswith("/api/jobs/outbound-enrich/"):
             assert "," not in item["schedule"]
     # Weekday stale-lead cron is paused; the other schedules stay.
-    assert len(config["crons"]) == 19
+    assert len(config["crons"]) == 20
+    assert by_path["/api/jobs/search-console/export"]["schedule"] == "0 14 * * 1"
     assert len(config["crons"]) <= 100
 
 
