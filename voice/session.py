@@ -62,6 +62,10 @@ class CallSession:
     finalizing: bool = False
     inquiry_id: str = ""
     sms_notified: bool = False
+    channel: str = "voice"
+    time_window: str = ""
+    # Conversation bookkeeping for an SMS thread. Voice calls leave this empty.
+    sms_state: dict[str, Any] = field(default_factory=dict)
     lock: threading.Lock = field(default_factory=threading.Lock)
 
     def remember(self, args: dict[str, Any]) -> None:
@@ -81,6 +85,7 @@ class CallSession:
             "revenue_range": "revenue_range",
             "reason": "reason",
             "summary": "summary",
+            "time_window": "time_window",
         }
         preference = normalize_security_preference(args.get("security_preference"))
         if preference:
@@ -133,6 +138,10 @@ class CallSession:
         }
         if self.security_preference:
             fields["security_preference"] = self.security_preference
+        if self.time_window.strip():
+            fields["time_window"] = self.time_window.strip()
+        if self.sms_state:
+            fields["_sms"] = dict(self.sms_state)
         source = self.line.source.strip()
         if source:
             fields["source"] = source

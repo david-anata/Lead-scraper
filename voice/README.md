@@ -34,6 +34,24 @@ websocket for the whole conversation.
    Event and tour leads are also inserted into `building_inquiries`, which is
    the table the building admin already lists.
 
+## What a text does
+
+1. Twilio requests `POST /voice/sms`.
+2. With `SMS_AUTOREPLY` on, the service replies from that same number and keeps
+   the thread for 18 hours. An event line asks for the date, time window,
+   guest count, event type, name, email, and, for a party or a late night,
+   whether they want optional security. An anatainc.com line asks for the
+   service, brand, where they sell, a revenue range, timing, name, and email.
+3. Known tenants are greeted by name. A lockout, flood, no heat, or security
+   problem texts David immediately. Clients, VIPs, family, and landlord or
+   legal senders (including Fondell, Boulder Ranch, and McKay) do too. The
+   reply to a landlord or legal sender does not discuss the building, money,
+   or a legal matter. Spam gets silence.
+4. A finished event text is inserted into `building_inquiries` the same way a
+   call is, with `payload_json.channel` set to `sms`. The `call_log` row uses
+   `channel = sms` and is updated as the thread continues. David gets one
+   plain sentence when the lead is complete or when the text needs him.
+
 xAI can also take a SIP call directly. This service does not use that. A SIP
 REFER would hand the caller away, and there would be no way to come back to
 the assistant when the forwarded phone does not answer. Keeping Twilio as the
@@ -114,7 +132,7 @@ Optional:
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
-| `SMS_AUTOREPLY` | `false` in code, `true` on the live service | Inbound texts are answered when this is true. The live service is on because A2P campaign `QE2c6890da8086d771620e9b13fadeba0b` is verified. Summary texts use `TWILIO_MESSAGING_SERVICE_SID`. `sms_notified` becomes true only when the status callback says delivered. |
+| `SMS_AUTOREPLY` | `false` in code, `true` on the live service | When true, an inbound text gets a short reply from the number that was texted and a back-and-forth that collects the same details as a call. David gets one text when that lead is complete, or right away when the sender needs him. Summary texts still use `TWILIO_MESSAGING_SERVICE_SID`. `sms_notified` becomes true only when the status callback says delivered. |
 | `RECORDING_ENABLED` | `false` | When `true`, the caller hears "This call may be recorded" and Twilio starts a recording. Transcripts are stored either way. |
 | `VOICE_SIGNATURE_VALIDATION` | `true` | Keep this true outside local smoke tests. |
 | `LINE_CONTEXTS_JSON` | default Anata line | Per-number greeting context. |
@@ -359,8 +377,16 @@ order by calls desc;
 - Summary SMS uses the Twilio number or a messaging service. Until A2P 10DLC
   is registered, Twilio may accept the send and then mark it undelivered
   with error 30034. The call is still logged, and `sms_notified` stays false
-  unless a later status callback says delivered. Inbound auto-reply stays off
-  for the same reason.
+  unless a later status callback says delivered.
+- Inbound auto-reply is on when `SMS_AUTOREPLY` is true. The reply is sent
+  with the messaging service and `From` set to the number that was texted, so
+  it stays on that line and on the verified campaign. The thread is one
+  `call_log` row per sender and line for 18 hours. STOP, STOPALL, UNSUBSCRIBE,
+  CANCEL, END, and QUIT opt out. HELP and INFO return the address and email.
+  START and UNSTOP opt back in. Sales pitches get no reply. David's own
+  numbers are never opened as a lead. A number that already got a manual ask
+  for the VELORA event on November 13, 2026 (`+18018752284`) continues that
+  conversation until December 13, 2026.
 - Arena events are self-serve. The renter sets up and resets inside the booked
   time. There is no free teardown after Saturday midnight or Sunday 10:00 p.m.
   Security staffing is never required. For a big party or a late night the

@@ -48,6 +48,7 @@ class TwilioRest:
         to_number: str,
         body: str,
         status_callback: str = "",
+        pin_from: bool = False,
     ) -> str:
         """Return the MessageSid when Twilio accepts the message.
 
@@ -65,8 +66,14 @@ class TwilioRest:
         if status_callback:
             data["StatusCallback"] = status_callback
             data["StatusCallbackMethod"] = "POST"
-        if self.settings.twilio_messaging_service_sid:
-            data["MessagingServiceSid"] = self.settings.twilio_messaging_service_sid
+        service = self.settings.twilio_messaging_service_sid
+        if pin_from and from_number and service:
+            # Keep the reply on the number they texted, and on the A2P service
+            # that is allowed to send. Omitting From lets the service pick.
+            data["MessagingServiceSid"] = service
+            data["From"] = from_number
+        elif service and not pin_from:
+            data["MessagingServiceSid"] = service
         elif from_number:
             data["From"] = from_number
         else:
@@ -264,6 +271,18 @@ def call_summary_text(session: CallSession) -> str:
     if _needs_callback(session):
         return _fit(f"Missed call: {who}. ", reason, "Call back.")
     return _fit(f"{who} called about ", reason[:1].lower() + reason[1:] if reason else reason, "Handled.")
+
+
+def sms_attention_text(session: CallSession) -> str:
+    """One plain sentence for David about a text. Who, their number, and why."""
+
+    name = session.known_caller_name or session.caller_name
+    number = session.caller_number or session.phone
+    reason = plain_reason(session).rstrip(".")
+    text = f"Text from {_who(name, number)}: {reason}."
+    if len(text) <= SMS_SEGMENT:
+        return text
+    return text[: SMS_SEGMENT - 1].rstrip() + "…"
 
 
 def sms_forward_text(

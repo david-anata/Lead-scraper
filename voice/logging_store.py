@@ -47,12 +47,35 @@ class LoggingStore:
         if self.rest is not None:
             self.rest.http = value
 
-    def save_call(self, session: CallSession, *, sms_notified: bool) -> dict[str, str]:
+    def save_call(
+        self,
+        session: CallSession,
+        *,
+        sms_notified: bool,
+        create_inquiry: bool | None = None,
+    ) -> dict[str, str]:
         if self.postgres is not None:
-            return self.postgres.save_call(session, sms_notified=sms_notified)
+            return self.postgres.save_call(
+                session,
+                sms_notified=sms_notified,
+                create_inquiry=create_inquiry,
+            )
         if self.rest is not None:
-            return self.rest.save_call(session, sms_notified=sms_notified)
+            return self.rest.save_call(
+                session,
+                sms_notified=sms_notified,
+                create_inquiry=create_inquiry,
+            )
         return {"call_log": "skipped", "inquiry_id": ""}
+
+    def latest_sms(self, caller_number: str) -> dict[str, Any] | None:
+        """Most recent SMS log row for this sender, if the writer can read one."""
+
+        if self.postgres is not None:
+            return self.postgres.latest_sms(caller_number)
+        if self.rest is not None:
+            return self.rest.latest_sms(caller_number)
+        return None
 
     def save_sms(self, **kwargs: Any) -> None:
         if self.postgres is not None:

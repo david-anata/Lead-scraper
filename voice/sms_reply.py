@@ -1,7 +1,8 @@
-"""Short SMS answers drawn from the published facts.
+"""Published-fact snippets for a text that asks a narrow question.
 
-Replies never confirm a date, a price that is not published, or a booking.
-The caller-facing text is used only when SMS_AUTOREPLY is true.
+The live inbound conversation is `voice.sms_conversation`. These snippets stay
+here so a price or hours answer can be checked on its own. They never confirm
+a date, invent a price, or say a booking is reserved.
 """
 
 from __future__ import annotations

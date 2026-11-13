@@ -104,12 +104,15 @@ def build_inquiry_row(session: CallSession, *, owner: str) -> dict[str, Any]:
     received = _now()
     kind = inquiry_kind(session)
     email = _valid_email(session.email)
-    name = session.caller_name.strip() or "Phone caller"
+    name = session.caller_name.strip() or ("Text caller" if session.channel == "sms" else "Phone caller")
+    notes = session.notes or session.reason
+    if session.time_window.strip() and session.time_window.strip() not in notes:
+        notes = f"{notes} Time: {session.time_window.strip()}".strip()
     details: dict[str, Any] = {
-        "channel": "phone",
+        "channel": "sms" if session.channel == "sms" else "phone",
         "eventType": session.event_or_interest_type,
         "groupSize": session.guest_count,
-        "notes": session.notes or session.reason,
+        "notes": notes,
         "company": session.company,
         "callerNumber": session.caller_number,
         "dialedNumber": session.dialed_number,
@@ -139,9 +142,11 @@ def build_inquiry_row(session: CallSession, *, owner: str) -> dict[str, Any]:
         }
         if session.security_preference:
             interview["security_preference"] = session.security_preference
+        if session.time_window.strip():
+            interview["time_window"] = session.time_window.strip()
         details["_event_interview"] = interview
         details["_event_interview_meta"] = {
-            "source": "voice_receptionist",
+            "source": "sms_receptionist" if session.channel == "sms" else "voice_receptionist",
             "reviewed": False,
         }
     preferred = session.event_date[:10] if _iso_date(session.event_date) else None
@@ -175,7 +180,7 @@ def build_call_row(session: CallSession, *, inquiry_id: str, sms_notified: bool)
     summary = _summary_with_source(session)
     return {
         "call_sid": session.call_sid,
-        "channel": "voice",
+        "channel": session.channel if session.channel in {"voice", "sms"} else "voice",
         "caller_number": session.caller_number,
         "dialed_number": session.dialed_number,
         "line_id": session.line.id,
@@ -256,13 +261,20 @@ class SupabaseStore:
     def configured(self) -> bool:
         return bool(self.url and self.service_key)
 
-    def save_call(self, session: CallSession, *, sms_notified: bool) -> dict[str, str]:
+    def save_call(
+        self,
+        session: CallSession,
+        *,
+        sms_notified: bool,
+        create_inquiry: bool | None = None,
+    ) -> dict[str, str]:
         if not self.configured:
             logger.warning("Supabase is not configured; call %s was not logged", session.call_sid)
             return {"call_log": "skipped", "inquiry_id": ""}
-        inquiry_id = ""
+        inquiry_id = session.inquiry_id
         inquiry_state = "skipped"
-        if should_create_inquiry(session):
+        want_inquiry = should_create_inquiry(session) if create_inquiry is None else bool(create_inquiry)
+        if want_inquiry and should_create_inquiry(session):
             try:
                 inquiry_id = self._save_inquiry(session)
             except Exception:
@@ -291,6 +303,25 @@ class SupabaseStore:
             {"sms_notified": notified, "updated_at": _now().isoformat()},
             prefer="return=minimal",
         )
+
+    def latest_sms(self, caller_number: str) -> dict[str, Any] | None:
+        """Most recent SMS log for this sender, used to resume a text thread."""
+
+        if not self.configured or not caller_number:
+            return None
+        rows = self._request(
+            "GET",
+            "/rest/v1/call_log?channel=eq.sms&caller_number=eq."
+            + quote(caller_number, safe="")
+            + "&select=call_sid,caller_number,dialed_number,line_id,started_at,transcript,"
+            "transcript_summary,category,lead_fields,action_taken,building_inquiry_id,"
+            "known_caller_id,known_caller_category,heard_about_raw,heard_about_source,updated_at"
+            "&order=updated_at.desc&limit=1",
+            None,
+        )
+        if isinstance(rows, list) and rows and isinstance(rows[0], dict):
+            return rows[0]
+        return None
 
     def save_sms(
         self,

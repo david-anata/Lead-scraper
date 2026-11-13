@@ -12,6 +12,7 @@ column grants. This path writes `call_log` and `building_inquiries` only.
 
 from __future__ import annotations
 
+import json
 import logging
 import re
 import time
@@ -114,6 +115,30 @@ _INQUIRY_LOOKUP = (
 _SMS_UPDATE = (
     "UPDATE public.call_log SET sms_notified = %s, updated_at = %s WHERE call_sid = %s"
 )
+_LATEST_SMS_COLUMNS = (
+    "call_sid",
+    "caller_number",
+    "dialed_number",
+    "line_id",
+    "started_at",
+    "transcript",
+    "transcript_summary",
+    "category",
+    "lead_fields",
+    "action_taken",
+    "building_inquiry_id",
+    "known_caller_id",
+    "known_caller_category",
+    "heard_about_raw",
+    "heard_about_source",
+    "updated_at",
+)
+_LATEST_SMS = (
+    "SELECT "
+    + ", ".join(_LATEST_SMS_COLUMNS)
+    + " FROM public.call_log WHERE channel = 'sms' AND caller_number = %s "
+    "ORDER BY updated_at DESC LIMIT 1"
+)
 _KNOWN_LOOKUP = (
     "SELECT id::text, name, company, category, COALESCE(ring_policy, '') "
     "FROM public.known_callers WHERE phone_e164 = %s AND active = true"
@@ -186,12 +211,19 @@ class PostgresLog:
     def configured(self) -> bool:
         return bool(self.dsn)
 
-    def save_call(self, session: CallSession, *, sms_notified: bool) -> dict[str, str]:
+    def save_call(
+        self,
+        session: CallSession,
+        *,
+        sms_notified: bool,
+        create_inquiry: bool | None = None,
+    ) -> dict[str, str]:
         if not self.configured:
             return {"call_log": "skipped", "inquiry_id": "", "inquiry": "skipped"}
-        inquiry_id = ""
+        inquiry_id = session.inquiry_id
         inquiry_state = "skipped"
-        if should_create_inquiry(session):
+        want_inquiry = should_create_inquiry(session) if create_inquiry is None else bool(create_inquiry)
+        if want_inquiry and should_create_inquiry(session):
             try:
                 inquiry_id = self._write_inquiry(session)
             except Exception:
@@ -208,6 +240,26 @@ class PostgresLog:
                 cur.execute(_CALL_UPSERT, _values(row, _CALL_COLUMNS))
             conn.commit()
         return {"call_log": "saved", "inquiry_id": inquiry_id, "inquiry": inquiry_state}
+
+    def latest_sms(self, caller_number: str) -> dict[str, Any] | None:
+        """Most recent SMS row for this sender. Empty when logging is not configured."""
+
+        if not self.configured or not caller_number:
+            return None
+        with self._connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(_LATEST_SMS, (caller_number,))
+                found = cur.fetchone()
+        if not found:
+            return None
+        payload = dict(zip(_LATEST_SMS_COLUMNS, found, strict=True))
+        fields = payload.get("lead_fields")
+        if isinstance(fields, str):
+            try:
+                payload["lead_fields"] = json.loads(fields)
+            except json.JSONDecodeError:
+                payload["lead_fields"] = {}
+        return payload
 
     def set_sms_notified(self, call_sid: str, notified: bool) -> None:
         """Update delivery after the status callback. A 2xx from send is not enough."""

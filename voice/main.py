@@ -31,12 +31,13 @@ from voice.known_callers import apply_known_caller
 from voice.calendar_availability import CalendarAvailability
 from voice.logging_store import LoggingStore
 from voice.lifecycle import accept_transfer, fail_transfer, finalize_call
-from voice.lines import LineContext, resolve_line
-from voice.notify import TwilioRest, sms_forward_text
+from voice.lines import LineContext, normalize_phone, resolve_line
+from voice.notify import TwilioRest, sms_attention_text, sms_forward_text
 from voice.security import public_request_url, valid_signature, valid_stream_token
 from voice.session import CallSession, SessionStore
 from voice.settings import Settings
-from voice.sms_reply import classify_sms, reply_to_sms
+from voice.sms_conversation import SmsThreadStore, handle_inbound_sms
+from voice.sms_reply import classify_sms
 from voice.twiml import (
     empty_twiml,
     goodbye_twiml,
@@ -61,6 +62,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app = FastAPI(title="Anata voice receptionist", docs_url=None, redoc_url=None)
     app.state.settings = current
     app.state.sessions = SessionStore()
+    app.state.sms_threads = SmsThreadStore()
     app.state.store = LoggingStore(
         database_url=current.voice_database_url,
         supabase_url=current.supabase_url,
@@ -286,48 +288,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         form, ok = await _signed_form(request)
         if not ok:
             return Response(status_code=403)
-        settings = request.app.state.settings
-        body = form.get("Body", "")
-        caller = form.get("From", "")
-        dialed = form.get("To", "")
-        category = classify_sms(body)
-        line = resolve_line(settings.line_contexts_json, dialed)
-        reply = reply_to_sms(body) if settings.sms_autoreply else ""
-        message_sid = form.get("MessageSid", "")
-        await asyncio.to_thread(
-            request.app.state.store.save_sms,
-            message_sid=message_sid,
-            caller_number=caller,
-            dialed_number=dialed,
-            body=body,
-            category=category,
-            summary=body,
-            sms_notified=False,
-            line_id=line.id,
-            lead_fields={"source": line.source} if line.source else {},
-        )
-        if settings.notify_sms_number:
-            callback = ""
-            base = _base(request)
-            if base and message_sid:
-                callback = f"{base}/voice/sms-status?call_sid={quote(message_sid, safe='')}"
-            accepted = await asyncio.to_thread(
-                request.app.state.twilio.send_sms,
-                from_number=dialed,
-                to_number=settings.notify_sms_number,
-                body=sms_forward_text(
-                    from_number=caller,
-                    to_number=dialed,
-                    body=body,
-                    reply_sent=bool(reply),
-                    category=category,
-                    source=line.source,
-                ),
-                status_callback=callback,
-            )
-            if not accepted:
-                logger.warning("Inbound SMS forward was not accepted")
-        return Response(sms_twiml(reply), media_type=XML)
+        if request.app.state.settings.sms_autoreply:
+            return await _sms_conversation(request, form)
+        return await _sms_log_and_forward(request, form)
 
     @app.websocket("/voice/media")
     async def media(websocket: WebSocket) -> None:
@@ -379,6 +342,114 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         await bridge.run(start)
 
     return app
+
+
+async def _sms_log_and_forward(request: Request, form: dict[str, str]) -> Response:
+    """The pre-conversation path: log the text and forward one line to David."""
+
+    settings = request.app.state.settings
+    body = form.get("Body", "")
+    caller = form.get("From", "")
+    dialed = form.get("To", "")
+    category = classify_sms(body)
+    line = resolve_line(settings.line_contexts_json, dialed)
+    message_sid = form.get("MessageSid", "")
+    await asyncio.to_thread(
+        request.app.state.store.save_sms,
+        message_sid=message_sid,
+        caller_number=caller,
+        dialed_number=dialed,
+        body=body,
+        category=category,
+        summary=body,
+        sms_notified=False,
+        line_id=line.id,
+        lead_fields={"source": line.source} if line.source else {},
+    )
+    if settings.notify_sms_number and not _same_party(caller, settings.notify_sms_number):
+        callback = ""
+        base = _base(request)
+        if base and message_sid:
+            callback = f"{base}/voice/sms-status?call_sid={quote(message_sid, safe='')}"
+        accepted = await asyncio.to_thread(
+            request.app.state.twilio.send_sms,
+            from_number=dialed,
+            to_number=settings.notify_sms_number,
+            body=sms_forward_text(
+                from_number=caller,
+                to_number=dialed,
+                body=body,
+                reply_sent=False,
+                category=category,
+                source=line.source,
+            ),
+            status_callback=callback,
+        )
+        if not accepted:
+            logger.warning("Inbound SMS forward was not accepted")
+    return Response(sms_twiml(""), media_type=XML)
+
+
+async def _sms_conversation(request: Request, form: dict[str, str]) -> Response:
+    """Reply from the number that was texted, and text David once when it matters."""
+
+    settings = request.app.state.settings
+    try:
+        outcome = await asyncio.to_thread(
+            handle_inbound_sms,
+            settings=settings,
+            store=request.app.state.store,
+            threads=request.app.state.sms_threads,
+            sender=form.get("From", ""),
+            recipient=form.get("To", ""),
+            body=form.get("Body", ""),
+            message_sid=form.get("MessageSid", ""),
+        )
+    except Exception:
+        logger.exception("Inbound SMS conversation failed")
+        return Response(
+            sms_twiml("Sorry, something went wrong. Email hello@anatainc.com and the team will help."),
+            media_type=XML,
+        )
+    reply = outcome.reply
+    if reply and outcome.to_number and not _same_party(outcome.to_number, settings.notify_sms_number):
+        accepted = await asyncio.to_thread(
+            request.app.state.twilio.send_sms,
+            from_number=outcome.from_number,
+            to_number=outcome.to_number,
+            body=reply,
+            pin_from=True,
+        )
+        if accepted:
+            reply = ""
+        else:
+            logger.warning("Inbound SMS reply was not accepted")
+    if (
+        outcome.notify
+        and outcome.session is not None
+        and settings.notify_sms_number
+        and not _same_party(outcome.session.caller_number, settings.notify_sms_number)
+    ):
+        callback = ""
+        base = _base(request)
+        if base and outcome.session.call_sid:
+            callback = f"{base}/voice/sms-status?call_sid={quote(outcome.session.call_sid, safe='')}"
+        accepted = await asyncio.to_thread(
+            request.app.state.twilio.send_sms,
+            from_number=outcome.from_number,
+            to_number=settings.notify_sms_number,
+            body=sms_attention_text(outcome.session),
+            status_callback=callback,
+        )
+        if not accepted:
+            logger.warning("Inbound SMS alert was not accepted")
+    return Response(sms_twiml(reply), media_type=XML)
+
+
+def _same_party(left: str, right: str) -> bool:
+    first = normalize_phone(left)
+    second = normalize_phone(right)
+    return bool(first) and first == second
 
 
 async def _read_stream_start(websocket: WebSocket, timeout: float = 8.0) -> dict[str, Any] | None:
