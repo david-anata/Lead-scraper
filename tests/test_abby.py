@@ -1211,3 +1211,90 @@ def test_unassigned_lead_on_an_unwatched_campaign_is_skipped(engine):
         think=fixed(abby.Decision("interested", "reply", reply=f"Hi {LINK}", interest=1)),
     )
     assert out["skipped"] == 1 and client.replies == [] and client.interest == []
+
+
+def test_left_the_office_is_out_of_office_not_a_departure(engine):
+    import outbound_suppression as suppression
+
+    message = email(1)
+    message["body"] = {"text": "I have now left the office and will be back Monday."}
+    message["from_address_email"] = "ann@huppy.com"
+    runner.run(engine, client=FakeClient([message], {message["thread_id"]: [message]}),
+               campaign_id="camp", now=NOW, think=abby.think)
+    emails, _domains = suppression.lists(engine)
+    assert "ann@huppy.com" not in emails
+    with engine.connect() as conn:
+        detail = conn.execute(text("SELECT detail FROM abby_handled")).scalar()
+    assert "out of office" in detail.lower()
+    assert "departed" not in detail.lower()
+    with engine.connect() as conn:
+        kind = conn.execute(text("SELECT kind FROM abby_followups_scheduled")).scalar()
+    assert kind == "out_of_office"
+
+
+def test_left_a_message_is_not_a_departure():
+    assert abby.automated_notice(
+        "I have now left a message for the team.",
+        lead_email="ann@huppy.com",
+    ) is None
+    still_gone = abby.automated_notice(
+        "I have now left Arena.Online.",
+        lead_email="jack@arena.online",
+    )
+    assert still_gone is not None and still_gone.kind == "departed"
+
+
+def test_failed_lead_lookup_does_not_settle_unassigned_mail(engine):
+    loose = email(1, lead="cheyanne@rookiewellness.com", thread="tu")
+
+    class Client(FakeClient):
+        def received_since(self, since, campaign_id, pages=3):
+            return list(self.received)
+
+        def lead_lookup(self, _address):
+            return [], False
+
+    client = Client([loose])
+    decision = fixed(abby.Decision("interested", "reply", reply=f"Hi {LINK}", interest=1))
+    first = runner.run_unassigned(engine, client=client, watched=["camp"], now=NOW, think=decision)
+    second = runner.run_unassigned(engine, client=client, watched=["camp"], now=NOW, think=decision)
+    assert first["deferred"] == 1 and first["replied"] == 0 and client.replies == []
+    assert second["seen"] == 1 and second["deferred"] == 1
+    with engine.connect() as conn:
+        stored = conn.execute(text("SELECT COUNT(*) FROM abby_handled")).scalar()
+    assert stored == 0
+
+
+def test_unassigned_scan_reads_past_assigned_mail(engine):
+    loose = email(1, lead="cheyanne@rookiewellness.com", thread="tu")
+    loose["timestamp_created"] = "2026-11-01T00:00:00Z"
+    assigned = []
+    for index in range(600):
+        assigned.append({
+            "id": f"a{index}", "campaign_id": "camp", "lead": "owned@brand.com",
+            "ue_type": 2, "timestamp_created": f"2026-10-{(index % 27) + 1:02d}T00:00:00Z",
+        })
+
+    class Client(FakeClient):
+        def scan_received(self, since, campaign_id="", max_pages=20):
+            self.max_pages = max_pages
+            self.since = since
+            return assigned + [loose], True
+
+        def leads_for_email(self, address):
+            marked = [row for row in getattr(self, "_marked", []) if row.get("email") == address]
+            if marked:
+                return marked
+            if address == "cheyanne@rookiewellness.com":
+                return [{"email": address, "campaign": "camp"}]
+            return []
+
+    client = Client([loose])
+    out = runner.run_unassigned(
+        engine, client=client, watched=["camp"], now=NOW,
+        think=fixed(abby.Decision("interested", "reply", reply=f"Hi {LINK}", interest=1)),
+    )
+    assert client.max_pages == 20
+    assert out["replied"] == 1 and client.replies[0]["reply_to"] == "e1"
+    import outbound_suppression as suppression
+    assert suppression.get_cursor(engine, runner._UNASSIGNED_CURSOR) == "2026-11-01T00:00:00Z"

@@ -199,8 +199,6 @@ _DEPARTED_PHRASES = (
     "no longer employed",
     "no longer part of",
     "left the business",
-    "have now left",
-    "has now left",
     "no longer monitored",
     "email is no longer",
     "inbox is no longer",
@@ -211,7 +209,7 @@ _DEPARTED_PHRASES = (
 # or "left the office" (that one is out of office).
 _LEFT_RE = re.compile(
     r"\b(?:i have|i've|have|has) (?:now )?left\b"
-    r"(?!\s+(?:a|an|you|this|feedback|the office|my office|a message|a voicemail|a note))\b",
+    r"(?!\s+(?:an?|you|this|feedback|the office|my office|a message|a voicemail|a note)\b)",
     re.I,
 )
 _SURVEY_RE = re.compile(
