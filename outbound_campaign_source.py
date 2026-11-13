@@ -3,13 +3,21 @@
 Each active campaign with filters is queried server-side. Domains already
 in ``outbound_contacted_domains`` are skipped. New leads are stored with
 that campaign's recipe key. Volume stays inside the daily company cap
-(300) and stops when the daily credit cap (1100) is already spent.
-Each campaign also stops at its own ``daily_cap``. When those caps add up
-to more than the room left in the 300, the room is shared so a later
-recipe such as ``replatform`` still receives leads. Sourcing does not
-call Prospeo and does not call Instantly.
+and stops when the daily credit cap is already spent. The approved
+ceilings are 600 companies and 228 Prospeo credits. A lower env value
+still wins, so production stays at its current caps until those env
+values are set.
+
+Each campaign starts with a share of that room, and not more than its
+``daily_cap``. Unused allowances and any room those caps do not claim go
+to recipes that still have results, even if that carries them past
+``daily_cap``. Sourcing does not call Prospeo and does not call Instantly.
 New domains still have to pass the company-fit gate (US, own-brand
-physical product, revenue on file, niche and exclusion screens).
+physical product, revenue on file, niche, exclusion, and blocked category).
+
+The four live recipes query $10k a month through $20M a year. Comparison
+bands stay off unless ``OUTBOUND_REVENUE_BAND_EXPERIMENTS`` is true, and
+those tags do not create an Instantly campaign.
 
 The morning routine runs this before the older recipe pulls so ``amz_on``
 and ``amz_off`` are filled from these filters.
@@ -28,19 +36,20 @@ import outbound_pipeline as pipeline
 
 logger = logging.getLogger(__name__)
 
-COMPANY_CAP = 300
-CREDIT_CAP = 1100
+# 600 companies, and credits at the observed 114 per 300 companies.
+# 114 * 600 / 300 = 228. Env can set a lower number. It cannot set a higher one.
+COMPANY_CAP = 600
+_CREDITS_PER_300_COMPANIES = 114
+CREDIT_CAP = _CREDITS_PER_300_COMPANIES * COMPANY_CAP // 300
 _SOURCE_ORDER = ("amz_on", "amz_off", "plan_upgrade", "replatform")
 # amz_off sits next to amz_on so each run gives both a turn. plan_upgrade
 # and replatform stay in the same rotation instead of waiting until the
 # Amazon recipes are finished.
 _ENRICH_FIRST = ("amz_on", "amz_off", "plan_upgrade", "replatform")
-_MAX_PAGES = 5
-# About $1M a year, the ICP floor. The live amz_on row is $10k-$20k a month.
-# That band produced 4 verified buyers out of 166 enriched companies on Nov 6.
-# Raising only the ceiling reaches the ICP door. The floor, amz_off, and the
-# 300 company cap stay put. This does not write the database.
-AMZ_ON_MONTHLY_MAX_CENTS = 8_333_333
+# Five pages was the same 500 stores of -rank. Twenty pages lets a recipe
+# that still has room walk past the head it already recorded.
+_MAX_PAGES = 20
+_PAGE_SIZE = 100
 _DENVER = ZoneInfo("America/Denver")
 
 _REASONS = {
@@ -49,6 +58,16 @@ _REASONS = {
     "plan_upgrade": "They upgraded their store plan recently",
     "replatform": "They moved platforms recently",
 }
+
+
+def sourcing_company_cap() -> int:
+    """Company ceiling for one morning, before today's usage is subtracted.
+
+    ``OUTBOUND_ENRICH_DAILY_COMPANIES`` can set a lower number. It cannot
+    raise the ceiling above ``COMPANY_CAP``.
+    """
+
+    return min(COMPANY_CAP, _env_int("OUTBOUND_ENRICH_DAILY_COMPANIES", COMPANY_CAP))
 
 
 def _env_int(name: str, default: int) -> int:
@@ -75,13 +94,13 @@ def company_room_today(
 ) -> tuple[int, str]:
     """How many new companies sourcing may record right now.
 
-    The ceiling is the smaller of 300 and ``OUTBOUND_ENRICH_DAILY_COMPANIES``
+    The ceiling is the smaller of 600 and ``OUTBOUND_ENRICH_DAILY_COMPANIES``
     when that variable is set, minus companies already enriched today.
-    When today's Prospeo credits are already at the 1100 cap, the room is
+    When today's Prospeo credits are already at the credit cap, the room is
     zero. Sourcing itself does not spend credits.
     """
 
-    company_cap = min(COMPANY_CAP, _env_int("OUTBOUND_ENRICH_DAILY_COMPANIES", COMPANY_CAP))
+    company_cap = sourcing_company_cap()
     credit_cap = min(CREDIT_CAP, _env_int("OUTBOUND_ENRICH_DAILY_CREDITS", CREDIT_CAP))
     try:
         import outbound_enrich as enrich
@@ -156,22 +175,6 @@ def _platform_queries(filters: dict[str, Any]) -> list[dict[str, Any]]:
     return queries or [filters]
 
 
-def _widen_amz_on(recipe_key: str, filters: dict[str, Any]) -> dict[str, Any]:
-    """Raise only the amz_on monthly ceiling, and only when it is still narrow."""
-
-    if recipe_key != "amz_on":
-        return filters
-    try:
-        current = int(filters.get("f:ermax") or 0)
-    except (TypeError, ValueError):
-        return filters
-    if current <= 0 or current >= AMZ_ON_MONTHLY_MAX_CENTS:
-        return filters
-    widened = dict(filters)
-    widened["f:ermax"] = AMZ_ON_MONTHLY_MAX_CENTS
-    return widened
-
-
 def _seen_companies(contacted: Optional[set[str]]) -> set[str]:
     """Contacted hosts plus their company keys, so a subdomain is not a new brand."""
 
@@ -205,9 +208,10 @@ def share_company_room(caps: list[int], room: int) -> list[int]:
 
     Five seeded campaigns at a ``daily_cap`` of 100 would be 500 companies.
     ``abby_reengage`` has no StoreLeads filters, so it never takes room.
-    The other four at 100 are 400, which does not fit in the 300 ceiling.
+    The other four at 100 are 400, which does not fit in a 300 ceiling.
     Sharing that 300 gives each of those four 75, including ``replatform``.
-    Paying every sourcing cap in full would mean raising ``COMPANY_CAP``.
+    A recipe that later cannot fill its share releases it through
+    ``grant_unused_room``. That second step may pass ``daily_cap``.
     """
 
     safe = [max(0, int(cap)) for cap in caps]
@@ -234,6 +238,121 @@ def share_company_room(caps: list[int], room: int) -> list[int]:
             assigned[index] += take
             left -= take
     return assigned
+
+
+def grant_unused_room(can_take: list[bool], available: int) -> list[int]:
+    """Split leftover company room across recipes that can still find some.
+
+    ``available`` is every company still under the daily ceiling. That is
+    a recipe's unused allowance and any room the ``daily_cap`` values did
+    not claim. Earlier recipes get a remainder of one. The extra may carry
+    a recipe past its original allowance and past ``daily_cap``.
+    """
+
+    count = len(can_take)
+    if count == 0 or available <= 0:
+        return [0] * count
+    open_idx = [index for index, able in enumerate(can_take) if able]
+    if not open_idx:
+        return [0] * count
+    extras = [0] * count
+    share, remainder = divmod(int(available), len(open_idx))
+    for offset, index in enumerate(open_idx):
+        extras[index] = share + (1 if offset < remainder else 0)
+    return extras
+
+
+def _rank_direction(filters: dict[str, Any]) -> str:
+    """``desc`` walks high rank numbers first, which is sort ``-rank``."""
+
+    primary = str(filters.get("sort") or "-rank").split(",")[0].strip()
+    return "desc" if primary.startswith("-") else "asc"
+
+
+def _page_ranks(domains: list[dict[str, Any]]) -> list[int]:
+    ranks: list[int] = []
+    for store in domains:
+        raw = store.get("rank")
+        if isinstance(raw, bool) or raw is None:
+            continue
+        try:
+            rank = int(raw)
+        except (TypeError, ValueError):
+            continue
+        if rank > 0:
+            ranks.append(rank)
+    return ranks
+
+
+def _advance_frontier(
+    frontier: Optional[int],
+    domains: list[dict[str, Any]],
+    direction: str,
+) -> Optional[int]:
+    ranks = _page_ranks(domains)
+    if not ranks:
+        return frontier
+    edge = min(ranks) if direction == "desc" else max(ranks)
+    if frontier is None:
+        return edge
+    if direction == "desc":
+        return min(frontier, edge)
+    return max(frontier, edge)
+
+
+def _with_frontier(
+    filters: dict[str, Any],
+    frontier: Optional[int],
+    direction: str,
+) -> dict[str, Any]:
+    """Skip ranks already scanned when the cursor itself is gone.
+
+    Descending ``-rank`` shows the highest rank numbers first. The frontier
+    is the smallest rank already consumed, so the next slice is everything
+    below it. Ascending rank uses ``f:rankmin`` the other way.
+    """
+
+    if not frontier:
+        return filters
+    narrowed = dict(filters)
+    if direction == "desc":
+        bound = int(frontier) - 1
+        if bound < 1:
+            return filters
+        narrowed["f:rankmax"] = bound
+    else:
+        narrowed["f:rankmin"] = int(frontier) + 1
+    return narrowed
+
+
+def _experiment_rows(parents: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Virtual comparison campaigns. Nothing is inserted and nothing is created in Instantly."""
+
+    if not campaigns.revenue_band_experiments_enabled():
+        return []
+    by_key = {str(row.get("recipe_key") or ""): row for row in parents}
+    virtual: list[dict[str, Any]] = []
+    for parent_key in campaigns.STANDARD_REVENUE_RECIPES:
+        parent = by_key.get(parent_key)
+        filters = parent.get("storeleads_filters") if parent else None
+        if not isinstance(filters, dict):
+            continue
+        for band in campaigns.REVENUE_BAND_EXPERIMENTS:
+            cloned = dict(filters)
+            cloned["f:ermin"] = int(band["monthly_min_cents"])
+            cloned["f:ermax"] = int(band["monthly_max_cents"])
+            virtual.append({
+                "recipe_key": campaigns.experiment_recipe_key(parent_key, str(band["band"])),
+                "campaign_id": "",
+                "recipe_aliases": "",
+                "name": f"{parent_key}|experiment|{band['band']}",
+                "status": "active",
+                "daily_cap": campaigns.REVENUE_BAND_EXPERIMENT_CAP,
+                "storeleads_filters": cloned,
+                "experiment": True,
+                "band": str(band["band"]),
+            })
+    return virtual
 
 
 def _campaign_names(row: dict[str, Any]) -> set[str]:
@@ -400,63 +519,103 @@ def source_active_campaigns(
             return record_leads(engine, leads, source=f"campaign:{recipe_key}")
 
     seen = _seen_companies(contacted)
-    # Shares are locked up front. A campaign that finds nothing does not
-    # hand its room to amz_off. Unused room stays inside the 300 ceiling
-    # for the recipes that follow this sourcing pass.
     pending = _ordered(rows)
     shares = share_company_room(
         [int(row.get("daily_cap") or 0) for row in pending], room,
     )
-    for row, allowance in zip(pending, shares):
-        allowance = min(int(allowance), room)
-        if allowance <= 0 or room <= 0:
-            continue
-        filters = _widen_amz_on(
-            str(row["recipe_key"]),
-            campaigns.resolve_filters(row.get("storeleads_filters"), moment),
-        )
-        if not filters:
-            continue
-        cap = allowance
+
+    def _blank(row: dict[str, Any], allowance: int, experiment: bool) -> dict[str, Any]:
+        recipe_key = str(row.get("recipe_key") or "")
+        filters = campaigns.resolve_filters(row.get("storeleads_filters"), moment)
+        if not experiment:
+            filters = campaigns.apply_configured_revenue(recipe_key, filters)
+        return {
+            "row": row,
+            "filters": filters,
+            "allowance": max(0, int(allowance)),
+            "kept": [],
+            "scanned": 0,
+            "skipped": 0,
+            "unfit": 0,
+            "error": "",
+            "pages_used": 0,
+            "can_take": bool(filters) and int(allowance) > 0,
+            "experiment": experiment,
+            "band": str(row.get("band") or ""),
+        }
+
+    def _pull_more(state: dict[str, Any], want: int) -> None:
+        """Record up to ``want`` more companies for one recipe."""
+
+        want = max(0, int(want))
+        filters = state["filters"]
+        if want <= 0 or not filters or state["pages_used"] >= _MAX_PAGES:
+            state["can_take"] = False
+            return
+        recipe_key = str(state["row"]["recipe_key"])
         fresh: list[dict[str, Any]] = []
         scanned = 0
         skipped = 0
         unfit = 0
-        error = ""
-        pages_left = _MAX_PAGES
+        error = state["error"]
+        pages_left = _MAX_PAGES - int(state["pages_used"])
+        filled = False
+        checkpoints: dict[str, tuple[str, Optional[int]]] = {}
         for variant in _platform_queries(filters):
-            cursor_key = pipeline.storeleads_cursor_key(str(row["recipe_key"]), variant)
+            direction = _rank_direction(variant)
+            cursor_key = pipeline.storeleads_cursor_key(recipe_key, variant)
             cursor = pipeline.load_storeleads_cursor(engine, cursor_key)
+            frontier = pipeline.load_storeleads_frontier(engine, cursor_key)
+            checkpoints.setdefault(cursor_key, (cursor or "", frontier))
+            active = variant if cursor or not frontier else _with_frontier(variant, frontier, direction)
             stale_reset = False
-            while pages_left > 0 and len(fresh) < cap:
+            while pages_left > 0 and len(fresh) < want:
                 pages_left -= 1
+                state["pages_used"] += 1
                 requested = cursor
                 try:
-                    page = fetch(api_key, extra_params=variant, cursor=cursor, page_size=100)
+                    page = fetch(
+                        api_key, extra_params=active, cursor=cursor, page_size=_PAGE_SIZE,
+                    )
                 except Exception as exc:  # noqa: BLE001
                     if requested and not stale_reset:
                         stale_reset = True
                         cursor = None
                         pipeline.save_storeleads_cursor(engine, cursor_key, "")
+                        active = (
+                            _with_frontier(variant, frontier, direction)
+                            if frontier else variant
+                        )
                         continue
                     error = str(exc)[:200]
-                    logger.exception("[outbound-campaign-source] StoreLeads failed for %s", row["recipe_key"])
+                    logger.exception(
+                        "[outbound-campaign-source] StoreLeads failed for %s", recipe_key,
+                    )
                     break
                 domains, cursor, page_error = _domains_from(page)
                 if (page_error or not domains) and requested and not stale_reset:
                     stale_reset = True
                     cursor = None
                     pipeline.save_storeleads_cursor(engine, cursor_key, "")
+                    active = _with_frontier(variant, frontier, direction) if frontier else variant
                     continue
                 if page_error:
                     error = page_error
                     break
+                if not domains:
+                    pipeline.save_storeleads_cursor(engine, cursor_key, "")
+                    break
                 stopped_early = False
+                scanned_now: list[dict[str, Any]] = []
                 for store in domains:
                     scanned += 1
-                    lead = _lead_from(store, str(row["recipe_key"]))
+                    scanned_now.append(store)
+                    lead = _lead_from(store, recipe_key)
                     if lead is None:
                         continue
+                    if state["band"]:
+                        lead["signals"] = [recipe_key, f"band:{state['band']}"]
+                        lead["reason"] = f"{lead['reason']} ({state['band']})"
                     if lead["domain"] in seen:
                         skipped += 1
                         continue
@@ -465,50 +624,130 @@ def source_active_campaigns(
                         continue
                     seen.add(lead["domain"])
                     fresh.append(lead)
-                    if len(fresh) >= cap:
+                    if len(fresh) >= want:
                         stopped_early = True
                         break
-                # A full page advances. A cap hit mid-page keeps this cursor so
-                # the unread stores on it are still available tomorrow.
-                pipeline.save_storeleads_cursor(
-                    engine, cursor_key, (requested if stopped_early else cursor) or "",
-                )
-                if stopped_early or not cursor:
+                previous = frontier
+                frontier = _advance_frontier(frontier, scanned_now, direction)
+                pipeline.save_storeleads_frontier(engine, cursor_key, frontier)
+                if stopped_early:
+                    pipeline.save_storeleads_cursor(engine, cursor_key, requested or "")
+                    filled = True
                     break
-            if error or len(fresh) >= cap:
+                if cursor:
+                    pipeline.save_storeleads_cursor(engine, cursor_key, cursor)
+                    continue
+                pipeline.save_storeleads_cursor(engine, cursor_key, "")
+                # A full page with no next cursor is the old 500-row stop.
+                # Keep walking by rank when the watermark actually moved.
+                if (
+                    frontier
+                    and frontier != previous
+                    and len(domains) >= _PAGE_SIZE
+                    and len(fresh) < want
+                    and pages_left > 0
+                ):
+                    active = _with_frontier(variant, frontier, direction)
+                    cursor = None
+                    continue
+                break
+            if error or filled or len(fresh) >= want:
                 break
         saved = 0
         if fresh:
             try:
-                saved = int(record(fresh, str(row["recipe_key"])) or 0)
+                saved = int(record(fresh, recipe_key) or 0)
             except Exception:  # noqa: BLE001
-                logger.exception("[outbound-campaign-source] could not record %s", row["recipe_key"])
+                logger.exception("[outbound-campaign-source] could not record %s", recipe_key)
                 saved = 0
             if saved <= 0:
                 error = error or "could not record leads"
                 saved = 0
-        if saved <= 0:
+        if fresh and saved < len(fresh):
             for lead in fresh:
                 seen.discard(lead["domain"])
+            for key, (old_cursor, old_frontier) in checkpoints.items():
+                pipeline.save_storeleads_cursor(engine, key, old_cursor)
+                pipeline.save_storeleads_frontier(engine, key, old_frontier)
             fresh = []
+            saved = 0
         kept = fresh[:saved] if saved else []
-        room -= len(kept)
+        state["kept"].extend(kept)
+        state["scanned"] += scanned
+        state["skipped"] += skipped
+        state["unfit"] += unfit
+        state["error"] = error
+        state["can_take"] = bool(filled) and state["pages_used"] < _MAX_PAGES and not error
+
+    states = [
+        _blank(row, min(int(allowance), room), False)
+        for row, allowance in zip(pending, shares)
+    ]
+    for state in states:
+        if room <= 0 or state["allowance"] <= 0:
+            state["can_take"] = False
+            continue
+        before = len(state["kept"])
+        _pull_more(state, min(state["allowance"], room))
+        room -= len(state["kept"]) - before
+
+    for _cycle in range(4):
+        if room <= 0:
+            break
+        extras = grant_unused_room(
+            [bool(state["can_take"]) and state["pages_used"] < _MAX_PAGES for state in states],
+            room,
+        )
+        if sum(extras) <= 0:
+            break
+        gained_total = 0
+        for state, extra in zip(states, extras):
+            if not state["can_take"]:
+                state["allowance"] = len(state["kept"])
+                continue
+            take = min(int(extra), room)
+            if take <= 0:
+                continue
+            state["allowance"] = len(state["kept"]) + take
+            before = len(state["kept"])
+            _pull_more(state, take)
+            gained = len(state["kept"]) - before
+            gained_total += gained
+            room -= gained
+        if gained_total <= 0:
+            break
+
+    if room > 0:
+        for row in _experiment_rows(pending):
+            if room <= 0:
+                break
+            state = _blank(row, min(int(row.get("daily_cap") or 0), room), True)
+            before = len(state["kept"])
+            _pull_more(state, min(state["allowance"], room))
+            room -= len(state["kept"]) - before
+            states.append(state)
+
+    for state in states:
+        kept = state["kept"]
+        row = state["row"]
         out["recorded"] += len(kept)
         out["leads"].extend(kept)
-        out["scanned"] += scanned
-        out["skipped_seen"] += skipped
-        out["skipped_unfit"] += unfit
-        if kept:
+        out["scanned"] += state["scanned"]
+        out["skipped_seen"] += state["skipped"]
+        out["skipped_unfit"] += state["unfit"]
+        if kept and row["recipe_key"] not in out["recipes"]:
             out["recipes"].append(row["recipe_key"])
+        if state["experiment"] and not kept and not state["scanned"]:
+            continue
         out["campaigns"].append({
             "recipe_key": row["recipe_key"],
-            "campaign_id": row["campaign_id"],
+            "campaign_id": row.get("campaign_id") or "",
             "recorded": len(kept),
-            "scanned": scanned,
-            "skipped_seen": skipped,
-            "skipped_unfit": unfit,
-            "filters": filters,
-            "error": error,
+            "scanned": state["scanned"],
+            "skipped_seen": state["skipped"],
+            "skipped_unfit": state["unfit"],
+            "filters": state["filters"],
+            "error": state["error"],
         })
     return out
 

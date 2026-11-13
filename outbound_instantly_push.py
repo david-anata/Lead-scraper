@@ -290,6 +290,10 @@ def resolve_recipe_campaign(
 
     blocked_names = {str(name or "").strip() for name in (blocked or []) if str(name or "").strip()}
     name = str(recipe or "").strip()
+    import outbound_campaigns as _campaigns
+
+    if _campaigns.is_revenue_band_experiment(name):
+        return "", "queued", ""
     if name == SALES_ORG_RECIPE:
         if name in blocked_names:
             return "", "blocked", ""

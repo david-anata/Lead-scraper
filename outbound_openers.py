@@ -914,6 +914,10 @@ def collect_facts(lead: dict[str, Any]) -> LeadFacts:
     from outbound_pipeline import clean_brand_name
 
     brand = clean_brand_name(lead.get("brand") or lead.get("domain") or "")
+    from outbound_pipeline import company_blocked_reason
+
+    if company_blocked_reason(lead):
+        return LeadFacts(brand, "", "", "", "", (), (), "", "", trial_offer_lead(lead))
     amazon_product = ""
     if amazon_confirmed(lead):
         amazon_product = _fact_phrase(_AMAZON_WORD.sub(" ", str(lead.get("amz_product") or "")))

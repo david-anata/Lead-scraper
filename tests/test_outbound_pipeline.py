@@ -75,6 +75,60 @@ class TestIcpGate(unittest.TestCase):
         )))
         self.assertFalse(op.store_matches_icp(_store(categories="Beauty Services")))
 
+    def test_blocked_categories_are_rejected_and_cosmetic_peptides_stay(self):
+        blocked = (
+            {"merchant_name": "Calm CBD"},
+            {"categories": "Hemp / Wellness"},
+            {"description": "Microdosing mushroom gummies for focus"},
+            {"tags": "functional mushrooms"},
+            {"most_recently_published_product": {"title": "BPC-157 research peptide"}},
+            {"merchant_name": "Injectables", "description": "injectable peptides"},
+            {"categories": "Kratom"},
+            {"description": "nicotine pouches and vape juice"},
+            {"description": "This tonic cures anxiety"},
+        )
+        for over in blocked:
+            self.assertFalse(op.passes_company_fit(_store(**over)), over)
+            self.assertTrue(op.company_blocked_reason(_store(**over)), over)
+        allowed = _store(
+            merchant_name="Copper Lab",
+            description="A copper peptide serum for firmer skin",
+            most_recently_published_product={"title": "Copper Peptide Serum"},
+        )
+        self.assertEqual(op.company_blocked_reason(allowed), "")
+        self.assertTrue(op.passes_company_fit(allowed))
+        culinary = _store(
+            merchant_name="Shiitake Snacks",
+            categories="Food",
+            description="Crispy shiitake mushroom snacks",
+        )
+        self.assertEqual(op.company_blocked_reason(culinary), "")
+        self.assertTrue(op.passes_company_fit(culinary))
+
+    def test_opener_refuses_a_blocked_product(self):
+        import outbound_openers as openers
+        import outbound_personalization as personalization
+
+        lead = {
+            "brand": "Calm",
+            "domain": "calm.example",
+            "categories": "Beauty",
+            "most_recently_published_product": {"title": "CBD recovery oil"},
+        }
+        facts = openers.collect_facts(lead)
+        self.assertFalse(facts.solid)
+        sheet = personalization.fact_sheet(lead)
+        self.assertEqual(sheet.blocked, "cbd or hemp")
+        self.assertEqual(sheet.facts, [])
+        serum = {
+            "brand": "Copper Lab",
+            "domain": "copper.example",
+            "categories": "Beauty & Skincare",
+            "description": "A copper peptide serum",
+            "most_recently_published_product": {"title": "Copper Peptide Serum"},
+        }
+        self.assertEqual(personalization.fact_sheet(serum).blocked, "")
+
     def test_company_fit_does_not_require_the_email_screen(self):
         store = _store(contact_info=[])
         self.assertTrue(op.passes_company_fit(store))

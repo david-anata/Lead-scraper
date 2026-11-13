@@ -42,7 +42,7 @@ _MARKER = "__morning_run__"             # recipe name used purely as a daily mar
 _RUN_HOUR = 7                           # before the working day, so it is ready
 _morning_state: dict = {"running": False, "last_status": "", "last_reason": ""}
 _SCAN_PER_DAY = 12                      # ~30 min of Amazon checks, then it stops
-_DAILY_COMPANY_CAP = 300                # David 2026-10-26: maximize brands pulled
+_DAILY_COMPANY_CAP = 600                # David 2026-11-13: room for about 600 sends
 _PULL_TIME_BUDGET_S = 420              # leave room for the Amazon checks inside 800s
 
 
@@ -485,7 +485,8 @@ def run_morning_routine(*, now: datetime | None = None, scan_limit: int = _SCAN_
     already = outbound_memory.load_contacted(engine) if engine is not None else set()
     all_leads: list[dict] = []
     recipe_runs: list[dict] = []
-    daily_remaining = _DAILY_COMPANY_CAP
+    import outbound_campaign_source as _source
+    daily_remaining = _source.sourcing_company_cap()
     import time as _time
     pull_started = _time.monotonic()
     # Signal-campaign filters claim the daily cap first (this is what fills
@@ -495,8 +496,6 @@ def run_morning_routine(*, now: datetime | None = None, scan_limit: int = _SCAN_
     due = [r for r in due if r.key != "icp_baseline"] + [r for r in due if r.key == "icp_baseline"]
     if engine is not None and daily_remaining > 0:
         try:
-            import outbound_campaign_source as _source
-
             sourced = _source.source_active_campaigns(
                 engine, api_key=api_key, now=now, contacted=already,
                 company_room=daily_remaining,

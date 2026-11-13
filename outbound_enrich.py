@@ -330,7 +330,12 @@ def order_leads_for_enrich(engine, leads: list[dict[str, Any]], *, since_utc) ->
     and it does not update or move a contact already in Instantly.
     """
 
-    general = list(leads or [])
+    import outbound_campaigns as _band_campaigns
+
+    general = [
+        lead for lead in (leads or [])
+        if not _band_campaigns.is_revenue_band_experiment(lead.get("recipe"))
+    ]
     try:
         return _order_leads_for_enrich(engine, general, since_utc=since_utc)
     except Exception:  # noqa: BLE001

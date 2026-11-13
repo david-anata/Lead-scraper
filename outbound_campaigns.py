@@ -76,19 +76,54 @@ CONFIRMED_FILTERS = frozenset({
     "f:ds", "f:ds:op",
     "f:lids", "f:lids:op",
     "f:p", "f:p:op",
+    # Rank bounds. Used only to resume a walk after a cursor expires.
+    "f:rankmin", "f:rankmax",
 })
 
-# $10,000 and $20,000 a month, in the cents f:ermin / f:ermax document.
-MONTHLY_10K_CENTS = 1_000_000
+# $10,000 a month is the floor ($120,000 a year). Do not raise it.
+# $20,000,000 a year is the ceiling, in the monthly cents f:ermax documents.
+# 20_000_000 dollars * 100 cents / 12 months = 166_666_666.
+MONTHLY_FLOOR_CENTS = 1_000_000
+MONTHLY_10K_CENTS = MONTHLY_FLOOR_CENTS
 MONTHLY_20K_CENTS = 2_000_000
+MONTHLY_CEILING_CENTS = 20_000_000 * 100 // 12
+
+# The four live signal recipes. Query time uses this band so a stored row
+# that still says $10k-$20k a month does not need a database edit.
+STANDARD_REVENUE_RECIPES = ("amz_on", "amz_off", "plan_upgrade", "replatform")
+
+# Off unless OUTBOUND_REVENUE_BAND_EXPERIMENTS is true. These are tags for
+# comparison. They are not seeded and they do not create Instantly campaigns.
+REVENUE_BAND_EXPERIMENT_FLAG = "OUTBOUND_REVENUE_BAND_EXPERIMENTS"
+REVENUE_BAND_EXPERIMENT_CAP = 20
+REVENUE_BAND_EXPERIMENTS: tuple[dict[str, Any], ...] = (
+    {
+        "band": "under_10k",
+        "label": "under $10k a month",
+        "monthly_min_cents": 100_000,
+        "monthly_max_cents": 999_999,
+    },
+    {
+        "band": "10k_25k",
+        "label": "$10k to $25k a month",
+        "monthly_min_cents": 1_000_000,
+        "monthly_max_cents": 2_500_000,
+    },
+    {
+        "band": "25k_100k",
+        "label": "$25k to $100k a month",
+        "monthly_min_cents": 2_500_000,
+        "monthly_max_cents": 10_000_000,
+    },
+)
 
 _BASE_FILTERS: dict[str, Any] = {
     "f:p": "shopify",
     "f:ds": "Active",
     "f:cc": "US",
     "f:it": "email",
-    "f:ermin": MONTHLY_10K_CENTS,
-    "f:ermax": MONTHLY_20K_CENTS,
+    "f:ermin": MONTHLY_FLOOR_CENTS,
+    "f:ermax": MONTHLY_CEILING_CENTS,
 }
 
 # campaign_id, name, recipe_key, aliases, filters, daily_cap, template_ref.
@@ -96,7 +131,7 @@ _BASE_FILTERS: dict[str, Any] = {
 SEED_ROWS: tuple[dict[str, Any], ...] = (
     {
         "campaign_id": "8e0df427-1f18-43ac-b0c6-e8ea787123d7",
-        "name": "amz_on|standard|us_amazon_10_20k",
+        "name": "amz_on|standard|us_amazon_10k_20m",
         "recipe_key": "amz_on",
         "recipe_aliases": "",
         "storeleads_filters": {**_BASE_FILTERS, "f:scs": "Amazon"},
@@ -105,7 +140,7 @@ SEED_ROWS: tuple[dict[str, Any], ...] = (
     },
     {
         "campaign_id": "138a162d-6654-4916-9959-20c11e31214b",
-        "name": "amz_off|standard|us_not_amazon_10_20k",
+        "name": "amz_off|standard|us_not_amazon_10k_20m",
         "recipe_key": "amz_off",
         "recipe_aliases": "",
         "storeleads_filters": {**_BASE_FILTERS, "f:scs": "Amazon", "f:scs:op": "not"},
@@ -337,6 +372,48 @@ def resolve_filters(value: Any, now: Optional[datetime] = None) -> dict[str, Any
     resolved["f:cc"] = "US"
     resolved["f:cc:op"] = "or"
     return resolved
+
+
+def apply_configured_revenue(recipe_key: str, filters: dict[str, Any]) -> dict[str, Any]:
+    """The approved monthly band for the four live recipes.
+
+    The floor stays $10k a month. The ceiling is $20M a year. Experiment
+    recipe keys are not in ``STANDARD_REVENUE_RECIPES``, so their own band
+    is left alone. This replaces the old amz_on-only query override.
+    """
+
+    if str(recipe_key or "").strip() not in STANDARD_REVENUE_RECIPES:
+        return filters
+    updated = dict(filters)
+    updated["f:ermin"] = MONTHLY_FLOOR_CENTS
+    updated["f:ermax"] = MONTHLY_CEILING_CENTS
+    return updated
+
+
+def revenue_band_experiments_enabled() -> bool:
+    """Smaller comparison bands stay off until the env flag is set."""
+
+    return (os.getenv(REVENUE_BAND_EXPERIMENT_FLAG) or "").strip().lower() in {
+        "1", "true", "yes", "on",
+    }
+
+
+def experiment_recipe_key(parent: str, band: str) -> str:
+    """A distinct recipe tag so a band can be compared with the parent."""
+
+    return f"{str(parent or '').strip()}__{str(band or '').strip()}"
+
+
+def is_revenue_band_experiment(recipe: Any) -> bool:
+    """True for a comparison band. Those recipes have no Instantly campaign."""
+
+    name = str(recipe or "").strip()
+    if "__" not in name:
+        return False
+    parent, band = name.split("__", 1)
+    if parent not in STANDARD_REVENUE_RECIPES:
+        return False
+    return any(str(item.get("band") or "") == band for item in REVENUE_BAND_EXPERIMENTS)
 
 
 def _aliases(value: Any) -> list[str]:
