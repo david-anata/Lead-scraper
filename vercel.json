@@ -112,6 +112,10 @@
     {
       "path": "/api/jobs/instantly/register-webhook",
       "schedule": "7 * * * *"
+    },
+    {
+      "path": "/api/jobs/abby/missed-replies",
+      "schedule": "23 * * * *"
     }
   ]
 }

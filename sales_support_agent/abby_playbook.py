@@ -217,7 +217,6 @@ def render_ooo_followup(*, first_name: str, brand: str, reply_text: str) -> str:
     personal = ooo_personal_line(reply_text)
     name = _first(first_name) or "there"
     company = _brand(brand)
-    link = _booking_link()
     loaded = _templates()
     item = loaded.get("out_of_office")
     if item is not None:
@@ -225,12 +224,11 @@ def render_ooo_followup(*, first_name: str, brand: str, reply_text: str) -> str:
             first_name=name,
             personal_line=personal,
             brand=company,
-            booking_link=link,
         )
         return _sign(core, item.signature)
     core = (
         f"Hi {name}, {personal} Circling back on my note about {company}'s "
-        f"Amazon and Shopify growth. Worth a quick look this week? Here's my calendar: {link}"
+        f"Amazon growth. I found something that could help. Can I send it to you?"
     )
     return _sign(core)
 
