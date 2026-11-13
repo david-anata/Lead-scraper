@@ -108,6 +108,12 @@ def email_from_payload(payload: dict[str, Any]) -> dict[str, Any]:
     text = str(payload.get("reply_text") or payload.get("reply_text_snippet") or payload.get("email_text") or "")
     subject = str(payload.get("reply_subject") or payload.get("email_subject") or "")
     auto = str(payload.get("event_type") or "") == "auto_reply_received"
+    if auto:
+        flag: Any = 1
+    elif "is_auto_reply" in payload:
+        flag = payload.get("is_auto_reply")
+    else:
+        flag = None
     return {
         "id": email_id,
         "thread_id": str(payload.get("thread_id") or ""),
@@ -120,8 +126,19 @@ def email_from_payload(payload: dict[str, Any]) -> dict[str, Any]:
         "ue_type": 2,
         "timestamp_created": str(payload.get("timestamp") or ""),
         "campaign_id": str(payload.get("campaign_id") or ""),
-        "is_auto_reply": 1 if auto else payload.get("is_auto_reply") or 0,
+        "is_auto_reply": flag,
     }
+
+
+def payload_needs_fetch(email: dict[str, Any]) -> bool:
+    """True when the webhook body cannot be classified on its own.
+
+    Instantly sometimes delivers a reply with a thread id and an empty body,
+    or with no campaign id. The full email is the source for both.
+    """
+
+    text = str((email.get("body") or {}).get("text") or "").strip()
+    return not email.get("thread_id") or not text or not str(email.get("campaign_id") or "").strip()
 
 
 def merge_fetched_email(payload_email: dict[str, Any], fetched: dict[str, Any]) -> dict[str, Any]:
@@ -132,6 +149,8 @@ def merge_fetched_email(payload_email: dict[str, Any], fetched: dict[str, Any]) 
     merged = dict(fetched)
     if payload_email.get("is_auto_reply") and not merged.get("is_auto_reply"):
         merged["is_auto_reply"] = 1
+    elif merged.get("is_auto_reply") is None and "is_auto_reply" in payload_email:
+        merged["is_auto_reply"] = payload_email.get("is_auto_reply")
     if not merged.get("campaign_id"):
         merged["campaign_id"] = payload_email.get("campaign_id") or ""
     if not merged.get("lead"):
@@ -492,7 +511,7 @@ def process_reply(
 
         client = abby_runner.Instantly(instantly_push.api_key())
     getter = getattr(client, "get_email", None)
-    if getter is not None and not email.get("thread_id"):
+    if getter is not None and payload_needs_fetch(email):
         try:
             email = merge_fetched_email(email, getter(email["id"]) or {})
         except Exception:  # noqa: BLE001

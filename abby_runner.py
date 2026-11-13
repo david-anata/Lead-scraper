@@ -15,7 +15,13 @@ Safety rails, all in code:
   * departed-employee notices and automated forwards are ignored: no reply,
     no Interested status, no David CC, no follow-up. A departed contact is
     recorded and suppressed from future Instantly pushes. The company can
-    still be tried later through a different person;
+    still be tried later through a different person. A message Instantly
+    marked human is still posted to Slack when it is ignored;
+  * a human who asks us to send information to an address, including a role
+    inbox, is held for Slack. That address is not emailed;
+  * interest=1 is written only for a live interested or price reply;
+  * a later campaign step, subsequence send, nudge, or scheduled follow-up
+    does not count as an answer to a human question;
   * out-of-office replies are not answered now. A follow-up is scheduled
     for the day after the parsed return date, or 7 days when no date is found;
   * the same handle_email() path serves the 5-minute poll and the reply webhook.
@@ -163,6 +169,15 @@ def start_at() -> datetime:
         return datetime.now(timezone.utc) - timedelta(hours=2)
 
 
+def backlog_since(now: datetime) -> datetime:
+    """How far back this pass reads. Before takeover, only the last two days."""
+
+    since = now - timedelta(days=int(os.getenv("ABBY_BACKLOG_DAYS") or 30))
+    if now < takeover_at():
+        return max(start_at(), now - timedelta(days=2))
+    return since
+
+
 def takeover_at() -> datetime:
     """When the backlog sweep and nudges begin (previewed first)."""
     raw = (os.getenv("ABBY_TAKEOVER_AT") or "2026-10-26T23:30:00Z").strip()
@@ -256,11 +271,17 @@ class Instantly:
     def received_since(self, since: datetime, campaign_id: str, pages: int = 3) -> list[dict]:
         items: list[dict] = []
         params: dict[str, Any] = {
-            "email_type": "received", "campaign_id": campaign_id, "sort_order": "asc",
+            "email_type": "received", "sort_order": "asc",
             "limit": 100, "min_timestamp_created": since.isoformat().replace("+00:00", "Z")}
+        if campaign_id:
+            params["campaign_id"] = campaign_id
         for _ in range(pages):
             st, data = self._call("GET", "emails", params=params)
             if st != 200:
+                logger.warning(
+                    "[abby] received list failed status=%s campaign=%s",
+                    st, campaign_id or "none",
+                )
                 break
             items += (data or {}).get("items") or []
             nxt = (data or {}).get("next_starting_after")
@@ -315,23 +336,64 @@ class Instantly:
         )
         return status
 
-    def leads_for_email(self, email: str) -> list[dict]:
-        """Every Instantly lead record for this address, not just the first."""
+    def lead_lookup(self, email: str) -> tuple[list[dict], bool]:
+        """Lead rows for this address, and whether Instantly finished the list.
+
+        The bool is False when a page is not HTTP 200. An empty list with
+        True means the address has no lead row. Callers must not treat a
+        failed lookup as an empty one.
+        """
 
         if not email:
-            return []
+            return [], True
         found: list[dict] = []
         body: dict[str, Any] = {"contacts": [email], "limit": 100}
         for _ in range(10):
             status, data = self._call("POST", "leads/list", json=body)
             if status != 200 or not isinstance(data, dict):
-                break
+                return found, False
             found.extend(item for item in (data.get("items") or []) if isinstance(item, dict))
             nxt = str(data.get("next_starting_after") or "").strip()
             if not nxt:
-                break
+                return found, True
             body["starting_after"] = nxt
-        return found
+        return found, True
+
+    def leads_for_email(self, email: str) -> list[dict]:
+        """Every Instantly lead record for this address, not just the first."""
+
+        records, _ok = self.lead_lookup(email)
+        return records
+
+    def scan_received(self, since: datetime, campaign_id: str = "",
+                      max_pages: int = 20) -> tuple[list[dict], bool]:
+        """Received mail, and whether the scan reached the end of the list.
+
+        ``max_pages`` is a safety cap. False means a later page exists or a
+        page failed, so the caller should continue from the last row it read.
+        """
+
+        items: list[dict] = []
+        params: dict[str, Any] = {
+            "email_type": "received", "sort_order": "asc",
+            "limit": 100, "min_timestamp_created": since.isoformat().replace("+00:00", "Z"),
+        }
+        if campaign_id:
+            params["campaign_id"] = campaign_id
+        for _ in range(max(1, max_pages)):
+            status, data = self._call("GET", "emails", params=params)
+            if status != 200:
+                logger.warning(
+                    "[abby] received list failed status=%s campaign=%s",
+                    status, campaign_id or "none",
+                )
+                return items, False
+            items.extend((data or {}).get("items") or [])
+            nxt = (data or {}).get("next_starting_after")
+            if not nxt:
+                return items, True
+            params["starting_after"] = nxt
+        return items, False
 
     def block(self, value: str) -> int:
         return self._call("POST", "block-lists-entries", json={"bl_value": value})[0]
@@ -507,14 +569,54 @@ def _human_already_replied(thread: list[dict], received: dict, abby_ids: set[str
     return any(m.get("ue_type") == 3 and m.get("id") not in abby_ids for m in thread)
 
 
-def already_answered(thread: list[dict], received: dict) -> bool:
-    """Someone (Gabe, Abby, or a campaign step) sent something after this reply,
-    or the prospect wrote again later (the later message is the one to answer)."""
+def _outbound_actions(engine) -> dict[str, str]:
+    """Instantly message id -> abby_handled action for sends Abby recorded."""
+
+    try:
+        with engine.connect() as conn:
+            rows = conn.execute(text(
+                "SELECT reply_id, action FROM abby_handled WHERE reply_id <> ''"
+            )).fetchall()
+    except Exception:  # noqa: BLE001
+        logger.exception("[abby] could not read recorded sends")
+        return {}
+    return {str(row[0]): str(row[1] or "") for row in rows if row[0]}
+
+
+def _machine_send(message: dict, outbound_actions: dict[str, str]) -> bool:
+    """A campaign step, subsequence send, nudge, or scheduled follow-up.
+
+    None of those answer a human question. Abby's own reply and a teammate's
+    manual reply are not machine sends.
+    """
+
+    if message.get("ue_type") == 1:
+        return True
+    if message.get("ue_type") != 2 and any(
+        message.get(key) for key in ("subsequence_id", "subsequence", "step", "step_id", "campaign_step")
+    ):
+        return True
+    action = outbound_actions.get(str(message.get("id") or ""))
+    return action in {"nudge", "followup"}
+
+
+def already_answered(thread: list[dict], received: dict,
+                     outbound_actions: Optional[dict[str, str]] = None) -> bool:
+    """True when Abby or a teammate already replied, or the prospect wrote again.
+
+    A later campaign step, subsequence send, nudge, or scheduled follow-up
+    does not count. The later prospect message is answered on its own, so
+    the earlier one is left alone.
+    """
+
+    outbound_actions = outbound_actions or {}
     t = _ts(received)
-    for m in thread:
-        if m.get("id") == received.get("id") or not t:
+    for message in thread:
+        if message.get("id") == received.get("id") or not t or _ts(message) <= t:
             continue
-        if _ts(m) > t and m.get("ue_type") in (1, 2, 3):
+        if _machine_send(message, outbound_actions):
+            continue
+        if message.get("ue_type") in (2, 3):
             return True
     return False
 
@@ -721,6 +823,26 @@ def confirm_interest(client: Any, lead: str, value: int, campaign_id: str,
     return {"ok": False, "status": last_status, "confirmed": confirmed, "attempts": attempts}
 
 
+def interest_to_confirm(decision: abby.Decision) -> Optional[int]:
+    """The interest value Abby may write. 1 is only for interested and price replies.
+
+    A referral, a question, a hold, or an ignore must not enroll Instantly's
+    "Interested - book with David" subsequence.
+    """
+
+    if decision.interest is None:
+        return None
+    try:
+        value = int(decision.interest)
+    except (TypeError, ValueError):
+        return None
+    if value == 1:
+        if decision.action == "reply" and decision.category in {"interested", "price"}:
+            return 1
+        return None
+    return value
+
+
 def handle_email(engine, email: dict, *, client: Instantly, campaign_id: str,
                  now: Optional[datetime] = None,
                  think: Optional[Callable[..., abby.Decision]] = None,
@@ -788,7 +910,7 @@ def _handle_claimed(engine, email: dict, *, client: Instantly, campaign_id: str,
                 run_mode=run_mode)
         counts["skipped"] += 1
         return counts
-    if already_answered(thread, email):
+    if already_answered(thread, email, _outbound_actions(engine)):
         _finish(engine, email=email, decision=abby.Decision("other", "skip", reason="already answered"),
                 run_mode=run_mode)
         counts["skipped"] += 1
@@ -838,13 +960,16 @@ def _handle_claimed(engine, email: dict, *, client: Instantly, campaign_id: str,
         counts["blocked"] += 1
     elif decision.action == "reply" and decision.category in {"interested", "price", "question"}:
         _cancel_scheduled(engine, lead)
-    if decision.interest is not None and run_mode == "live" and decision.action in {"reply", "block", "ignore", "hold"}:
-        confirm_interest(client, lead, decision.interest, campaign_id, post_slack=post_slack)
+    interest = interest_to_confirm(decision)
+    if interest is not None and run_mode == "live" and campaign_id:
+        confirm_interest(client, lead, interest, campaign_id, post_slack=post_slack)
     if decision.action == "hold":
         counts["held"] += 1
     if decision.action == "ignore":
         counts["ignored"] += 1
-    if decision.slack and (decision.action in {"hold", "block"} or run_mode == "live"):
+    # Holds, blocks, and ignores that need a person stay visible. Reply notes
+    # (a wrong-person send, a booking-link send) post in live mode.
+    if decision.slack and (decision.action in {"hold", "block", "ignore"} or run_mode == "live"):
         post_slack(decision.slack)
     counts["scheduled"] += _schedule_rows(
         engine, email=email, decision=decision, info=info, lead=lead,
@@ -875,9 +1000,7 @@ def run(engine, *, client: Instantly, campaign_id: str, now: Optional[datetime] 
 
     # David 2026-10-26: Abby takes over follow-ups, including the backlog of
     # unanswered replies from the last 30 days (threads Gabe started included).
-    since = now - timedelta(days=int(os.getenv("ABBY_BACKLOG_DAYS") or 30))
-    if now < takeover_at():
-        since = max(start_at(), now - timedelta(days=2))   # before takeover: new replies only
+    since = backlog_since(now)
     received = [e for e in client.received_since(since, campaign_id) if e.get("id")]
     done = _handled_ids(engine, [e["id"] for e in received])
     todo = [e for e in received if e["id"] not in done][:MAX_PER_RUN]
@@ -895,6 +1018,198 @@ def run(engine, *, client: Instantly, campaign_id: str, now: Optional[datetime] 
     out["scheduled_sent"] = send_due_scheduled(engine, client, now, run_mode, post_slack, cap)
     out["followups"] = _send_due_followups(engine, client, now, run_mode, post_slack)
     out["nudges"] = _send_nudges(engine, client, campaign_id, now, run_mode, post_slack, lead_info, cap)
+    return out
+
+
+def _campaigns_from_records(records: Any) -> list[str]:
+    found: list[str] = []
+    for record in records or []:
+        if not isinstance(record, dict):
+            continue
+        campaign = str(record.get("campaign") or record.get("campaign_id") or "").strip()
+        if campaign and campaign not in found:
+            found.append(campaign)
+    return found
+
+
+def _lead_campaigns(client: Any, lead: str) -> tuple[list[str], bool]:
+    """Campaign ids on this lead, and whether the lookup finished.
+
+    False means Instantly failed or the client raised. An empty list with
+    True means the lead has no campaign row.
+    """
+
+    if not lead:
+        return [], True
+    lookup = getattr(client, "lead_lookup", None)
+    if lookup is not None:
+        try:
+            records, ok = lookup(lead)
+        except Exception:  # noqa: BLE001
+            logger.exception("[abby] could not list campaigns for an unassigned reply")
+            return [], False
+        return _campaigns_from_records(records), bool(ok)
+    getter = getattr(client, "leads_for_email", None)
+    if getter is None:
+        return [], False
+    try:
+        records = list(getter(lead) or [])
+    except Exception:  # noqa: BLE001
+        logger.exception("[abby] could not list campaigns for an unassigned reply")
+        return [], False
+    return _campaigns_from_records(records), True
+
+
+def campaign_for_unassigned(client: Any, lead: str, watched: Iterable[str]) -> tuple[str, str]:
+    """How to treat a reply Instantly did not attach to a campaign.
+
+    ``("use", campaign_id)`` handles it. An empty campaign id means the lead
+    has no campaign, so Abby reads the mail and skips the interest API.
+    ``("skip", "")`` means every campaign on the lead is outside the watch
+    list. ``("defer", "")`` means the lookup failed; the email stays unhandled.
+    """
+
+    campaigns, ok = _lead_campaigns(client, lead)
+    allowed = {str(item).strip() for item in watched if str(item).strip()}
+    for campaign in campaigns:
+        if campaign in allowed:
+            return "use", campaign
+    if not ok:
+        return "defer", ""
+    if not campaigns:
+        return "use", ""
+    return "skip", ""
+
+
+_UNASSIGNED_CURSOR = "abby_unassigned_received"
+_UNASSIGNED_MAX_PAGES = 20
+_UNASSIGNED_OVERLAP = timedelta(hours=2)
+
+
+def _unassigned_since(engine, now: datetime) -> datetime:
+    """Resume the unassigned scan near the last row already examined."""
+
+    since = backlog_since(now)
+    try:
+        import outbound_suppression as suppression
+
+        raw = suppression.get_cursor(engine, _UNASSIGNED_CURSOR)
+    except Exception:  # noqa: BLE001
+        logger.exception("[abby] could not read the unassigned scan cursor")
+        return since
+    saved = _parse_ts(raw) if raw else None
+    if saved is None:
+        return since
+    return max(since, saved - _UNASSIGNED_OVERLAP)
+
+
+def _save_unassigned_cursor(engine, stamp: str) -> None:
+    if not stamp:
+        return
+    try:
+        import outbound_suppression as suppression
+
+        suppression.set_cursor(engine, _UNASSIGNED_CURSOR, stamp)
+    except Exception:  # noqa: BLE001
+        logger.exception("[abby] could not save the unassigned scan cursor")
+
+
+def _list_unassigned(client: Any, since: datetime) -> tuple[list[dict], str]:
+    """Unassigned emails, and the timestamp of the last row this pass examined.
+
+    Assigned mail is walked, not treated as the end of the list. The scan
+    stops after ``MAX_PER_RUN`` unassigned rows so a later page is not skipped
+    on the next poll. The returned timestamp is that last examined row.
+    """
+
+    scanner = getattr(client, "scan_received", None)
+    exhausted = True
+    if scanner is not None:
+        try:
+            listed, exhausted = scanner(since, "", max_pages=_UNASSIGNED_MAX_PAGES)
+        except TypeError:
+            listed = scanner(since, "")
+    else:
+        try:
+            listed = client.received_since(since, "", pages=_UNASSIGNED_MAX_PAGES)
+        except TypeError:
+            listed = client.received_since(since, "")
+    chosen: list[dict] = []
+    last = ""
+    for email in sorted(listed or [], key=_ts):
+        stamp = _ts(email)
+        if stamp:
+            last = stamp
+        if not email.get("id") or email_campaign_id(email):
+            continue
+        chosen.append(email)
+        if len(chosen) >= MAX_PER_RUN:
+            break
+    if not exhausted and not last:
+        return [], ""
+    return chosen, last
+
+
+def run_unassigned(engine, *, client: Instantly, watched: Iterable[str],
+                   now: Optional[datetime] = None,
+                   think: Optional[Callable[..., abby.Decision]] = None,
+                   post_slack: Optional[Callable[[str], Any]] = None,
+                   lead_info: Optional[Callable[[str], dict]] = None) -> dict[str, Any]:
+    """Read received mail with no campaign id.
+
+    The per-campaign poll never returns those rows. ``auto_reply_received``
+    cannot be registered on Instantly's create-webhook API, so this poll is
+    how a reply that Instantly did not attach to a campaign gets seen.
+    A failed lead lookup leaves the email unhandled. Assigned mail does not
+    pin the scan to the oldest page.
+    """
+
+    now = now or datetime.now(timezone.utc)
+    run_mode = mode()
+    out: dict[str, Any] = {"mode": run_mode, "seen": 0, "replied": 0, "held": 0, "blocked": 0,
+                           "ignored": 0, "skipped": 0, "scheduled": 0, "deferred": 0}
+    if run_mode == "off":
+        out["reason"] = "ABBY_MODE is off"
+        return out
+    ensure_tables(engine)
+    since = _unassigned_since(engine, now)
+    received, scanned_through = _list_unassigned(client, since)
+    done = _handled_ids(engine, [email["id"] for email in received])
+    todo = [email for email in received if email["id"] not in done]
+    out["seen"] = len(todo)
+    think = think or abby.think
+    post_slack = post_slack or (lambda _t: None)
+    lead_info = lead_info or (lambda _e: {})
+    cap = int(os.getenv("ABBY_DAILY_CAP") or 60)
+    watched_ids = list(watched or [])
+    deferred = 0
+    for email in todo:
+        lead = str(email.get("lead") or email.get("from_address_email") or "").lower()
+        status, campaign = campaign_for_unassigned(client, lead, watched_ids)
+        if status == "defer":
+            deferred += 1
+            out["deferred"] += 1
+            continue
+        if status == "skip":
+            if _claim(engine, email, run_mode, ""):
+                _finish(
+                    engine, email=email,
+                    decision=abby.Decision("other", "skip", reason="campaign not watched"),
+                    run_mode=run_mode,
+                )
+            out["skipped"] += 1
+            continue
+        part = handle_email(
+            engine, email, client=client, campaign_id=campaign, now=now,
+            think=think, post_slack=post_slack, lead_info=lead_info,
+            run_mode=run_mode, cap=cap,
+        )
+        for key in ("replied", "held", "blocked", "ignored", "skipped", "scheduled"):
+            out[key] = out.get(key, 0) + part.get(key, 0)
+    # A failed lookup must stay inside the next scan. Moving the cursor past
+    # it would drop the email until that timestamp aged out of the overlap.
+    if deferred == 0:
+        _save_unassigned_cursor(engine, scanned_through)
     return out
 
 
@@ -1233,7 +1548,7 @@ def preview_takeover(engine, client: Instantly, campaign_id: str, now: datetime,
         if e["id"] in done or len(backlog) >= limit or is_team(_sender(e)):
             continue
         thread = client.thread(e.get("thread_id") or "") or [e]
-        if team_in_thread(thread) or already_answered(thread, e):
+        if team_in_thread(thread) or already_answered(thread, e, _outbound_actions(engine)):
             continue
         lead = str(e.get("lead") or "").lower()
         info = lead_info(lead) or _instantly_info(client, lead)

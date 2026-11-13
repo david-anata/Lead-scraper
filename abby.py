@@ -13,10 +13,16 @@ something outside the offer.
       it covers everything), then one later note that the free trial can run
       alongside their current tool. Nothing after that.
   referral to a colleague -> only when a human wrote the reply and named a
-      colleague. The approved template asks them, and a referral without an
-      email gets the harder "who handles Amazon or marketing growth" ask.
-      David only if asked.
+      colleague at a personal address. The approved template asks them, and a
+      referral without an email gets the harder "who handles Amazon or
+      marketing growth" ask. David only if asked. This does not mark the lead
+      Interested.
+  send info to an address -> a human asked us to send information to a
+      specific address, including a role inbox such as partnerships@. Hold
+      and post to Slack. Do not email that address, and do not mark Interested.
   wrong person -> the same harder ask, from the approved template when present.
+      Address the person who wrote, not the stored lead, when those differ.
+      Post the send to Slack.
   opt-out -> no reply, block the whole company domain, mark not interested.
   question Abby is unsure about -> answer what she can, offer the call.
   hostile / legal -> no reply, blocklist the lead, mark not interested.
@@ -26,7 +32,10 @@ something outside the offer.
       the parsed return date, or 7 days when no date is found.
   departed employee / automated forward -> ignore. No reply, no David CC,
       no Interested status, no follow-up. A departed contact is recorded so
-      the brand can be tried again later. Nothing is sent.
+      the brand can be tried again later. Nothing is sent. "I have left" and
+      "left the business" count, including when the subject starts with OOO.
+      A subject that is only OOO, with no departed wording, stays out of office.
+      If Instantly marked the message as human, the ignore is posted to Slack.
 """
 
 from __future__ import annotations
@@ -52,15 +61,17 @@ MIN_CONFIDENCE = 0.7
 MAX_WORDS = 150
 
 CATEGORIES = (
-    "interested", "price", "not_now", "has_solution", "referral", "opt_out",
-    "hostile", "question", "ai_question", "auto_reply", "wrong_person", "other",
+    "interested", "price", "not_now", "has_solution", "referral", "send_info",
+    "opt_out", "hostile", "question", "ai_question", "auto_reply", "wrong_person",
+    "other",
 )
-# Categories where Abby writes back.
+# Categories where Abby writes back. send_info is held for a person.
 REPLY_CATEGORIES = {"interested", "price", "not_now", "has_solution", "referral",
                     "question", "ai_question", "wrong_person"}
-# Interest status values used by Instantly's Unibox (status=1 Interested,
-# status=2 Meeting booked as seen in the Unibox filters; -1 Not interested).
-INTEREST = {"interested": 1, "price": 1, "referral": 1, "question": 1, "opt_out": -1}
+# Instantly interest. 1 enrolls the "Interested - book with David" subsequence,
+# so only a real interested or price reply may set it. Referrals, questions,
+# and wrong-person notes must not.
+INTEREST = {"interested": 1, "price": 1, "opt_out": -1}
 
 FACTS = f"""About Anata (only use these facts):
 - Anata Intelligence builds a brand's Amazon growth strategy and then runs the ad actions automatically to hit it.
@@ -80,14 +91,15 @@ Categories: {", ".join(CATEGORIES)}.
 - price: asks what it costs (you may say plans start at $99/month).
 - not_now: timing is wrong, maybe later.
 - has_solution: already has an agency, tool, or team for Amazon, or says they already sell on Amazon.
-- referral: a human wrote this reply and recommends a colleague. Put that person's email in referral_email if they gave one. A shared inbox is not a colleague. Never put info@, sales@, support@, or customerservice@ in referral_email.
+- referral: a human wrote this reply and recommends a named colleague at a personal email address. Put that person's email in referral_email if they gave one. A shared inbox is not a colleague. Never put partnerships@, info@, sales@, support@, or customerservice@ in referral_email. Use send_info for those.
+- send_info: a human asks us to send information, details, or this email to a specific address, including a role inbox such as partnerships@, info@, sales@, support@, or customerservice@. Put that address in referral_email. A human wrote this. It is not auto_reply.
 - opt_out: asks to stop, unsubscribe, remove them, is clearly annoyed by the emails, or the company has closed or ceased operations.
 - A message that is only a signature or contact block with no request is auto_reply.
 - hostile: insults, threats, legal language (spam laws, lawyers, reporting).
 - question: a specific question you can partly answer from the facts.
 - ai_question: asks if you are a bot, AI or a real person.
-- auto_reply: out of office, an automated message, a departed-employee notice, or a forwarding notice. This includes "no longer with", "has left the company", "out of the office", "please direct inquiries to", "concluded my role", and "no longer monitoring". A pointer to info@, sales@, support@, or customerservice@ is auto_reply. Naming a person or giving their email does not make these a referral. Leave referral_email null. If you are unsure a human wrote the message, choose auto_reply.
-- wrong_person: a human says this is not their area and names no colleague.
+- auto_reply: out of office, an automated message, a satisfaction survey, a departed-employee notice, or a forwarding notice. This includes "no longer with", "no longer part of", "no longer work at", "I have left", "I have now left", "left the business", "has left the company", "out of the office", a subject that starts with OOO, "please direct inquiries", "concluded my role", and "no longer monitoring". A mailbox rule that only points at info@, sales@, support@, or customerservice@ is auto_reply. Naming a person or giving their email does not make these a referral. Leave referral_email null. Choose auto_reply only when the message is clearly one of these. If a human wrote it, or you are unsure, choose other.
+- wrong_person: a human says this is not their area and names no colleague and no address to send information to.
 
 Reply rules by category:
 - interested: thank them, one line on the 14-day trial (we build their Amazon strategy and run the ad automation), invite them to grab a time with David at the booking link. Under 80 words. Do not say you are looping David in.
@@ -97,8 +109,8 @@ Reply rules by category:
 - referral: only when a human wrote the referral. Address the colleague by name if known, say who pointed you to them, one line on the trial, booking link.
 - question: answer only from the facts; for anything else say David covers it on a quick call and give the booking link.
 - ai_question: be honest. Say "{AI_DISCLOSURE}" Never say "virtual assistant". Then continue helpfully.
-- wrong_person: thank them and ask who handles Amazon or marketing growth. No booking link.
-- opt_out, hostile, auto_reply, other: reply must be null.
+- wrong_person: thank them and ask who handles Amazon or marketing growth. No booking link. Address the person who wrote, not a different name on the stored lead.
+- send_info, opt_out, hostile, auto_reply, other: reply must be null.
 Bringing David in: he is CC'd only when you set cc_david to true, because he is the one managing the calls. Do that when a warm prospect is ready for a call, when they push back on something outside the facts, for a larger brand, or on a stalled thread. Frame it in the reply, for example "David, any thoughts on X?" Leave cc_david false otherwise, and do not mention looping him in.
 Style: plain, warm, short, founder-to-founder, no em dashes, no exclamation marks overload, no claims about their numbers. Never say "virtual assistant". Sign exactly as:
 {SIGNATURE}
@@ -181,13 +193,57 @@ _DEPARTED_PHRASES = (
     "concluded their role",
     "no longer works here",
     "no longer works at",
+    "no longer work at",
+    "no longer work for",
+    "i no longer work",
     "no longer employed",
+    "no longer part of",
+    "left the business",
+    "no longer monitored",
+    "email is no longer",
+    "inbox is no longer",
+    "i have moved on",
+    "i've moved on",
 )
+# "I have now left Arena" and "Mo has left REFY", but not "left a message"
+# or "left the office" (that one is out of office).
+_LEFT_RE = re.compile(
+    r"\b(?:i have|i've|have|has) (?:now )?left\b"
+    r"(?!\s+(?:an?|you|this|feedback|the office|my office|a message|a voicemail|a note)\b)",
+    re.I,
+)
+_SURVEY_RE = re.compile(
+    r"satisfaction[- ]survey|how would you rate the help|gorgias\.com/satisfaction",
+    re.I,
+)
+# "Send your information to partnerships@" is a routing request.
+# "Send the breakdown" is the prospect asking us for the offer, not a destination.
+_SEND_INFO_RE = re.compile(
+    r"\bsend\b(?:\s+\w+){0,8}\s+(?:your|our)\s+(?:information|info|details|collaboration)\b"
+    r"|\bsend\b(?:\s+(?:your|the|our|this))?\s+(?:information|info|details)\b"
+    r"(?:\s+\w+){0,10}\s+\b(?:to|at)\b"
+    r"|\bsend\b(?:\s+(?:this|it))?\s+\bto\b"
+    r"|\bforward\b(?:\s+\w+){0,6}\s+\bto\b",
+    re.I,
+)
+_OPT_OUT_RE = re.compile(
+    r"\b(?:unsubscribe|remove me|stop emailing|do not contact|don't contact)\b",
+    re.I,
+)
+_SIGN_OFF_RE = re.compile(
+    r"^(?:thanks|thank you|best|regards|cheers|sincerely|warmly|all the best)\s*[,!]?\s*$",
+    re.I,
+)
+_NAME_STOP = _ROLE_LOCALS | {
+    "best", "thanks", "thank", "regards", "cheers", "sincerely", "team", "hello",
+    "hi", "dear", "abby", "amazon", "marketing", "growth",
+}
 _OOO_PHRASES = (
     "out of the office",
     "out of office",
     "away from the office",
     "away from my office",
+    "left the office",
 )
 _AUTO_PHRASES = (
     "please direct inquiries",
@@ -297,6 +353,23 @@ def _subject_says_auto(subject: str) -> bool:
     ))
 
 
+def _subject_ooo(subject: str) -> bool:
+    """A subject that is only an out-of-office marker, including ``OOO - ...``."""
+
+    return re.match(r"^ooo\b", _bare_subject(subject)) is not None
+
+
+def instantly_marked_human(value: Any) -> bool:
+    """True only when Instantly explicitly says this was not an auto-reply.
+
+    Missing means unknown. ``0``, ``false``, and ``no`` are human.
+    """
+
+    if value is None or value == "":
+        return False
+    return not _flag(value)
+
+
 def _message_parts(message: Any) -> tuple[str, Any, Any, str]:
     if isinstance(message, dict):
         headers = message.get("headers")
@@ -335,6 +408,121 @@ def _role_contacts(text: str) -> list[str]:
     return found
 
 
+def _says_departed(low: str) -> bool:
+    if any(phrase in low for phrase in _DEPARTED_PHRASES):
+        return True
+    return _LEFT_RE.search(low) is not None
+
+
+def _public_excerpt(text: str) -> str:
+    """A short quote for Slack. Query strings on links are dropped."""
+
+    cleaned = re.sub(r"https?://\S+", "[link]", text or "")
+    cleaned = re.sub(r"\s+", " ", cleaned).strip()
+    return cleaned[:220]
+
+
+def _clean_person_name(value: str) -> str:
+    value = re.sub(r"[^A-Za-z '\-]", "", value or "").strip()
+    parts = [part for part in value.split() if part]
+    if not parts or len(parts) > 3:
+        return ""
+    first = parts[0].strip(",.")
+    if len(first) < 2 or first.lower() in _NAME_STOP or not first[0].isupper():
+        return ""
+    return first
+
+
+def _from_display(message: dict) -> str:
+    for key in ("from_name", "from_address_name", "sender_name"):
+        if message.get(key):
+            return str(message[key])
+    raw = message.get("from_address_json")
+    if isinstance(raw, str) and raw.strip().startswith("{"):
+        try:
+            raw = json.loads(raw)
+        except ValueError:
+            return ""
+    if isinstance(raw, dict):
+        return str(raw.get("name") or raw.get("first_name") or "")
+    return ""
+
+
+def _signature_name(text: str) -> str:
+    """The first name on the line after Best, Thanks, or Regards."""
+
+    lines = [line.strip() for line in _own_words(text).splitlines() if line.strip()]
+    for index, line in enumerate(lines):
+        head, sep, tail = line.partition(",")
+        if sep and _SIGN_OFF_RE.match(head):
+            found = _clean_person_name(tail)
+            if found:
+                return found
+        if _SIGN_OFF_RE.match(line) and index + 1 < len(lines):
+            found = _clean_person_name(lines[index + 1])
+            if found:
+                return found
+    return ""
+
+
+def greeting_name(message: Any, *, lead_email: str, lead_first_name: str) -> str:
+    """Who to address. Never the stored lead when someone else wrote.
+
+    A missing From address still yields the signature name when that name
+    is not the lead's. No name is safer than the wrong name.
+    """
+
+    lead_first = (lead_first_name or "").strip().split(" ")[0] if lead_first_name else ""
+    from_email = ""
+    text = ""
+    display = ""
+    if isinstance(message, dict):
+        from_email = str(message.get("from_address_email") or "").strip().lower()
+        display = _from_display(message)
+        text = _body_text(message)
+    else:
+        text = str(message or "")
+    writer = _clean_person_name(display) or _signature_name(text)
+    lead = (lead_email or "").strip().lower()
+    if from_email and lead and from_email != lead:
+        if writer:
+            return writer
+        return ""
+    if writer and lead_first and writer.lower() != lead_first.lower():
+        return writer
+    return lead_first
+
+
+def send_info_route(message: Any = "", *, lead_email: str = "",
+                    referral_email: str = "") -> Optional[list[str]]:
+    """Addresses a human asked us to send information to.
+
+    Role inboxes count. A warm referral to a personal address does not: that
+    stays on the approved referral path. None when this is not that request.
+    """
+
+    _subject, _headers, _flag_value, text = _message_parts(message)
+    own = _own_words(text)
+    found: list[str] = []
+    ref = (referral_email or "").strip().lower()
+    if ref and is_role_address(ref) and ref not in found:
+        found.append(ref)
+    send_match = _SEND_INFO_RE.search(own)
+    if send_match:
+        window = own[send_match.start():send_match.end() + 180]
+        for addr in _suggested(window, lead_email, ref):
+            if addr not in found:
+                found.append(addr)
+    for addr in _role_contacts(own):
+        if addr not in found:
+            found.append(addr)
+    if not found:
+        return None
+    if send_match is None and not any(is_role_address(addr) for addr in found):
+        return None
+    return found
+
+
 def _notice(kind: str, reason: str, lead: str, suggested: list[str]) -> Notice:
     dest = ", ".join(suggested) if suggested else "none"
     who = lead or "unknown"
@@ -364,24 +552,59 @@ def automated_notice(message: Any = "", *, lead_email: str = "", subject: str = 
     # Mail clients wrap the template mid-phrase ("concluded\nmy role").
     low = re.sub(r"\s+", " ", f"{_bare_subject(subject)}\n{own}").lower()
     suggested = _suggested(own, lead_email)
-    if any(phrase in low for phrase in _DEPARTED_PHRASES):
+    if _says_departed(low):
         return _notice("departed", "automatic reply: departed employee", lead_email, suggested)
-    if any(phrase in low for phrase in _OOO_PHRASES):
+    if _SURVEY_RE.search(low):
+        return _notice("auto_reply", "automatic reply: satisfaction survey", lead_email, suggested)
+    if any(phrase in low for phrase in _OOO_PHRASES) or _subject_ooo(subject):
         return _notice("out_of_office", "automatic reply: out of office", lead_email, suggested)
     if _flag(is_auto_reply) or header_says_auto(headers) or _subject_says_auto(subject):
         return _notice("auto_reply", "automatic reply: auto-reply header", lead_email, suggested)
-    roles = _role_contacts(own)
-    if roles:
-        ordered = roles + [addr for addr in suggested if addr not in roles]
-        return _notice("role_inbox", "automatic reply: shared inbox is not a colleague", lead_email, ordered)
     if any(phrase in low for phrase in _AUTO_PHRASES):
         return _notice("auto_reply", "automatic reply: automated message", lead_email, suggested)
     return None
 
 
-def _ignore(notice: Notice) -> Decision:
+def _message_flag(message: Any, is_auto_reply: Any) -> Any:
+    if is_auto_reply is not None:
+        return is_auto_reply
+    if isinstance(message, dict):
+        return message.get("is_auto_reply")
+    return None
+
+
+def _ignore(notice: Notice, *, lead: str = "", human: bool = False) -> Decision:
     kind = "out_of_office" if notice.kind == "out_of_office" else ""
-    return Decision("auto_reply", "ignore", reason=notice.reason, note=notice.note, schedule_kind=kind)
+    slack = ""
+    if human:
+        slack = (
+            f"Abby ignored a message Instantly marked as human from {lead or 'unknown'}. "
+            f"{notice.reason}. Nothing sent."
+        )
+    return Decision(
+        "auto_reply", "ignore", reason=notice.reason, note=notice.note,
+        schedule_kind=kind, slack=slack,
+    )
+
+
+def _hold_send_info(addresses: list[str], *, lead_email: str, message: Any,
+                    writer: str = "") -> Decision:
+    """A person reviews this. Abby does not email the address."""
+
+    dest = ", ".join(addresses) if addresses else "the address they named"
+    who = writer or lead_email or "The sender"
+    excerpt = _public_excerpt(_body_text(message) if not isinstance(message, str) else str(message or ""))
+    slack = (
+        f"Abby held a reply. {who} asked us to send info for {lead_email} to {dest}. "
+        "Nothing was sent. Review before anyone emails that address."
+    )
+    if excerpt:
+        slack = f"{slack}\n{excerpt}"
+    return Decision(
+        "send_info", "hold", slack=slack,
+        reason="human asked to send info to an address",
+        note=f"Held for review. Destination: {dest}. Nothing sent.",
+    )
 
 
 def decide(model_out: dict[str, Any], *, lead_email: str, thread_categories: list[str],
@@ -396,23 +619,41 @@ def decide(model_out: dict[str, Any], *, lead_email: str, thread_categories: lis
     except (TypeError, ValueError):
         conf = 0.0
     reply = clean(str(model_out.get("reply") or ""))
+    flag = _message_flag(message, is_auto_reply)
+    human = instantly_marked_human(flag)
+    addressed = greeting_name(message, lead_email=lead_email, lead_first_name=first_name)
 
-    # Code gate, ahead of the model. Departed notices and shared inboxes stay
-    # auto-replies: no referral send, no Interested mark, no CC to David.
+    # Code gate, ahead of the model. Departed notices, surveys, and real
+    # auto-replies never send and never mark Interested.
     notice = automated_notice(message, lead_email=lead_email, subject=subject,
-                              headers=headers, is_auto_reply=is_auto_reply)
-    ref = str(model_out.get("referral_email") or "").strip().lower()
-    if notice is None and cat == "referral" and is_role_address(ref):
-        notice = _notice("role_inbox", "automatic reply: shared inbox is not a colleague",
-                         lead_email, _suggested("", lead_email, ref))
+                              headers=headers, is_auto_reply=flag)
     if notice:
-        return _ignore(notice)
+        return _ignore(notice, lead=lead_email, human=human)
 
     if cat == "opt_out":
         return Decision(cat, "block", interest=-1, block_domain=_domain(lead_email),
                         reason="opt-out: no reply, company blocked")
+
+    own_text = _body_text(message) if not isinstance(message, str) else str(message or "")
+    ref = str(model_out.get("referral_email") or "").strip().lower()
+    route = None if _OPT_OUT_RE.search(own_text) else send_info_route(
+        message, lead_email=lead_email, referral_email=ref,
+    )
+    if route or cat == "send_info":
+        return _hold_send_info(route or ([ref] if ref else []), lead_email=lead_email,
+                               message=message, writer=addressed or ref)
+
     if cat == "auto_reply":
-        return Decision(cat, "ignore", reason="automatic reply")
+        # No header, flag, or departed/OOO phrase. The model used to drop these.
+        return Decision(
+            cat, "hold",
+            slack=(
+                f"Abby held a message from {lead_email} that the model called an auto-reply. "
+                "Instantly did not mark it as automatic, and the text is not a departed notice "
+                "or an out-of-office. Nothing sent."
+            ),
+            reason="model said auto-reply without auto-reply evidence",
+        )
     if cat == "hostile":
         return Decision(cat, "block", interest=-1, block_domain="",
                         slack=f"Hostile or legal reply from {lead_email}. The lead is blocked. Nothing sent.",
@@ -434,7 +675,7 @@ def decide(model_out: dict[str, Any], *, lead_email: str, thread_categories: lis
         own = str((message.get("body") or {}).get("text") or message.get("content_preview") or "")
     approved = render_immediate_reply(
         cat,
-        first_name=first_name,
+        first_name=addressed,
         company=company,
         reply_text=own,
         referral_name=str(model_out.get("referral_name") or ""),
@@ -469,6 +710,12 @@ def decide(model_out: dict[str, Any], *, lead_email: str, thread_categories: lis
             d.slack = f"Referral from {lead_email}. Abby wrote {named}."
         else:
             d.slack = f"Positive reply from {lead_email} ({cat}). Abby replied with the booking link{cc_note}."
+    if cat == "wrong_person" and not d.slack:
+        wrote = addressed or "them"
+        d.slack = (
+            f"Abby sent a wrong-person reply on {lead_email}, addressed to {wrote}. "
+            "She asked who handles Amazon or marketing growth. Nothing was sent to a new address."
+        )
     return d
 
 
@@ -483,8 +730,25 @@ def parse_model_json(raw: str) -> dict[str, Any]:
         return {"category": "other", "confidence": 0}
 
 
-def build_prompt(thread: list[dict[str, Any]], *, company: str, first_name: str) -> str:
-    lines = [f"Prospect: {first_name or 'unknown'} at {company or 'their company'}.", "Thread, oldest first:"]
+def build_prompt(thread: list[dict[str, Any]], *, company: str, first_name: str,
+                 lead_email: str = "") -> str:
+    latest = _latest_prospect(thread)
+    writer = greeting_name(latest, lead_email=lead_email, lead_first_name=first_name)
+    from_email = str(latest.get("from_address_email") or "").strip().lower()
+    lines = [f"Prospect: {writer or first_name or 'unknown'} at {company or 'their company'}."]
+    if from_email and lead_email and from_email != lead_email.strip().lower():
+        stored = first_name or "the stored lead"
+        lines.append(
+            f"The stored lead is {stored} <{lead_email}>. "
+            f"The latest message was written by {writer or 'someone else'} <{from_email}>. "
+            f"Do not address {stored}."
+        )
+    if instantly_marked_human(latest.get("is_auto_reply")):
+        lines.append(
+            "Instantly marked the latest message as written by a human (is_auto_reply=0). "
+            "Do not classify it as auto_reply."
+        )
+    lines.append("Thread, oldest first:")
     for msg in thread[-6:]:
         who = "PROSPECT" if msg.get("ue_type") == 2 else "ABBY/ANATA"
         body = clean(str((msg.get("body") or {}).get("text") or msg.get("content_preview") or ""))
@@ -507,14 +771,15 @@ Categories: {", ".join(CATEGORIES)}.
 - price: asks what it costs.
 - not_now: timing is wrong, maybe later.
 - has_solution: already has an agency, tool, or team for Amazon, or says they already sell on Amazon.
-- referral: a human wrote this reply and recommends a colleague. Put that person's email in referral_email if they gave one. A shared inbox is not a colleague. Never put info@, sales@, support@, or customerservice@ in referral_email.
+- referral: a human wrote this reply and recommends a named colleague at a personal email address. Put that person's email in referral_email if they gave one. A shared inbox is not a colleague. Never put partnerships@, info@, sales@, support@, or customerservice@ in referral_email. Use send_info for those.
+- send_info: a human asks us to send information, details, or this email to a specific address, including a role inbox such as partnerships@, info@, sales@, support@, or customerservice@. Put that address in referral_email. A human wrote this. It is not auto_reply.
 - opt_out: asks to stop, unsubscribe, remove them, is clearly annoyed by the emails, or the company has closed or ceased operations.
 - A message that is only a signature or contact block with no request is auto_reply.
 - hostile: insults, threats, legal language (spam laws, lawyers, reporting).
 - question: a specific question you can partly answer from the facts.
 - ai_question: asks if you are a bot, AI or a real person.
-- auto_reply: out of office, an automated message, a departed-employee notice, or a forwarding notice. This includes "no longer with", "has left the company", "out of the office", "please direct inquiries to", "concluded my role", and "no longer monitoring". A pointer to info@, sales@, support@, or customerservice@ is auto_reply. Naming a person or giving their email does not make these a referral. Leave referral_email null. If you are unsure a human wrote the message, choose auto_reply.
-- wrong_person: a human says this is not their area and names no colleague.
+- auto_reply: out of office, an automated message, a satisfaction survey, a departed-employee notice, or a forwarding notice. This includes "no longer with", "no longer part of", "no longer work at", "I have left", "I have now left", "left the business", "has left the company", "out of the office", a subject that starts with OOO, "please direct inquiries", "concluded my role", and "no longer monitoring". A mailbox rule that only points at info@, sales@, support@, or customerservice@ is auto_reply. Naming a person or giving their email does not make these a referral. Leave referral_email null. Choose auto_reply only when the message is clearly one of these. If a human wrote it, or you are unsure, choose other.
+- wrong_person: a human says this is not their area and names no colleague and no address to send information to.
 
 Do not draft the reply. Set reply to null.
 Return ONLY JSON: {{"category": "...", "confidence": 0.0-1.0, "referral_email": null or "x@y.com", "referral_name": null or "Name", "cc_david": false, "reply": null}}"""
@@ -576,15 +841,31 @@ def think(thread: list[dict[str, Any]], *, lead_email: str, company: str, first_
           thread_categories: list[str], llm: Optional[Callable[[str], str]] = None) -> Decision:
     """Classify + draft + decide. Never raises; a failure becomes a hold.
 
-    Departed notices, out-of-office mail, and automated forwards are decided
-    in code, before the model is asked. A bad classification cannot send.
+    Departed notices, out-of-office mail, surveys, and requests to send
+    information to an address are decided in code, before the model is asked.
+    A bad classification cannot send or mark the lead Interested.
     """
     latest = _latest_prospect(thread)
+    human = instantly_marked_human(latest.get("is_auto_reply") if isinstance(latest, dict) else None)
     notice = automated_notice(latest, lead_email=lead_email)
     if notice:
-        return _ignore(notice)
+        return _ignore(notice, lead=lead_email, human=human)
+    body = _body_text(latest)
+    if not _OPT_OUT_RE.search(body):
+        route = send_info_route(latest, lead_email=lead_email)
+        if route:
+            writer = greeting_name(latest, lead_email=lead_email, lead_first_name=first_name)
+            return _hold_send_info(route, lead_email=lead_email, message=latest, writer=writer)
+    if not _own_words(body).strip():
+        return Decision(
+            "other", "hold",
+            slack=f"Abby held an empty message from {lead_email}. Nothing sent.",
+            reason="empty message",
+        )
     try:
-        raw = (llm or call_model)(build_prompt(thread, company=company, first_name=first_name))
+        raw = (llm or call_model)(build_prompt(
+            thread, company=company, first_name=first_name, lead_email=lead_email,
+        ))
         out = parse_model_json(raw)
     except Exception:  # noqa: BLE001
         logger.exception("[abby] model call failed")

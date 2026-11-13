@@ -263,9 +263,19 @@ first and creates a missing `reply_received` hook aimed at
 header is not the current derived value, the job patches it. If Instantly has
 disabled it (status -1), the job resumes it after the header is current.
 Instantly's create API rejects `auto_reply_received` as an event type, so
-those replies stay on the five-minute poll. The check repeats hourly, and
+that hook is not registered. Those replies stay on the five-minute poll.
+The same poll also reads received mail whose `campaign_id` is empty, because
+a per-campaign list never returns it. When the webhook body is empty, Abby
+loads the full email before classifying it. The check repeats hourly, and
 immediately after `SALES_AGENT_INTERNAL_API_KEY` changes. A plan rejection is
 kept on the `abby_reply_webhook_v1` sync marker.
+
+A human who asks Abby to send information to an address, including a role
+inbox such as partnerships@, is held for Slack. Abby does not email that
+address. Interest is set to Interested only for an interested or price reply.
+A referral, a question, or a wrong-person note does not. Instantly's own AI
+interest label can still enroll the Trial Offer subsequence "Interested -
+book with David"; that setting is changed in Instantly, not in this app.
 
 Out-of-office replies schedule one follow-up for the day after the parsed
 return date, or 7 days when no date is present. Not-now replies schedule
