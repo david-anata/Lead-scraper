@@ -14,6 +14,7 @@ from typing import Any, Protocol
 from urllib.parse import quote
 from uuid import uuid4
 
+from voice.attribution import apply_heard_about, dialed_line_source
 from voice.session import CallSession
 
 logger = logging.getLogger(__name__)
@@ -120,6 +121,14 @@ def build_inquiry_row(session: CallSession, *, owner: str) -> dict[str, Any]:
         details["security_preference"] = session.security_preference
     if session.line.source.strip():
         details["source"] = session.line.source.strip()
+    apply_heard_about(session)
+    if session.heard_about_raw:
+        details["heardAbout"] = session.heard_about_raw
+    if session.heard_about_source and session.heard_about_source != "unknown":
+        details["heardAboutSource"] = session.heard_about_source
+    line_source = dialed_line_source(session)
+    if line_source:
+        details["dialedLine"] = line_source
     details["_follow_up_sequence"] = _follow_up(received)
     if kind == "event":
         interview = {
@@ -162,7 +171,8 @@ def build_inquiry_row(session: CallSession, *, owner: str) -> dict[str, Any]:
 def build_call_row(session: CallSession, *, inquiry_id: str, sms_notified: bool) -> dict[str, Any]:
     started = datetime.fromtimestamp(session.started_at, tz=timezone.utc)
     ended = _now()
-    summary = session.summary.strip() or _fallback_summary(session)
+    apply_heard_about(session)
+    summary = _summary_with_source(session)
     return {
         "call_sid": session.call_sid,
         "channel": "voice",
@@ -183,8 +193,22 @@ def build_call_row(session: CallSession, *, inquiry_id: str, sms_notified: bool)
         "building_inquiry_id": inquiry_id,
         "known_caller_id": session.known_caller_id,
         "known_caller_category": session.known_caller_category,
+        "heard_about_raw": session.heard_about_raw,
+        "heard_about_source": session.heard_about_source or "unknown",
+        "dialed_line_source": dialed_line_source(session),
         "updated_at": ended.isoformat(),
     }
+
+
+def _summary_with_source(session: CallSession) -> str:
+    """Call-log summary. The after-call text still uses the plain reason only."""
+
+    base = session.summary.strip() or _fallback_summary(session)
+    raw = session.heard_about_raw.strip().rstrip(". ")
+    source = (session.heard_about_source or "").strip()
+    if not raw or source in {"", "unknown"}:
+        return base
+    return f"{base.rstrip('. ')}. Heard about us: {raw}."
 
 
 def _fallback_summary(session: CallSession) -> str:
@@ -307,6 +331,9 @@ class SupabaseStore:
                 "building_inquiry_id": "",
                 "known_caller_id": "",
                 "known_caller_category": "",
+                "heard_about_raw": "",
+                "heard_about_source": "unknown",
+                "dialed_line_source": "",
                 "updated_at": now,
             },
             prefer="resolution=merge-duplicates,return=minimal",

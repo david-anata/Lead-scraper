@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 
+from voice.attribution import HOW_HEARD_QUESTION, HOW_HEARD_QUESTION_ES
 from voice.knowledge import RECOMMENDED_SECURITY_LINE, load_knowledge_text
 from voice.known_callers import known_caller_instructions
 from voice.screening import DAVID_CALLBACK_LINE, DAVID_HOLD_LINE
@@ -48,6 +49,8 @@ If the caller speaks Spanish, continue in Spanish. Use the Spanish summary in th
 
 # Discovery
 Before you quote or pitch, ask easy questions, one at a time: what kind of event or space, the date, a rough guest count, how long they need it, and what else they need. Pick up their name and a callback number as it comes up. Don't stack those questions.
+Once you know why they called, ask once, in one short sentence: "{HOW_HEARD_QUESTION}" Then go on to the next useful question. If they don't know, change the subject, or skip it, move on and don't ask again. In Spanish, ask once: "{HOW_HEARD_QUESTION_ES}"
+Skip that question for a known tenant, a landlord or legal caller, a VIP or family member, or an existing client. If the call is a lockout, flood, no heat, no air, fire, alarm, or any other safety problem, handle that first and do not ask how they heard.
 If they ask the price right away, answer with the published rate, then go back to one question.
 Offer setup, A/V, or labor at most once, and only if they ask. Security is never required and never mandatory. For a big party or a late night, recommend it once, kindly. Say this: "{RECOMMENDED_SECURITY_LINE}" If they hesitate, ask once more, gently, then stop. Always save security_preference as yes, no, or undecided, because it factors into whether the event is accepted. Don't bring security up for an easy weekday event. Never pressure them to book.
 Weekday meetings and workshops: don't quote a price. Say the team will put a number together, and offer a tour.

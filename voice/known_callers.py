@@ -153,6 +153,8 @@ def known_caller_instructions(session: CallSession) -> str:
         body = "Ring David right away."
     else:
         body = "This number is not tagged yet. Use the normal discovery and screening."
+    if category in {"tenant", "client", "landlord_legal", "vip"}:
+        body += " Do not ask how they heard about us."
     return header + "\n" + body
 
 

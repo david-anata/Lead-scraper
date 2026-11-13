@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
+from voice.attribution import how_heard_nudge
 from voice.calendar_availability import CalendarAvailability
 from voice.knowledge import anata_inc_facts, building_facts, published_addons, published_rates
 from voice.screening import (
@@ -89,6 +90,10 @@ TOOLS: list[dict[str, Any]] = [
                     "enum": ["yes", "no", "undecided"],
                     "description": "Whether the caller wants optional event security. Only for a big party, or if they asked.",
                 },
+                "heard_about": {
+                    "type": "string",
+                    "description": "The caller's own words for how they heard about Anata, only if they answered. Do not guess.",
+                },
             },
             "required": [],
         },
@@ -159,6 +164,10 @@ TOOLS: list[dict[str, Any]] = [
                     "enum": ["yes", "no", "undecided"],
                     "description": "The caller's answer about optional event security, if it came up.",
                 },
+                "heard_about": {
+                    "type": "string",
+                    "description": "The caller's own words for how they heard about Anata, only if they answered. Do not guess.",
+                },
             },
             "required": ["category", "summary", "callback_needed"],
         },
@@ -205,7 +214,7 @@ def execute_tool(
             session.category = "tenant"
         elif session.category == "other" and line != "other":
             session.category = "lead"
-        return {"saved": True, "fields": session.lead_fields()}
+        return {"saved": True, "fields": session.lead_fields(), **how_heard_nudge(session)}
     if name == "request_transfer":
         return _transfer(args, session=session, settings=settings, known_numbers=known_numbers)
     if name == "finish_call":

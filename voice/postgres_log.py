@@ -45,6 +45,9 @@ _CALL_COLUMNS = (
     "building_inquiry_id",
     "known_caller_id",
     "known_caller_category",
+    "heard_about_raw",
+    "heard_about_source",
+    "dialed_line_source",
     "updated_at",
 )
 
@@ -144,6 +147,12 @@ SELECT
   AND has_column_privilege(current_user, 'public.call_log', 'transcript_summary', 'INSERT')
   AND has_column_privilege(current_user, 'public.call_log', 'transcript_summary', 'UPDATE')
   AND has_column_privilege(current_user, 'public.call_log', 'sms_notified', 'UPDATE')
+  AND has_column_privilege(current_user, 'public.call_log', 'heard_about_raw', 'INSERT')
+  AND has_column_privilege(current_user, 'public.call_log', 'heard_about_raw', 'UPDATE')
+  AND has_column_privilege(current_user, 'public.call_log', 'heard_about_source', 'INSERT')
+  AND has_column_privilege(current_user, 'public.call_log', 'heard_about_source', 'UPDATE')
+  AND has_column_privilege(current_user, 'public.call_log', 'dialed_line_source', 'INSERT')
+  AND has_column_privilege(current_user, 'public.call_log', 'dialed_line_source', 'UPDATE')
   AND has_column_privilege(current_user, 'public.building_inquiries', 'source', 'INSERT')
   AND has_column_privilege(current_user, 'public.building_inquiries', 'idempotency_key', 'INSERT')
   AND has_column_privilege(current_user, 'public.building_inquiries', 'payload_json', 'INSERT')
@@ -341,6 +350,9 @@ class PostgresLog:
             "building_inquiry_id": "",
             "known_caller_id": "",
             "known_caller_category": "",
+            "heard_about_raw": "",
+            "heard_about_source": "unknown",
+            "dialed_line_source": line_id,
             "updated_at": now,
         }
         with self._connection() as conn:

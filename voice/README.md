@@ -135,7 +135,9 @@ No staff phone numbers, API keys, or customer rows belong in the repo.
 ## Supabase
 
 `supabase/migrations/20261110220000_voice_call_log.sql` creates
-`public.call_log` only. It is already applied on the agent Supabase project
+`public.call_log`. `20261113030000_call_heard_about.sql` adds
+`heard_about_raw`, `heard_about_source`, and `dialed_line_source`, plus the
+`public.call_source_counts` view. Both are applied on the agent Supabase project
 (anata-agent-staging). Row level security is on, and `anon` / `authenticated`
 have no privileges. The service role key bypasses that, which is how this
 server writes. `agent_app` can read the table the same way it reads the other
@@ -191,6 +193,9 @@ GRANT INSERT, UPDATE (
 GRANT SELECT ON TABLE public.call_log TO voice_logger;
 
 GRANT INSERT, UPDATE (known_caller_id, known_caller_category)
+  ON TABLE public.call_log TO voice_logger;
+
+GRANT INSERT, UPDATE (heard_about_raw, heard_about_source, dialed_line_source)
   ON TABLE public.call_log TO voice_logger;
 
 GRANT SELECT ON TABLE public.known_callers TO voice_logger;
@@ -307,6 +312,37 @@ These decisions are code, not a prompt:
 - A sales transfer can also happen when a prospect has a name, one concrete
   interest (date, guest count, event type, or company), and wants to talk now.
 - If `FORWARD_TO_NUMBER` is empty, every transfer becomes a message.
+
+## How they heard about us
+
+On a new caller, once the receptionist knows why they called, it asks once:
+"By the way, how'd you hear about us?" A shrug or a skipped answer moves the
+call on. Known tenants, landlord or legal callers, VIP or family, and existing
+clients are not asked. A lockout, flood, no heat, no air, fire, alarm, or
+other safety problem is handled first and is not paused for the question.
+
+After the call, the transcript answer is stored on `public.call_log`:
+
+| Column | Meaning |
+| --- | --- |
+| `heard_about_raw` | The caller's words. Empty when they were not asked or did not answer. |
+| `heard_about_source` | `google_search`, `google_maps`, `website`, `peerspace`, `eventective`, `other_event_site`, `referral`, `social`, `returning_customer`, `drive_by`, `other`, or `unknown`. |
+| `dialed_line_source` | The tracking-line label for the number they dialed, or the line id when that number has no label. |
+
+`lead_fields.source` is still that same dialed line. The building inquiry
+payload also carries `heardAbout`, `heardAboutSource`, and `dialedLine`, so
+the existing inquiry page shows them with the rest of the submission. The
+after-call text to David stays one plain sentence and does not include the source.
+
+Counts for a date range, in Mountain time:
+
+```sql
+select heard_about_source, dialed_line_source, sum(call_count) as calls
+from public.call_source_counts
+where call_date between '2026-11-01' and '2026-11-30'
+group by 1, 2
+order by calls desc;
+```
 
 ## Limits
 

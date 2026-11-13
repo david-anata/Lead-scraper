@@ -54,6 +54,8 @@ class CallSession:
     known_caller_category: str = ""
     ring_policy: str = ""
     security_preference: str = ""
+    heard_about_raw: str = ""
+    heard_about_source: str = ""
     turns: list[str] = field(default_factory=list)
     caller_partials: dict[str, str] = field(default_factory=dict)
     finalized: bool = False
@@ -91,6 +93,10 @@ class CallSession:
         if isinstance(extra, str) and extra.strip():
             piece = extra.strip()[:1000]
             self.notes = f"{self.notes} {piece}".strip()[:2000]
+        for key in ("heard_about", "heard_about_raw"):
+            heard = args.get(key)
+            if isinstance(heard, str) and heard.strip():
+                self.heard_about_raw = heard.strip()[:500]
         guests = args.get("guest_count")
         if isinstance(guests, (int, float)) and not isinstance(guests, bool):
             self.guest_count = str(int(guests))
@@ -130,6 +136,10 @@ class CallSession:
         source = self.line.source.strip()
         if source:
             fields["source"] = source
+        if self.heard_about_raw.strip():
+            fields["heard_about"] = self.heard_about_raw.strip()
+        if self.heard_about_source.strip():
+            fields["heard_about_source"] = self.heard_about_source.strip()
         return fields
 
     def duration_seconds(self, now: float | None = None) -> int:
