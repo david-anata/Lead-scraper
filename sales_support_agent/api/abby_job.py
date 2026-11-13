@@ -128,6 +128,27 @@ def _maybe_analytics_backfill() -> dict[str, Any] | None:
         return {"ok": False, "ran": False, "reason": "backfill skipped"}
 
 
+def _maybe_apply_yes_cta() -> dict[str, Any]:
+    """One live rewrite of the cold asks. Later ticks leave Instantly alone."""
+
+    try:
+        from outbound_yes_cta import maybe_apply_yes_cta
+        from sales_support_agent.models.database import get_engine
+
+        result = maybe_apply_yes_cta(get_engine())
+        if isinstance(result, dict):
+            # The stored report has the full bodies. The cron response stays short.
+            return {
+                "ok": bool(result.get("ok")),
+                "skipped": bool(result.get("skipped")),
+                "status": result.get("status") or "",
+                "reason": result.get("reason") or result.get("error") or "",
+            }
+    except Exception:  # noqa: BLE001
+        logger.exception("[abby] yes-cta apply hook failed")
+    return {"ok": False, "skipped": True, "reason": "hook failed"}
+
+
 def _maybe_register_webhook(request: Request) -> dict[str, Any]:
     """Register Abby's Instantly webhook after deploy. Missing keys skip quietly."""
 
@@ -149,6 +170,7 @@ def run_scheduled_abby(request: Request) -> dict:
         "details": details,
         "enrich_via_abby": _run_enrich_after_abby(),
         "webhook_registration": _maybe_register_webhook(request),
+        "yes_cta": _maybe_apply_yes_cta(),
     }
     backfill = _maybe_analytics_backfill()
     if backfill is not None:

@@ -293,11 +293,13 @@ first live send. `GET /api/jobs/abby/deck-sends?since=` with
 `X-Internal-Api-Key` lists sends since that time that still have no founder
 reply on the thread.
 
-Cold steps ask for a small yes instead of a call. After deploy, one call to
-`POST /api/jobs/abby/apply-yes-cta` (scheduler auth) rewrites the live
-campaign steps and pauses subsequence `0c2f113f-ebed-4890-92df-c241d925dcdf`.
-It is not on the cron. Instantly's own AI interest label can still enroll
-that subsequence until the pause has run.
+Cold steps ask for a small yes instead of a call. The five-minute Abby job
+rewrites the live campaign steps once and pauses subsequence
+`0c2f113f-ebed-4890-92df-c241d925dcdf`. The before/after report is stored on
+`abby_copy_applies` (`apply_key = yes-cta-v1`). A later tick does not call
+Instantly again. `POST /api/jobs/abby/apply-yes-cta` is the same rewrite,
+for a manual run. Instantly's own AI interest label can still enroll that
+subsequence until the pause has run.
 
 `GET /api/jobs/abby/missed-replies` runs hourly. It sends the reply for a
 human message Abby missed, ignored, or held, except a send-info hold and a

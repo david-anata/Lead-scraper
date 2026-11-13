@@ -255,6 +255,27 @@ class _Instantly:
         return 200, {"status": "paused"}
 
 
+def test_yes_cta_apply_runs_once_and_retries_after_a_failure():
+    from sqlalchemy import create_engine
+
+    from outbound_yes_cta import maybe_apply_yes_cta
+
+    engine = create_engine("sqlite://")
+    calls = {"n": 0}
+
+    def fail_once():
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return {"campaigns": [], "subsequence": {}, "errors": [{"error": "read 500"}]}
+        return {"campaigns": [{"name": "Trial Offer", "patched": True}], "subsequence": {"paused": True}, "errors": []}
+
+    first = maybe_apply_yes_cta(engine, apply=fail_once)
+    second = maybe_apply_yes_cta(engine, apply=fail_once)
+    third = maybe_apply_yes_cta(engine, apply=fail_once)
+    assert first["ok"] is False and second["ok"] is True and calls["n"] == 2
+    assert third["skipped"] is True and calls["n"] == 2
+
+
 def test_apply_rewrites_the_ask_and_pauses_the_subsequence_once():
     client = _Instantly()
     report = apply_yes_cta(client, campaigns=(("Trial Offer", "camp-1"),), subsequence_id="0c2f113f-ebed-4890-92df-c241d925dcdf")

@@ -38,14 +38,24 @@ CREATE TABLE IF NOT EXISTS abby_missed_reply_fixes (
 CREATE INDEX IF NOT EXISTS abby_missed_reply_fixes_sent_idx
     ON abby_missed_reply_fixes (outcome, sent_at);
 
+CREATE TABLE IF NOT EXISTS abby_copy_applies (
+    apply_key TEXT PRIMARY KEY,
+    status TEXT NOT NULL,
+    report TEXT NOT NULL DEFAULT '',
+    applied_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
 ALTER TABLE abby_deck_sends ENABLE ROW LEVEL SECURITY;
 ALTER TABLE abby_missed_reply_fixes ENABLE ROW LEVEL SECURITY;
+ALTER TABLE abby_copy_applies ENABLE ROW LEVEL SECURITY;
 
 REVOKE ALL ON TABLE abby_deck_sends FROM anon, authenticated;
 REVOKE ALL ON TABLE abby_missed_reply_fixes FROM anon, authenticated;
+REVOKE ALL ON TABLE abby_copy_applies FROM anon, authenticated;
 
 GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE abby_deck_sends TO agent_app;
 GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE abby_missed_reply_fixes TO agent_app;
+GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE abby_copy_applies TO agent_app;
 GRANT USAGE, SELECT ON SEQUENCE abby_deck_sends_id_seq TO agent_app;
 
 DO $$
@@ -61,6 +71,15 @@ DO $$
 BEGIN
     CREATE POLICY abby_missed_reply_fixes_agent_app
         ON abby_missed_reply_fixes FOR ALL TO agent_app
+        USING (true) WITH CHECK (true);
+EXCEPTION
+    WHEN duplicate_object THEN NULL;
+END $$;
+
+DO $$
+BEGIN
+    CREATE POLICY abby_copy_applies_agent_app
+        ON abby_copy_applies FOR ALL TO agent_app
         USING (true) WITH CHECK (true);
 EXCEPTION
     WHEN duplicate_object THEN NULL;

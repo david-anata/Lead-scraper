@@ -10,9 +10,12 @@ rewritten. A second sequence that also sends on a yes would race Abby's deck.
 
 from __future__ import annotations
 
+import os
 import re
 from html import unescape
 from typing import Any, Callable, Optional
+
+from sqlalchemy import text
 
 from outbound_cold_sequence import cold_urls
 
@@ -177,7 +180,11 @@ def apply_yes_cta(client: Any, *, campaigns: Optional[tuple[tuple[str, str], ...
             report["errors"].append({"campaign": name, "error": f"read {status}"})
             continue
         steps = ((payload.get("sequences") or [{}])[0].get("steps") or []) if payload.get("sequences") else []
-        new_steps, changes = rewrite_steps(steps)
+        try:
+            new_steps, changes = rewrite_steps(steps)
+        except ValueError as exc:
+            report["errors"].append({"campaign": name, "error": str(exc)})
+            continue
         patched = False
         if changes:
             try:
@@ -266,3 +273,114 @@ def apply_with_instantly(api_key: str, post: Optional[Callable[..., Any]] = None
             return response.status_code, response.json() if response.content else None
 
     return apply_yes_cta(_Client())
+
+
+APPLY_KEY = "yes-cta-v1"
+_APPLY_TABLE = "abby_copy_applies"
+
+
+def ensure_apply_table(engine: Any) -> None:
+    """The migration creates this on Vercel. Tests and local runs create it here."""
+
+    import os
+
+    dialect = str(getattr(getattr(engine, "dialect", None), "name", "") or "")
+    if os.getenv("VERCEL") and dialect == "postgresql":
+        return
+    stamp = "TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP" if dialect == "postgresql" else "TIMESTAMP DEFAULT CURRENT_TIMESTAMP"
+    with engine.begin() as conn:
+        conn.execute(text(
+            f"""
+            CREATE TABLE IF NOT EXISTS {_APPLY_TABLE} (
+                apply_key TEXT PRIMARY KEY,
+                status TEXT NOT NULL,
+                report TEXT NOT NULL DEFAULT '',
+                applied_at {stamp}
+            )
+            """
+        ))
+
+
+def maybe_apply_yes_cta(engine: Any, *, apply: Optional[Callable[[], dict[str, Any]]] = None) -> dict[str, Any]:
+    """Rewrite the live asks once. A later tick does not call Instantly again.
+
+    A failed attempt stays retryable. The report, including every before/after
+    body, is stored on ``abby_copy_applies`` for the operator to read back.
+    """
+
+    from sqlalchemy import text as sql_text
+
+    ensure_apply_table(engine)
+    with engine.connect() as conn:
+        row = conn.execute(sql_text(
+            f"SELECT status FROM {_APPLY_TABLE} WHERE apply_key = :k"
+        ), {"k": APPLY_KEY}).fetchone()
+    if row and str(row[0]) == "applied":
+        return {"ok": True, "skipped": True, "reason": "already applied"}
+
+    from sales_support_agent.services.job_lease import (
+        claim_scheduled_job,
+        ensure_job_lease_schema,
+        finish_scheduled_job,
+    )
+
+    if not os.getenv("VERCEL"):
+        ensure_job_lease_schema(engine)
+    lease = claim_scheduled_job(
+        engine, job_key="abby_yes_cta", run_key=APPLY_KEY, lease_minutes=20,
+    )
+    if lease is None:
+        return {"ok": True, "skipped": True, "reason": "apply already running"}
+
+    runner = apply or _apply_with_configured_key
+    try:
+        report = runner()
+    except Exception as exc:  # noqa: BLE001
+        finish_scheduled_job(engine, lease, status="failed", details={"error": type(exc).__name__})
+        _save_apply(engine, "failed", {"error": type(exc).__name__})
+        return {"ok": False, "error": type(exc).__name__}
+    errors = list((report or {}).get("errors") or [])
+    status = "failed" if errors else "applied"
+    _save_apply(engine, status, report or {})
+    finish_scheduled_job(engine, lease, status="succeeded" if status == "applied" else "failed", details={"errors": len(errors)})
+    if status == "applied":
+        _keep_apply_lease(engine, lease.owner_token)
+    return {"ok": status == "applied", "status": status, "report": report}
+
+
+def _apply_with_configured_key() -> dict[str, Any]:
+    import outbound_instantly_push as instantly_push
+
+    return apply_with_instantly(instantly_push.api_key())
+
+
+def _save_apply(engine: Any, status: str, report: dict[str, Any]) -> None:
+    import json
+
+    from sqlalchemy import text as sql_text
+
+    payload = json.dumps(report, default=str)
+    with engine.begin() as conn:
+        conn.execute(sql_text(
+            f"""
+            INSERT INTO {_APPLY_TABLE} (apply_key, status, report)
+            VALUES (:k, :s, :r)
+            ON CONFLICT (apply_key) DO UPDATE SET status = excluded.status, report = excluded.report,
+                applied_at = CURRENT_TIMESTAMP
+            """
+        ), {"k": APPLY_KEY, "s": status, "r": payload})
+
+
+def _keep_apply_lease(engine: Any, owner_token: str) -> None:
+    """A succeeded lease is reclaimable once it expires. Keep this one shut."""
+
+    from sqlalchemy import text as sql_text
+
+    with engine.begin() as conn:
+        conn.execute(sql_text(
+            """
+            UPDATE scheduled_job_runs
+               SET lease_expires_at = '2099-01-01T00:00:00+00:00'
+             WHERE job_key = 'abby_yes_cta' AND run_key = :run AND owner_token = :owner
+            """
+        ), {"run": APPLY_KEY, "owner": owner_token})
