@@ -217,6 +217,32 @@ def test_deck_list_requires_the_internal_key(monkeypatch):
     assert ok.status_code == 200 and ok.json()["sends"] == [{"lead": "ann@huppy.com"}]
 
 
+def test_live_step_one_ask_moves_above_the_signature():
+    before = (
+        "Hi {{firstName}},\n\n{{personalization}}\n\n"
+        "Worth a quick intro with our founder, David, or would a short strategy deck for {{companyName}} help first?\n\n"
+        "Abby\nAccount Specialist, Anata\n"
+        "I found something that could help your Amazon growth. Can I send it to you?"
+    )
+    after = rewrite_body(before, 0)
+    assert "intro with our founder" not in after
+    assert "Worth a chat" not in after
+    assert "{{companyName}}'s Amazon growth" in after
+    assert after.index("Can I send it to you?") < after.index("Account Specialist")
+    again = rewrite_body(after, 0)
+    assert again.count("Can I send it to you?") == 1
+
+    listed = (
+        "Since then we've added a free 14-day trial.\n\n"
+        "Is Amazon still on your list?\n\nAbby\nAccount Specialist, Anata\n"
+        "I found something that could help your Amazon growth. Can I send it to you?"
+    )
+    cleaned = rewrite_body(listed, 0)
+    assert "still on your list?" in cleaned
+    assert cleaned.rstrip().endswith("Account Specialist, Anata")
+    assert "Can I send it to you?" not in cleaned
+
+
 def test_cold_rewrite_keeps_the_opener_and_drops_the_calendar():
     before = (
         "Hi {{firstName}},\n\n"
