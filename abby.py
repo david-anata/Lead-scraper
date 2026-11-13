@@ -31,11 +31,17 @@ something outside the offer.
   low confidence -> no reply, ask David in Slack.
   asked whether she is AI -> she is an AI account specialist on David's team.
   out of office -> no reply now. A follow-up is scheduled for the day after
-      the parsed return date, or 7 days when no date is found.
+      the parsed return date, or 7 days when no date is found. A missing
+      auto-reply header still counts when the subject starts with Automatic
+      reply, Out of Office, Autoreply, or OOO, or when the body shows
+      parental, maternity, or paternity leave, or at least two absence
+      phrases (annual leave, returning, limited email access, and the same
+      family) and does not ask us a question or show interest.
   departed employee / automated forward -> ignore. No reply, no David CC,
       no Interested status, no follow-up. A departed contact is recorded so
       the brand can be tried again later. Nothing is sent. "I have left" and
       "left the business" count, including when the subject starts with OOO.
+      "No longer working at" and "no longer here" count the same way.
       A subject that is only OOO, with no departed wording, stays out of office.
       If Instantly marked the message as human, the ignore is posted to Slack.
 """
@@ -46,6 +52,7 @@ import json
 import logging
 import os
 import re
+import unicodedata
 from dataclasses import dataclass, field
 from typing import Any, Callable, NamedTuple, Optional
 
@@ -324,10 +331,17 @@ _DEPARTED_PHRASES = (
     "i no longer work",
     "no longer employed",
     "no longer part of",
+    "no longer working at",
+    "no longer working for",
+    "no longer here",
     "left the business",
     "no longer monitored",
     "email is no longer",
     "inbox is no longer",
+    "mailbox is not monitored",
+    "inbox is not monitored",
+    "email is not monitored",
+    "this email is not monitored",
     "i have moved on",
     "i've moved on",
 )
@@ -367,9 +381,61 @@ _NAME_STOP = _ROLE_LOCALS | {
 _OOO_PHRASES = (
     "out of the office",
     "out of office",
+    "out-of-office",
     "away from the office",
     "away from my office",
     "left the office",
+)
+# One of these is enough when the note does not also answer us. A human who
+# mentions parental leave and then asks for the plan is not one of these.
+_GATED_OOO_PHRASES = (
+    "parental leave",
+    "maternity leave",
+    "paternity leave",
+    "sans acces a mes courriels",
+    "sans acces a mes e-mails",
+    "sans acces a mes emails",
+    "sans acces aux courriels",
+    "absence du bureau",
+)
+# Weaker absence lines. Two of them, and no question or interest aimed at us,
+# is an out-of-office. One line plus a real answer stays with the model.
+_OOO_WEAK_PHRASES = (
+    "i will be out",
+    "i'll be out",
+    "i will be away",
+    "i'll be away",
+    "returning on",
+    "returning to work",
+    "returning to the office",
+    "return to the office",
+    "back in the office",
+    "limited access to email",
+    "limited access to my email",
+    "on annual leave",
+    "on leave",
+    "on vacation",
+    "on holiday",
+    "on pto",
+    "no access to email",
+    "no access to my email",
+    "without access to email",
+    "without access to my email",
+    "responses may be delayed",
+    "response may be delayed",
+)
+# A question or a yes aimed at Anata. "Please email my colleague" is not one.
+_HUMAN_REPLY_RE = re.compile(
+    r"\?"
+    r"|\b(?:interested|not interested|tell me more|sounds good|"
+    r"how much|what(?:'s| is) (?:the )?(?:price|cost)|"
+    r"i(?:'m| am) interested)\b"
+    r"|\b(?:can|could|would) you (?:send|share|tell|explain|quote)\b"
+    r"|\b(?:please send|send) (?:it|me|us)\b"
+    r"|\bsend (?:me |us )?(?:the|your) (?:plan|deck|info|information|details|pricing)\b"
+    r"|\bi(?:'d| would) like\b|\bwe(?:'d| would) like\b"
+    r"|\bhappy to (?:chat|talk|review|look|jump|hop)\b",
+    re.I,
 )
 _AUTO_PHRASES = (
     "please direct inquiries",
@@ -472,10 +538,12 @@ def header_says_auto(headers: Any) -> bool:
 
 
 def _subject_says_auto(subject: str) -> bool:
-    subject = _bare_subject(subject)
+    subject = _notice_text(_bare_subject(subject))
     return subject.startswith((
-        "automatic reply", "auto-reply", "autoreply", "auto reply",
-        "out of office", "out of the office",
+        "automatic reply", "automatic response",
+        "auto-reply", "autoreply", "auto reply",
+        "out of office", "out of the office", "out-of-office",
+        "reponse automatique", "message d'absence",
     ))
 
 
@@ -534,10 +602,42 @@ def _role_contacts(text: str) -> list[str]:
     return found
 
 
+def _notice_text(text: str) -> str:
+    """Lowercase, straight quotes, accents folded, whitespace collapsed."""
+
+    straight = (text or "").replace("\u2019", "'").replace("\u2018", "'").replace("\u201b", "'")
+    folded = unicodedata.normalize("NFKD", straight)
+    plain = "".join(ch for ch in folded if not unicodedata.combining(ch))
+    return re.sub(r"\s+", " ", plain).strip().lower()
+
+
+def _contains_phrase(text: str, phrase: str) -> bool:
+    """A whole phrase, with an optional plural s on the last word."""
+
+    return re.search(rf"(?<!\w){re.escape(phrase)}s?(?!\w)", text) is not None
+
+
 def _says_departed(low: str) -> bool:
     if any(phrase in low for phrase in _DEPARTED_PHRASES):
         return True
     return _LEFT_RE.search(low) is not None
+
+
+def _human_reply_signal(text: str) -> bool:
+    """A question or interest aimed at us, not a request to contact someone else."""
+
+    return _HUMAN_REPLY_RE.search(text or "") is not None
+
+
+def _weak_ooo_hits(text: str) -> list[str]:
+    hits: list[str] = []
+    for phrase in sorted(_OOO_WEAK_PHRASES, key=len, reverse=True):
+        if not _contains_phrase(text, phrase):
+            continue
+        if any(_contains_phrase(earlier, phrase) for earlier in hits):
+            continue
+        hits.append(phrase)
+    return hits
 
 
 def _public_excerpt(text: str) -> str:
@@ -676,7 +776,8 @@ def automated_notice(message: Any = "", *, lead_email: str = "", subject: str = 
         is_auto_reply = flag_m
     own = _own_words(text)
     # Mail clients wrap the template mid-phrase ("concluded\nmy role").
-    low = re.sub(r"\s+", " ", f"{_bare_subject(subject)}\n{own}").lower()
+    low = _notice_text(f"{_bare_subject(subject)}\n{own}")
+    body = _notice_text(own)
     suggested = _suggested(own, lead_email)
     if _says_departed(low):
         return _notice("departed", "automatic reply: departed employee", lead_email, suggested)
@@ -688,6 +789,13 @@ def automated_notice(message: Any = "", *, lead_email: str = "", subject: str = 
         return _notice("auto_reply", "automatic reply: auto-reply header", lead_email, suggested)
     if any(phrase in low for phrase in _AUTO_PHRASES):
         return _notice("auto_reply", "automatic reply: automated message", lead_email, suggested)
+    # Header-less absence notes. A single soft phrase, or any phrase next to
+    # a question or a yes, is left for the model so a real answer still sends.
+    if not _human_reply_signal(body):
+        if any(_contains_phrase(low, phrase) for phrase in _GATED_OOO_PHRASES):
+            return _notice("out_of_office", "automatic reply: out of office", lead_email, suggested)
+        if len(_weak_ooo_hits(body)) >= 2:
+            return _notice("out_of_office", "automatic reply: out of office", lead_email, suggested)
     return None
 
 

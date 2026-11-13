@@ -1837,10 +1837,13 @@ def should_reopen_handled(action: str, category: str, reason: str, detail: str) 
     return action in {"hold", "ignore", "skip", ""}
 
 
-def _claim_fix(engine, email_id: str, *, lead: str, campaign_id: str, previous: str) -> bool:
-    """Own this fix. A sent or still-held row is not taken again.
+def _claim_fix(engine, email_id: str, *, lead: str, campaign_id: str, previous: str,
+               reclaim_held: bool = False) -> bool:
+    """Own this fix. A sent row is not taken again.
 
-    A failed deck build can be retried twice more. Two workers cannot both own it.
+    A still-held row is taken only when ``reclaim_held`` is set, for a hold
+    the auto-reply check now recognizes. A failed deck build can be retried
+    twice more. Two workers cannot both own it.
     """
 
     with engine.begin() as conn:
@@ -1849,6 +1852,12 @@ def _claim_fix(engine, email_id: str, *, lead: str, campaign_id: str, previous: 
         ), {"i": email_id}).fetchone()
         if row:
             outcome, attempts = str(row[0] or ""), int(row[1] or 0)
+            if outcome == "still_held" and reclaim_held:
+                updated = conn.execute(text(
+                    "UPDATE abby_missed_reply_fixes SET attempts = attempts + 1, outcome = 'pending' "
+                    "WHERE email_id = :i AND outcome = 'still_held'"
+                ), {"i": email_id}).rowcount
+                return bool(updated)
             if outcome != "failed" or attempts >= 3:
                 return False
             updated = conn.execute(text(
@@ -1895,7 +1904,8 @@ def run_missed_replies(engine, *, client: Any, campaign_ids: Iterable[str],
     """Send the reply Abby missed. No Slack. One send per email id.
 
     Send-info holds and true auto-replies, out-of-office notes, and departed
-    notices are left alone. A second run does not send again.
+    notices are left alone. A hold that the auto-reply check now recognizes
+    is recorded as that ignore and is not sent. A second run does not send again.
     """
 
     now = now or datetime.now(timezone.utc)
@@ -1924,10 +1934,8 @@ def run_missed_replies(engine, *, client: Any, campaign_ids: Iterable[str],
             lead = str(email.get("lead") or email.get("from_address_email") or "").lower()
             if not email_id or is_team(lead) or is_team(_sender(email)):
                 continue
-            if abby.automated_notice(email, lead_email=lead):
-                summary["skipped"] += 1
-                continue
-            if abby.send_info_route(email, lead_email=lead):
+            notice = abby.automated_notice(email, lead_email=lead)
+            if notice is None and abby.send_info_route(email, lead_email=lead):
                 summary["skipped"] += 1
                 continue
             stored = _handled_decision(engine, email_id)
@@ -1938,7 +1946,15 @@ def run_missed_replies(engine, *, client: Any, campaign_ids: Iterable[str],
                 if not should_reopen_handled(action, category, detail, detail):
                     summary["skipped"] += 1
                     continue
-            if not _claim_fix(engine, email_id, lead=lead, campaign_id=str(campaign_id or ""), previous=previous):
+            elif notice is not None:
+                # The five-minute poll records a new auto-reply. This pass
+                # only corrects one that was already held or ignored.
+                summary["skipped"] += 1
+                continue
+            if not _claim_fix(
+                engine, email_id, lead=lead, campaign_id=str(campaign_id or ""),
+                previous=previous, reclaim_held=notice is not None,
+            ):
                 summary["skipped"] += 1
                 continue
             summary["seen"] += 1

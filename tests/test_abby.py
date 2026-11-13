@@ -247,6 +247,83 @@ def test_auto_reply_header_blocks_a_named_forward():
     _assert_ignored(via_header)
 
 
+def _no_model(prompt):
+    raise AssertionError(prompt)
+
+
+@pytest.mark.parametrize("subject,body", [
+    ("Automatic reply: away next week", "Thank you for your email. I will reply when I am back."),
+    ("Out of Office", "Thanks for writing."),
+    ("Autoreply: parental leave", "Thank you for your message."),
+    ("OOO until Monday", "Back Monday."),
+])
+def test_headerless_subject_markers_are_auto_replies(subject, body):
+    message = {
+        "ue_type": 2, "subject": subject,
+        "headers": {"Auto-Submitted": "no"}, "body": {"text": body},
+    }
+    result = abby.think(
+        [message], lead_email="pat@brand.com", company="Brand", first_name="Pat",
+        thread_categories=[], llm=_no_model,
+    )
+    _assert_ignored(result)
+    assert result.reply == "" and result.interest is None
+
+
+@pytest.mark.parametrize("body,kind", [
+    ("Hi, I'm on annual leave, returning to work on 2 November. Kind regards, Tom", "out_of_office"),
+    ("Thanks for your email. I\u2019m currently on leave and will have limited access to emails while I\u2019m away.", "out_of_office"),
+    ("I will be out next week with limited access to email. I am returning on 3 March.", "out_of_office"),
+    ("Thank you for your email. I am on parental leave until March and will read mail when I return.", "out_of_office"),
+    ("Bonjour, je dois m'absenter sans acc\u00e8s \u00e0 mes courriels. Les messages seront lus \u00e0 mon retour.", "out_of_office"),
+    ("Please note that I am no longer working at Northwind as of May. Contact the team through the main site.", "departed"),
+    ("Jamie is no longer here. This inbox is not monitored.", "departed"),
+    ("This mailbox is not monitored. Morgan has left the company.", "departed"),
+])
+def test_headerless_ooo_and_departed_bodies_skip_the_model(body, kind):
+    message = {
+        "ue_type": 2, "subject": "Re: Amazon plan",
+        "headers": {"Auto-Submitted": "no"}, "body": {"text": body},
+    }
+    result = abby.think(
+        [message], lead_email="pat@brand.com", company="Brand", first_name="Pat",
+        thread_categories=[], llm=_no_model,
+    )
+    _assert_ignored(result)
+    assert kind.replace("_", " ") in result.reason or (kind == "out_of_office" and "out of office" in result.reason)
+    assert (result.schedule_kind == "out_of_office") is (kind == "out_of_office")
+
+
+def test_a_thank_you_without_absence_evidence_is_not_an_auto_reply():
+    message = {
+        "ue_type": 2, "subject": "Re: Amazon",
+        "headers": {"Auto-Submitted": "no"},
+        "body": {"text": "Thank you for your email. I will reply when I am back."},
+    }
+    assert abby.automated_notice(message, lead_email="pat@brand.com") is None
+
+
+@pytest.mark.parametrize("body", [
+    "I'll be out next week and back in the office Monday, but yes, please send the plan. What does the trial cost?",
+    "I was on vacation and I'm back. I'm interested. Can you send the pricing?",
+    "I'm on annual leave, returning to work Monday, but I'd like the plan.",
+    "I will be out Thursday. Can you send the pricing before then?",
+    "Thanks for the note. I just got back from a trip and I'm happy to review. Send me the plan.",
+])
+def test_time_off_with_a_real_answer_is_not_an_auto_reply(body):
+    message = {
+        "ue_type": 2, "is_auto_reply": 0, "subject": "Re: Amazon plan",
+        "headers": {}, "body": {"text": body},
+    }
+    assert abby.automated_notice(message, lead_email="ann@huppy.com") is None
+    result = abby.decide(
+        {"category": "auto_reply", "confidence": 0.95, "reply": None},
+        lead_email="ann@huppy.com", thread_categories=[], message=message,
+    )
+    assert result.action == "hold" and result.interest is None
+    assert result.reason == "model said auto-reply without auto-reply evidence"
+
+
 def test_instantly_auto_reply_flag_and_subject_are_ignored():
     flagged = {"ue_type": 2, "is_auto_reply": 1,
                "body": {"text": "Looping in my colleague Dana at dana@garbarinishop.com."}}

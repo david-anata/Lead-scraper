@@ -177,6 +177,106 @@ def test_fixer_sends_once_and_leaves_a_send_info_hold(monkeypatch):
     assert held_action == "hold"
 
 
+def test_fixer_reclassifies_a_held_headerless_auto_reply_and_does_not_send(monkeypatch):
+    monkeypatch.setenv("ABBY_MODE", "live")
+    monkeypatch.setenv("ABBY_TAKEOVER_AT", "2026-10-26T00:00:00Z")
+    monkeypatch.setenv("ABBY_START_AT", "2026-10-26T00:00:00Z")
+    engine = create_engine("sqlite://")
+    runner.ensure_tables(engine)
+    ooo = email(
+        "Hi, I'm on annual leave, returning to work on 2 November. Kind regards, Tom"
+    )
+    ooo["lead"] = "tom@brand.com"
+    ooo["from_address_email"] = "tom@brand.com"
+    ooo["is_auto_reply"] = 0
+    ooo["subject"] = "Re: Amazon plan"
+    ooo["headers"] = {}
+    gone = email("Please note that I am no longer working at Northwind. This inbox is not monitored.")
+    gone["id"] = "e2"
+    gone["thread_id"] = "t2"
+    gone["lead"] = "larah@brand.com"
+    gone["from_address_email"] = "larah@brand.com"
+    gone["is_auto_reply"] = 0
+    gone["subject"] = "Re: Amazon plan"
+    gone["headers"] = {}
+    client = FakeClient([ooo, gone], {"t1": [ooo], "t2": [gone]})
+    with engine.begin() as conn:
+        conn.execute(text(
+            "INSERT INTO abby_handled (email_id, thread_id, lead, category, action, mode, reply_id, detail, campaign_id) "
+            "VALUES ('e1', 't1', 'tom@brand.com', 'auto_reply', 'hold', 'live', '', "
+            "'model said auto-reply without auto-reply evidence', 'camp'), "
+            "('e2', 't2', 'larah@brand.com', 'auto_reply', 'hold', 'live', '', "
+            "'model said auto-reply without auto-reply evidence', 'camp')"
+        ))
+        conn.execute(text(
+            "INSERT INTO abby_missed_reply_fixes (email_id, lead, campaign_id, previous_action, outcome, attempts) "
+            "VALUES ('e1', 'tom@brand.com', 'camp', 'hold', 'still_held', 1), "
+            "('e2', 'larah@brand.com', 'camp', 'hold', 'still_held', 1)"
+        ))
+
+    def think(thread, **kwargs):
+        return abby.think(thread, llm=_no_model, **kwargs)
+
+    first = runner.run_missed_replies(
+        engine, client=client, campaign_ids=["camp"], now=NOW, think=think,
+    )
+    second = runner.run_missed_replies(
+        engine, client=client, campaign_ids=["camp"], now=NOW, think=think,
+    )
+    assert client.replies == [] and client.interest == []
+    assert first["sent"] == 0 and second["sent"] == 0
+    with engine.connect() as conn:
+        rows = conn.execute(text(
+            "SELECT email_id, action, detail FROM abby_handled ORDER BY email_id"
+        )).fetchall()
+        outcomes = conn.execute(text(
+            "SELECT email_id, outcome FROM abby_missed_reply_fixes ORDER BY email_id"
+        )).fetchall()
+        kinds = conn.execute(text(
+            "SELECT lead, kind FROM abby_followups_scheduled ORDER BY lead"
+        )).fetchall()
+    assert [row[1] for row in rows] == ["ignore", "ignore"]
+    assert "out of office" in rows[0][2].lower()
+    assert "departed" in rows[1][2].lower()
+    assert outcomes == [("e1", "skipped"), ("e2", "skipped")]
+    assert kinds == [("tom@brand.com", "out_of_office")]
+
+
+def _no_model(_prompt):
+    raise AssertionError("the fixer must not ask the model")
+
+
+def test_fixer_does_not_reopen_a_still_held_human_question(monkeypatch):
+    monkeypatch.setenv("ABBY_MODE", "live")
+    monkeypatch.setenv("ABBY_TAKEOVER_AT", "2026-10-26T00:00:00Z")
+    monkeypatch.setenv("ABBY_START_AT", "2026-10-26T00:00:00Z")
+    engine = create_engine("sqlite://")
+    runner.ensure_tables(engine)
+    question = email("I will be out Thursday. Can you send the pricing before then?")
+    question["is_auto_reply"] = 0
+    question["subject"] = "Re: Amazon plan"
+    client = FakeClient([question], {"t1": [question]})
+    with engine.begin() as conn:
+        conn.execute(text(
+            "INSERT INTO abby_handled (email_id, thread_id, lead, category, action, mode, reply_id, detail, campaign_id) "
+            "VALUES ('e1', 't1', 'ann@huppy.com', 'auto_reply', 'hold', 'live', '', "
+            "'model said auto-reply without auto-reply evidence', 'camp')"
+        ))
+        conn.execute(text(
+            "INSERT INTO abby_missed_reply_fixes (email_id, lead, campaign_id, previous_action, outcome, attempts) "
+            "VALUES ('e1', 'ann@huppy.com', 'camp', 'hold', 'still_held', 1)"
+        ))
+    out = runner.run_missed_replies(
+        engine, client=client, campaign_ids=["camp"], now=NOW,
+        think=lambda *_a, **_k: (_ for _ in ()).throw(AssertionError("still held")),
+    )
+    assert out["sent"] == 0 and client.replies == []
+    with engine.connect() as conn:
+        action = conn.execute(text("SELECT action FROM abby_handled")).scalar()
+        outcome = conn.execute(text("SELECT outcome FROM abby_missed_reply_fixes")).scalar()
+    assert action == "hold" and outcome == "still_held"
+
+
 def test_list_hides_a_thread_the_founder_already_answered():
     engine = create_engine("sqlite://")
     runner.ensure_tables(engine)
