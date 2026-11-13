@@ -4,7 +4,7 @@ Each active campaign with filters is queried server-side. Domains already
 in ``outbound_contacted_domains`` are skipped. New leads are stored with
 that campaign's recipe key. Volume stays inside the daily company cap
 and stops when the daily credit cap is already spent. The approved
-ceilings are 600 companies and 228 Prospeo credits. A lower env value
+ceilings are 825 companies and 396 Prospeo credits. A lower env value
 still wins, so production stays at its current caps until those env
 values are set.
 
@@ -36,10 +36,10 @@ import outbound_pipeline as pipeline
 
 logger = logging.getLogger(__name__)
 
-# 600 companies, and credits at the observed 114 per 300 companies.
-# 114 * 600 / 300 = 228. Env can set a lower number. It cannot set a higher one.
-COMPANY_CAP = 600
-_CREDITS_PER_300_COMPANIES = 114
+# 825 companies, and credits at 144 per 300 companies.
+# 144 * 825 / 300 = 396. Env can set a lower number. It cannot set a higher one.
+COMPANY_CAP = 825
+_CREDITS_PER_300_COMPANIES = 144
 CREDIT_CAP = _CREDITS_PER_300_COMPANIES * COMPANY_CAP // 300
 _SOURCE_ORDER = ("amz_on", "amz_off", "plan_upgrade", "replatform")
 # amz_off sits next to amz_on so each run gives both a turn. plan_upgrade
@@ -94,7 +94,7 @@ def company_room_today(
 ) -> tuple[int, str]:
     """How many new companies sourcing may record right now.
 
-    The ceiling is the smaller of 600 and ``OUTBOUND_ENRICH_DAILY_COMPANIES``
+    The ceiling is the smaller of 825 and ``OUTBOUND_ENRICH_DAILY_COMPANIES``
     when that variable is set, minus companies already enriched today.
     When today's Prospeo credits are already at the credit cap, the room is
     zero. Sourcing itself does not spend credits.

@@ -30,6 +30,36 @@ def engine():
     return create_engine("sqlite://")
 
 
+def test_approved_ceilings_are_825_companies_and_396_credits(engine, monkeypatch):
+    """Env can lower the company and credit ceilings. It cannot raise them."""
+
+    assert source.COMPANY_CAP == 825
+    assert source._CREDITS_PER_300_COMPANIES == 144
+    assert source.CREDIT_CAP == 396
+    assert source.CREDIT_CAP == source._CREDITS_PER_300_COMPANIES * source.COMPANY_CAP // 300
+
+    monkeypatch.delenv("OUTBOUND_ENRICH_DAILY_COMPANIES", raising=False)
+    monkeypatch.delenv("OUTBOUND_ENRICH_DAILY_CREDITS", raising=False)
+    assert source.sourcing_company_cap() == 825
+
+    monkeypatch.setenv("OUTBOUND_ENRICH_DAILY_COMPANIES", "900")
+    assert source.sourcing_company_cap() == 825
+    monkeypatch.setenv("OUTBOUND_ENRICH_DAILY_COMPANIES", "400")
+    assert source.sourcing_company_cap() == 400
+
+    monkeypatch.delenv("OUTBOUND_ENRICH_DAILY_COMPANIES", raising=False)
+    monkeypatch.setenv("OUTBOUND_ENRICH_DAILY_CREDITS", "1000")
+    oe.ensure_tables(engine)
+    with engine.begin() as conn:
+        conn.execute(text(
+            "INSERT INTO outbound_enriched (domain, status, contacts_found, credits_used) "
+            "VALUES ('spent.com', 'found', 1, 400)"
+        ))
+    room, reason = source.company_room_today(engine, NOW)
+    assert room == 0
+    assert reason == "daily credit cap reached"
+
+
 def test_seed_uses_only_confirmed_filters():
     for row in campaigns.SEED_ROWS:
         resolved = campaigns.resolve_filters(row["storeleads_filters"], NOW)
