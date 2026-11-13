@@ -229,6 +229,7 @@ def test_live_step_one_ask_moves_above_the_signature():
     assert "Worth a chat" not in after
     assert "{{companyName}}'s Amazon growth" in after
     assert after.index("Can I send it to you?") < after.index("Account Specialist")
+    assert after.count("Can I send it to you?") == 1
     again = rewrite_body(after, 0)
     assert again.count("Can I send it to you?") == 1
 
@@ -241,6 +242,15 @@ def test_live_step_one_ask_moves_above_the_signature():
     assert "still on your list?" in cleaned
     assert cleaned.rstrip().endswith("Account Specialist, Anata")
     assert "Can I send it to you?" not in cleaned
+    html = (
+        "<div>Hi {{firstName}},</div><div>{{personalization}}</div>"
+        "<div>I found something that could help your Amazon growth. Can I send it to you?</div>"
+        "<div>Anna</div>"
+        "<div>I found something that could help your Amazon growth. Can I send it to you?</div>"
+    )
+    fixed = rewrite_body(html, 0)
+    assert fixed.count("Can I send it to you?") == 1
+    assert fixed.index("Can I send it to you?") < fixed.index("Anna")
 
 
 def test_cold_rewrite_keeps_the_opener_and_drops_the_calendar():

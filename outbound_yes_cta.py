@@ -75,9 +75,7 @@ def rewrite_body(body: str, step_index: int) -> str:
 
     ask = FIRST_ASK if step_index <= 0 else FOLLOW_ASK
     raw = body or ""
-    lines = raw.split("\n") if "\n" in raw else re.split(r"(?i)(?=<div)|(?=<br)", raw)
-    if len(lines) == 1 and "<div" in raw.lower():
-        lines = re.split(r"(?i)(?<=</div>)", raw)
+    lines = re.split(r"\n|(?<=</div>)|(?<=</DIV>)", raw)
     rewritten: list[str] = []
     replaced = False
     for line in lines:
@@ -102,9 +100,35 @@ def rewrite_body(body: str, step_index: int) -> str:
             continue
         rewritten.append(line)
     text = "\n".join(_place_ask(rewritten, ask, replaced, html="<" in raw.lower()))
+    text = _drop_ask_below_signature(text)
     if cold_urls(visible_text(text)):
         raise ValueError("Rewritten cold copy still contains a URL.")
     return text
+
+
+_STANDARD_ASKS = (
+    "I found something that could help your Amazon growth. Can I send it to you?",
+    "I found something that could help {{companyName}}'s Amazon growth. Can I send it to you?",
+    "Mind if I put something together for you?",
+    "Mind if I put something together for {{companyName}}?",
+)
+
+
+def _drop_ask_below_signature(text: str) -> str:
+    """Remove a standard ask that sits under the sign-off. Keep the one above it."""
+
+    cut = -1
+    for marker in ("Account Specialist, Anata", ">Anna<", "\nAnna"):
+        pos = text.rfind(marker)
+        if pos > cut:
+            cut = pos + len(marker)
+    if cut < 0:
+        return text
+    head, tail = text[:cut], text[cut:]
+    for ask in _STANDARD_ASKS:
+        tail = tail.replace(f"<div>{ask}</div>", "")
+        tail = tail.replace(ask, "")
+    return head + tail
 
 
 def _is_signature(visible: str) -> bool:
@@ -305,7 +329,7 @@ def apply_with_instantly(api_key: str, post: Optional[Callable[..., Any]] = None
     return apply_yes_cta(_Client())
 
 
-APPLY_KEY = "yes-cta-v2"
+APPLY_KEY = "yes-cta-v3"
 _APPLY_TABLE = "abby_copy_applies"
 
 
