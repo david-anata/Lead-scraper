@@ -210,8 +210,9 @@ drug claims are rejected before a company is recorded. Cosmetic skincare
 peptides stay in. New companies stay inside the company and credit ceilings
 (600 companies and 228 credits, or the lower `OUTBOUND_ENRICH_DAILY_*` env
 value). Each campaign starts with a share of that room, capped by its
-`daily_cap`. A recipe that cannot fill its share gives the unused companies
-to recipes that still have results. Each recipe resumes after the pages it
+`daily_cap`. A recipe that cannot fill its share, and any room those caps
+do not claim, goes to recipes that still have results. That extra may
+pass `daily_cap`. Each recipe resumes after the pages it
 already read, and a dead StoreLeads cursor continues from the last rank
 instead of the top 500 of `-rank`. Sourcing does not spend Prospeo credits
 and does not call Instantly.

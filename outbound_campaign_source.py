@@ -9,8 +9,8 @@ still wins, so production stays at its current caps until those env
 values are set.
 
 Each campaign starts with a share of that room, and not more than its
-``daily_cap``. When a recipe cannot fill its share, the unused companies
-go to recipes that still have results, even if that carries them past
+``daily_cap``. Unused allowances and any room those caps do not claim go
+to recipes that still have results, even if that carries them past
 ``daily_cap``. Sourcing does not call Prospeo and does not call Instantly.
 New domains still have to pass the company-fit gate (US, own-brand
 physical product, revenue on file, niche, exclusion, and blocked category).
@@ -240,34 +240,23 @@ def share_company_room(caps: list[int], room: int) -> list[int]:
     return assigned
 
 
-def grant_unused_room(
-    recorded: list[int],
-    allowances: list[int],
-    can_take: list[bool],
-) -> list[int]:
-    """Extra companies for recipes that can still find some.
+def grant_unused_room(can_take: list[bool], available: int) -> list[int]:
+    """Split leftover company room across recipes that can still find some.
 
-    A recipe that stopped short and cannot find more releases
-    ``allowance - recorded``. That count is split across recipes that
-    can still find companies. Earlier recipes get a remainder of one.
-    The extra may carry a recipe past its original allowance and past
-    ``daily_cap``. Recipes that filled their allowance release nothing.
+    ``available`` is every company still under the daily ceiling. That is
+    a recipe's unused allowance and any room the ``daily_cap`` values did
+    not claim. Earlier recipes get a remainder of one. The extra may carry
+    a recipe past its original allowance and past ``daily_cap``.
     """
 
-    count = len(recorded)
-    if count == 0 or count != len(allowances) or count != len(can_take):
-        return [0] * count
-    shortfall = 0
-    for got, allowance, able in zip(recorded, allowances, can_take):
-        if not able:
-            shortfall += max(0, int(allowance) - int(got))
-    if shortfall <= 0:
+    count = len(can_take)
+    if count == 0 or available <= 0:
         return [0] * count
     open_idx = [index for index, able in enumerate(can_take) if able]
     if not open_idx:
         return [0] * count
     extras = [0] * count
-    share, remainder = divmod(shortfall, len(open_idx))
+    share, remainder = divmod(int(available), len(open_idx))
     for offset, index in enumerate(open_idx):
         extras[index] = share + (1 if offset < remainder else 0)
     return extras
@@ -571,11 +560,13 @@ def source_active_campaigns(
         error = state["error"]
         pages_left = _MAX_PAGES - int(state["pages_used"])
         filled = False
+        checkpoints: dict[str, tuple[str, Optional[int]]] = {}
         for variant in _platform_queries(filters):
             direction = _rank_direction(variant)
             cursor_key = pipeline.storeleads_cursor_key(recipe_key, variant)
             cursor = pipeline.load_storeleads_cursor(engine, cursor_key)
             frontier = pipeline.load_storeleads_frontier(engine, cursor_key)
+            checkpoints.setdefault(cursor_key, (cursor or "", frontier))
             active = variant if cursor or not frontier else _with_frontier(variant, frontier, direction)
             stale_reset = False
             while pages_left > 0 and len(fresh) < want:
@@ -672,10 +663,14 @@ def source_active_campaigns(
             if saved <= 0:
                 error = error or "could not record leads"
                 saved = 0
-        if saved <= 0:
+        if fresh and saved < len(fresh):
             for lead in fresh:
                 seen.discard(lead["domain"])
+            for key, (old_cursor, old_frontier) in checkpoints.items():
+                pipeline.save_storeleads_cursor(engine, key, old_cursor)
+                pipeline.save_storeleads_frontier(engine, key, old_frontier)
             fresh = []
+            saved = 0
         kept = fresh[:saved] if saved else []
         state["kept"].extend(kept)
         state["scanned"] += scanned
@@ -700,9 +695,8 @@ def source_active_campaigns(
         if room <= 0:
             break
         extras = grant_unused_room(
-            [len(state["kept"]) for state in states],
-            [int(state["allowance"]) for state in states],
             [bool(state["can_take"]) and state["pages_used"] < _MAX_PAGES for state in states],
+            room,
         )
         if sum(extras) <= 0:
             break

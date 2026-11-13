@@ -258,10 +258,11 @@ def test_share_company_room_pays_caps_that_fit_and_splits_when_they_do_not():
     assert source.share_company_room([100, 100, 100, 100], 1) == [1, 0, 0, 0]
 
 
-def test_grant_unused_room_gives_a_shortfall_to_recipes_that_can_continue():
-    assert source.grant_unused_room([1, 75, 75, 75], [75, 75, 75, 75], [False, True, True, True]) == [0, 25, 25, 24]
-    assert source.grant_unused_room([40, 40, 30, 25], [40, 40, 30, 25], [True, True, True, True]) == [0, 0, 0, 0]
-    assert source.grant_unused_room([0, 0, 0, 0], [75, 75, 75, 75], [False, False, False, False]) == [0, 0, 0, 0]
+def test_grant_unused_room_gives_leftover_room_to_recipes_that_can_continue():
+    assert source.grant_unused_room([False, True, True, True], 74) == [0, 25, 25, 24]
+    assert source.grant_unused_room([True, True, True, True], 0) == [0, 0, 0, 0]
+    assert source.grant_unused_room([False, False, False, False], 200) == [0, 0, 0, 0]
+    assert source.grant_unused_room([True, True, True, True], 200) == [50, 50, 50, 50]
 
 
 def _domains_for(filters, count):
@@ -286,8 +287,55 @@ def test_sourcing_pays_each_seed_cap_when_the_room_can_hold_them(engine):
         engine, api_key="storeleads-key", now=NOW, fetch=fetch, company_room=300,
     )
     recorded = {item["recipe_key"]: item["recorded"] for item in out["campaigns"]}
-    assert recorded == {"amz_on": 40, "amz_off": 40, "plan_upgrade": 30, "replatform": 25}
-    assert out["recorded"] == 135
+    assert recorded["amz_on"] >= 40
+    assert recorded["amz_off"] >= 40
+    assert recorded["plan_upgrade"] >= 30
+    assert recorded["replatform"] >= 25
+    assert out["recorded"] == 300
+
+
+def test_room_above_the_daily_caps_is_offered_to_recipes_that_can_fill_it(engine):
+    """Four caps of 100 are 400. A 600 company ceiling still has 200 left."""
+
+    campaigns.ensure_tables(engine)
+    with engine.begin() as conn:
+        conn.execute(text("UPDATE outbound_campaigns SET daily_cap = 100"))
+
+    def fetch(api_key, **kwargs):
+        return SimpleNamespace(domains=_domains_for(kwargs["extra_params"], 250), next_cursor=None, error="")
+
+    out = source.source_active_campaigns(
+        engine, api_key="storeleads-key", now=NOW, fetch=fetch, company_room=600,
+    )
+    recorded = {item["recipe_key"]: item["recorded"] for item in out["campaigns"]}
+    assert recorded == {"amz_on": 150, "amz_off": 150, "plan_upgrade": 150, "replatform": 150}
+    assert out["recorded"] == 600
+
+
+def test_failed_record_retries_the_same_rank(engine):
+    calls = {"n": 0}
+
+    def fetch(api_key, **kwargs):
+        filters = kwargs["extra_params"]
+        if filters.get("f:scs") != "Amazon" or filters.get("f:scs:op") == "not" or filters.get("f:plan") or filters.get("f:last_platform"):
+            return SimpleNamespace(domains=[], next_cursor=None, error="")
+        calls["n"] += 1
+        if filters.get("f:rankmax"):
+            return SimpleNamespace(domains=[_fit_store("later.com", rank=9999)], next_cursor=None, error="")
+        return SimpleNamespace(domains=[_fit_store("first.com", rank=10000)], next_cursor=None, error="")
+
+    def fail(leads, recipe_key):
+        return 0
+
+    missed = source.source_active_campaigns(
+        engine, api_key="storeleads-key", now=NOW, fetch=fetch,
+        company_room=1, record=fail,
+    )
+    assert missed["recorded"] == 0
+    saved = source.source_active_campaigns(
+        engine, api_key="storeleads-key", now=NOW, fetch=fetch, company_room=1,
+    )
+    assert [lead["domain"] for lead in saved["leads"]] == ["first.com"]
 
 
 def test_sourcing_at_cap_100_still_gives_replatform_leads(engine):
