@@ -324,6 +324,37 @@ def test_time_off_with_a_real_answer_is_not_an_auto_reply(body):
     assert result.reason == "model said auto-reply without auto-reply evidence"
 
 
+def test_parental_leave_with_an_opt_out_is_blocked():
+    message = {
+        "ue_type": 2, "subject": "Re: Amazon plan",
+        "headers": {"Auto-Submitted": "no"},
+        "body": {"text": "I'm on parental leave. Please unsubscribe me."},
+    }
+    assert abby.automated_notice(message, lead_email="ann@huppy.com") is None
+    result = abby.think(
+        [message], lead_email="ann@huppy.com", company="Huppy", first_name="Ann",
+        thread_categories=[],
+        llm=lambda _p: json.dumps({"category": "opt_out", "confidence": 0.95, "reply": None}),
+    )
+    assert result.action == "block" and result.reply == "" and result.schedule_kind == ""
+    assert result.block_domain == "huppy.com" and result.interest == -1
+
+
+def test_annual_leave_with_a_yes_sends_the_plan():
+    message = {
+        "ue_type": 2, "subject": "Re: Amazon plan",
+        "headers": {"Auto-Submitted": "no"},
+        "body": {"text": "I'm on annual leave, returning on Monday. Yes."},
+    }
+    assert abby.automated_notice(message, lead_email="ann@huppy.com") is None
+    result = abby.think(
+        [message], lead_email="ann@huppy.com", company="Huppy", first_name="Ann",
+        thread_categories=[], llm=_no_model,
+    )
+    assert result.action == "reply" and result.send_deck and result.schedule_kind == ""
+    assert result.interest is None
+
+
 def test_instantly_auto_reply_flag_and_subject_are_ignored():
     flagged = {"ue_type": 2, "is_auto_reply": 1,
                "body": {"text": "Looping in my colleague Dana at dana@garbarinishop.com."}}

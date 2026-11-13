@@ -309,7 +309,8 @@ to Slack. Each fix is one row in `abby_missed_reply_fixes`.
 A reply with no auto-reply header is still that notice when the subject
 starts with Automatic reply, Out of Office, Autoreply, or OOO, or when the
 body has parental, maternity, or paternity leave, or at least two absence
-phrases, and it does not ask a question or show interest. The hourly fixer
+phrases, and it does not ask a question, say a plain yes, opt out, or show
+interest. The hourly fixer
 uses the same check. A hold that now matches is recorded as the ignore, the
 same way a header-detected auto-reply is, and nothing is sent. A human note
 that mentions time off and also answers or asks us something stays held.

@@ -36,7 +36,7 @@ something outside the offer.
       reply, Out of Office, Autoreply, or OOO, or when the body shows
       parental, maternity, or paternity leave, or at least two absence
       phrases (annual leave, returning, limited email access, and the same
-      family) and does not ask us a question or show interest.
+      family) and does not ask a question, say yes, opt out, or show interest.
   departed employee / automated forward -> ignore. No reply, no David CC,
       no Interested status, no follow-up. A departed contact is recorded so
       the brand can be tried again later. Nothing is sent. "I have left" and
@@ -789,9 +789,9 @@ def automated_notice(message: Any = "", *, lead_email: str = "", subject: str = 
         return _notice("auto_reply", "automatic reply: auto-reply header", lead_email, suggested)
     if any(phrase in low for phrase in _AUTO_PHRASES):
         return _notice("auto_reply", "automatic reply: automated message", lead_email, suggested)
-    # Header-less absence notes. A single soft phrase, or any phrase next to
-    # a question or a yes, is left for the model so a real answer still sends.
-    if not _human_reply_signal(body):
+    # Header-less absence notes. A question, a plain yes, or an opt-out stays
+    # on the existing path so a real answer is not discarded.
+    if not _human_reply_signal(body) and not _OPT_OUT_RE.search(own) and not explicit_yes(own):
         if any(_contains_phrase(low, phrase) for phrase in _GATED_OOO_PHRASES):
             return _notice("out_of_office", "automatic reply: out of office", lead_email, suggested)
         if len(_weak_ooo_hits(body)) >= 2:
