@@ -589,6 +589,122 @@ def eligibility_country_by_domain(
     return verdicts
 
 
+# Categories David blocked on 2026-11-13. Cosmetic skincare peptides stay in.
+# "copper peptide serum" does not match the research-peptide pattern.
+_BLOCKED_CATEGORY_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
+    (
+        re.compile(r"\b(?:cbd|cannabidiol|cannabis|marijuana|thc|hemp)\b", re.I),
+        "cbd or hemp",
+    ),
+    (
+        re.compile(
+            r"\b(?:microdosing|microdose|psilocybin|psilocin|psilocybe|amanita)\b"
+            r"|\bmagic mushrooms?\b"
+            r"|\b(?:functional|medicinal)\s+mushrooms?\b"
+            r"|\bmushrooms?\b[^.]{0,40}\b(?:gummies|tinctures?|capsules?|supplements?|extracts?)\b"
+            r"|\b(?:gummies|tinctures?|capsules?|supplements?|extracts?)\b[^.]{0,40}\bmushrooms?\b",
+            re.I,
+        ),
+        "mushrooms or microdosing",
+    ),
+    (
+        re.compile(
+            r"\b(?:bpc-?157|tb-?500|ipamorelin|sermorelin|cjc-?1295|melanotan|pt-?141|"
+            r"semaglutide|tirzepatide|retatrutide|tesamorelin|hexarelin|ghrp-?\d*|aod-?9604)\b"
+            r"|\b(?:injectable|research)\s+peptides?\b"
+            r"|\bpeptides?\b[^.]{0,40}\b(?:injectable|injections?|vials?|lyophilized|reconstitut\w*|research)\b"
+            r"|\b(?:injectable|injections?|vials?|lyophilized|reconstitut\w*|research)\b[^.]{0,40}\bpeptides?\b",
+            re.I,
+        ),
+        "injectable or research peptides",
+    ),
+    (re.compile(r"\b(?:kratom|mitragyna)\b", re.I), "kratom"),
+    (
+        re.compile(r"\b(?:nicotine|vapes?|vaping|e-?cigs?|e-?cigarettes?)\b", re.I),
+        "nicotine or vape",
+    ),
+    (
+        re.compile(
+            r"\b(?:cures?|treats?|heal(?:s|ing)?|prevents?)\b[^.]{0,40}\b(?:"
+            r"cancer|diabetes|alzheimer'?s?|adhd|depression|anxiety|obesity|addiction|"
+            r"covid|disease|infection|tumou?rs?|eczema|psoriasis|arthritis|insomnia)\b"
+            r"|\bnot for human consumption\b"
+            r"|\bresearch chemicals?\b"
+            r"|\bno prescription(?: needed| required)?\b",
+            re.I,
+        ),
+        "drug claim",
+    ),
+)
+
+
+def _flat_text(value: Any) -> str:
+    """One string for a StoreLeads field that may be a list or a nested object."""
+
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return value
+    if isinstance(value, dict):
+        return " ".join(_flat_text(item) for item in value.values())
+    if isinstance(value, (list, tuple)):
+        return " ".join(_flat_text(item) for item in value)
+    return str(value)
+
+
+def blocked_category_reason(*parts: Any) -> str:
+    """Why this text is a blocked category, or '' when it is allowed.
+
+    Cosmetic skincare peptides, including copper peptide serums, are allowed.
+    The research-peptide pattern requires an injectable, research, or vial
+    context, or a named research compound. Culinary mushroom snacks are
+    allowed. Functional mushroom products and microdosing are not.
+    """
+
+    text = " ".join(_flat_text(part) for part in parts if _flat_text(part)).strip()
+    if not text:
+        return ""
+    for pattern, reason in _BLOCKED_CATEGORY_PATTERNS:
+        if pattern.search(text):
+            return reason
+    return ""
+
+
+def company_blocked_reason(store: dict[str, Any]) -> str:
+    """Blocked category on the store name, category, description, or product.
+
+    A lead may keep the StoreLeads record on ``store`` or ``store_profile``.
+    Those nested records are checked too, so an opener cannot name a product
+    the company-fit gate would have rejected.
+    """
+
+    if not isinstance(store, dict):
+        return ""
+    pieces = [store]
+    for key in ("store", "store_profile"):
+        nested = store.get(key)
+        if isinstance(nested, dict):
+            pieces.append(nested)
+    parts: list[Any] = []
+    for item in pieces:
+        parts.extend((
+            item.get("name"),
+            item.get("merchant_name"),
+            item.get("brand"),
+            item.get("categories"),
+            item.get("niche"),
+            item.get("tags"),
+            item.get("description"),
+            item.get("merchant_description"),
+            item.get("title"),
+            item.get("amz_product"),
+            item.get("site_product"),
+            item.get("scraped_product"),
+            item.get("most_recently_published_product"),
+        ))
+    return blocked_category_reason(*parts)
+
+
 # Short words that must be whole words. "app" is not "apparel". "event" is not
 # "prevent". Fitness apparel stays; a fitness program does not.
 _COMPANY_FIT_EXCLUDE = re.compile(
@@ -667,6 +783,10 @@ def passes_company_fit(store: dict[str, Any], *, require_niche: bool = True) -> 
     if any(bad in text for bad in ICP_EXCLUDE_KEYWORDS):
         return False
     if _COMPANY_FIT_EXCLUDE.search(text):
+        return False
+    blocked = company_blocked_reason(store)
+    if blocked:
+        logger.info("[outbound] excluding %s: %s", label, blocked)
         return False
     return True
 
@@ -1221,6 +1341,8 @@ _STORELEADS_FIELDS = ",".join((
     "cluster_domains", "ships_to_countries", "currency_code", "language_code",
     "vendor_count", "features", "locs", "sales_channel_urls",
     "yotpo", "okendo", "judgeme", "loox",
+    # Resume past a dead cursor. Rank is the tie-break StoreLeads documents.
+    "rank",
 ))
 STORELEADS_BULK_URL = f"{STORELEADS_BASE_URL}{STORELEADS_DOMAIN_PATH}/bulk"
 
@@ -1435,10 +1557,12 @@ def storeleads_cursor_key(recipe_key: str, params: Optional[dict[str, Any]]) -> 
     import hashlib
     import json
 
+    # Rank bounds are the resume watermark. They change as the walk moves,
+    # so they must not start a new cursor key or the walk restarts at the top.
     stable = {
         str(key): value
         for key, value in (params or {}).items()
-        if str(key) != "cursor"
+        if str(key) not in {"cursor", "f:rankmin", "f:rankmax"}
         and not str(key).endswith(":min")
         and not str(key).endswith(":max")
     }
@@ -1473,6 +1597,49 @@ def save_storeleads_cursor(engine: Any, key: str, cursor: Optional[str]) -> None
         suppression.set_cursor(engine, key, cursor or "")
     except Exception:  # noqa: BLE001
         logger.warning("[outbound] StoreLeads cursor could not be saved")
+
+
+def _frontier_key(key: str) -> str:
+    return f"{key}:rank"
+
+
+def load_storeleads_frontier(engine: Any, key: str) -> Optional[int]:
+    """Smallest or largest rank already scanned for this query.
+
+    StoreLeads cursors die at the weekly data update, and a dead cursor used
+    to send the next morning back to the first page. The rank watermark
+    survives that and is not a secret.
+    """
+
+    if engine is None or not key:
+        return None
+    try:
+        import outbound_suppression as suppression
+
+        raw = suppression.get_cursor(engine, _frontier_key(key)).strip()
+    except Exception:  # noqa: BLE001
+        logger.warning("[outbound] StoreLeads rank watermark could not be read")
+        return None
+    if not raw:
+        return None
+    try:
+        rank = int(raw)
+    except ValueError:
+        return None
+    return rank if rank > 0 else None
+
+
+def save_storeleads_frontier(engine: Any, key: str, frontier: Optional[int]) -> None:
+    """Remember the rank boundary already consumed. A missing table is ignored."""
+
+    if engine is None or not key:
+        return
+    try:
+        import outbound_suppression as suppression
+
+        suppression.set_cursor(engine, _frontier_key(key), "" if not frontier else str(int(frontier)))
+    except Exception:  # noqa: BLE001
+        logger.warning("[outbound] StoreLeads rank watermark could not be saved")
 
 
 def run_storeleads_to_clay(

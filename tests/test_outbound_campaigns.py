@@ -46,8 +46,8 @@ def test_shared_floor_and_the_four_signal_filters():
         assert resolved["f:ds"] == "Active"
         assert resolved["f:cc"] == "US"
         assert resolved["f:it"] == "email"
-        assert resolved["f:ermin"] == 1_000_000
-        assert resolved["f:ermax"] == 2_000_000
+        assert resolved["f:ermin"] == campaigns.MONTHLY_FLOOR_CENTS
+        assert resolved["f:ermax"] == campaigns.MONTHLY_CEILING_CENTS
     assert campaigns.resolve_filters(by_key["amz_on"]["storeleads_filters"], NOW)["f:scs"] == "Amazon"
     off = campaigns.resolve_filters(by_key["amz_off"]["storeleads_filters"], NOW)
     assert off["f:scs"] == "Amazon" and off["f:scs:op"] == "not"
@@ -246,9 +246,9 @@ def test_sourcing_records_the_recipe_and_skips_contacted_domains(engine):
     platforms = [call.get("f:last_platform") for call in calls if call.get("f:last_platform")]
     assert platforms == ["woocommerce", "magento", "bigcommerce"]
     assert all("," not in platform for platform in platforms)
-    assert all(call.get("f:ermin") == 1_000_000 for call in calls)
-    amz_on_max = [call.get("f:ermax") for call in calls if call.get("f:scs") == "Amazon" and "f:scs:op" not in call and "f:plan" not in call]
-    assert amz_on_max == [source.AMZ_ON_MONTHLY_MAX_CENTS]
+    assert all(call.get("f:ermin") == campaigns.MONTHLY_FLOOR_CENTS for call in calls)
+    assert all(call.get("f:ermax") == campaigns.MONTHLY_CEILING_CENTS for call in calls)
+    assert {call.get("f:ermax") for call in calls} == {campaigns.MONTHLY_CEILING_CENTS}
 
 
 def test_share_company_room_pays_caps_that_fit_and_splits_when_they_do_not():
@@ -256,6 +256,12 @@ def test_share_company_room_pays_caps_that_fit_and_splits_when_they_do_not():
     assert source.share_company_room([100, 100, 100, 100], 300) == [75, 75, 75, 75]
     assert source.share_company_room([100, 100, 100, 100, 100], 300) == [60, 60, 60, 60, 60]
     assert source.share_company_room([100, 100, 100, 100], 1) == [1, 0, 0, 0]
+
+
+def test_grant_unused_room_gives_a_shortfall_to_recipes_that_can_continue():
+    assert source.grant_unused_room([1, 75, 75, 75], [75, 75, 75, 75], [False, True, True, True]) == [0, 25, 25, 24]
+    assert source.grant_unused_room([40, 40, 30, 25], [40, 40, 30, 25], [True, True, True, True]) == [0, 0, 0, 0]
+    assert source.grant_unused_room([0, 0, 0, 0], [75, 75, 75, 75], [False, False, False, False]) == [0, 0, 0, 0]
 
 
 def _domains_for(filters, count):
@@ -328,8 +334,11 @@ def test_sourcing_gives_unused_share_to_later_recipes(engine):
         engine, api_key="storeleads-key", now=NOW, fetch=fetch, company_room=300,
     )
     recorded = {item["recipe_key"]: item["recorded"] for item in out["campaigns"]}
-    assert recorded == {"amz_on": 1, "amz_off": 75, "plan_upgrade": 75, "replatform": 75}
-    assert out["recorded"] == 226
+    assert recorded["amz_on"] == 1
+    assert recorded["amz_off"] == 100
+    assert recorded["plan_upgrade"] == 100
+    assert recorded["replatform"] == 99
+    assert out["recorded"] == 300
 
 
 def test_sourcing_stops_at_the_company_and_credit_caps(engine):
@@ -388,14 +397,14 @@ def test_amz_off_resumes_past_pages_already_read_and_stops_at_five(engine):
     )
     assert len(calls["off"]) == source._MAX_PAGES
     assert calls["off"][0] is None
-    assert calls["off"] == [None, "off-1", "off-2", "off-3", "off-4"]
+    assert calls["off"][-1] == f"off-{source._MAX_PAGES - 1}"
     assert first["recorded"] > 0
 
     calls.clear()
     source.source_active_campaigns(
         engine, api_key="storeleads-key", now=NOW, fetch=fetch, company_room=300,
     )
-    assert calls["off"][0] == "off-5"
+    assert calls["off"][0] == f"off-{source._MAX_PAGES}"
     assert len(calls["off"]) == source._MAX_PAGES
 
 
@@ -670,6 +679,85 @@ def test_score_route_waits_for_monday_morning_denver():
     )
     assert response.json()["status"] == "skipped"
     monkey.undo()
+
+
+def test_stale_cursor_continues_from_the_rank_watermark(engine):
+    """A dead cursor must not reread the top of -rank."""
+
+    def fetch(api_key, **kwargs):
+        filters = kwargs["extra_params"]
+        if filters.get("f:scs:op") != "not":
+            return SimpleNamespace(domains=[], next_cursor=None, error="")
+        if kwargs.get("cursor") == "dead-cursor":
+            return SimpleNamespace(domains=[], next_cursor=None, error="cursor expired")
+        if filters.get("f:rankmax"):
+            return SimpleNamespace(
+                domains=[_fit_store("fresh-off.com", rank=7000)],
+                next_cursor=None,
+                error="",
+            )
+        return SimpleNamespace(
+            domains=[_fit_store("old-off.com", rank=8000)],
+            next_cursor=None,
+            error="",
+        )
+
+    first = source.source_active_campaigns(
+        engine, api_key="storeleads-key", now=NOW, fetch=fetch, company_room=50,
+    )
+    assert "old-off.com" in {lead["domain"] for lead in first["leads"]}
+    with engine.begin() as conn:
+        updated = conn.execute(text(
+            "UPDATE outbound_sync_state SET value = 'dead-cursor' "
+            "WHERE key LIKE 'storeleads:amz_off:%' AND key NOT LIKE :suffix"
+        ), {"suffix": "%:rank"})
+    assert updated.rowcount == 1
+    second = source.source_active_campaigns(
+        engine, api_key="storeleads-key", now=NOW, fetch=fetch, company_room=50,
+    )
+    assert "fresh-off.com" in {lead["domain"] for lead in second["leads"]}
+    assert "old-off.com" not in {lead["domain"] for lead in second["leads"]}
+
+
+def test_revenue_band_experiments_stay_off_and_do_not_create_a_campaign(engine, monkeypatch):
+    calls = []
+
+    def fetch(api_key, **kwargs):
+        calls.append(kwargs["extra_params"])
+        return SimpleNamespace(domains=[_fit_store("band.com")], next_cursor=None, error="")
+
+    quiet = source.source_active_campaigns(
+        engine, api_key="storeleads-key", now=NOW, fetch=fetch, company_room=20,
+    )
+    assert all("__" not in str(item["recipe_key"]) for item in quiet["campaigns"])
+    assert not any(call.get("f:ermax") == 999_999 for call in calls)
+
+    monkeypatch.setenv("OUTBOUND_REVENUE_BAND_EXPERIMENTS", "true")
+    calls.clear()
+    loud = source.source_active_campaigns(
+        engine, api_key="storeleads-key", now=NOW, fetch=fetch, company_room=300,
+    )
+    tagged = [item for item in loud["campaigns"] if item["recipe_key"] == "amz_off__under_10k"]
+    assert tagged
+    assert tagged[0]["campaign_id"] == ""
+    under = [call for call in calls if call.get("f:ermax") == 999_999 and call.get("f:ermin") == 100_000]
+    assert any(call.get("f:scs:op") == "not" for call in under)
+    plan_band = [
+        call for call in calls
+        if call.get("f:plan") == "Shopify Plus" and call.get("f:ermax") == 999_999
+    ]
+    assert plan_band
+    assert "f:last_plan_change_at:min" in plan_band[0]
+    moved_band = [
+        call for call in calls
+        if call.get("f:last_platform") and call.get("f:ermax") == 999_999
+    ]
+    assert moved_band
+    assert "f:last_platform_change_at:min" in moved_band[0]
+    target, status, route = push.resolve_recipe_campaign("amz_off__under_10k", ["amz_off__under_10k", "band:under_10k"])
+    assert target == "" and status == "queued" and route == ""
+    parent, parent_status, parent_route = push.resolve_recipe_campaign("amz_off", ["route:amz_off"])
+    assert parent_status == "routed" and parent_route == "amz_off" and parent
 
 
 def test_migration_seeds_the_five_campaigns_and_locks_down_the_role():

@@ -116,7 +116,7 @@ class MorningRoutineTests(unittest.TestCase):
                 source.source_active_campaigns, outbound_router._amazon_checker,
             ) = real
         self.assertTrue(out["ran"], out.get("reason"))
-        self.assertEqual(calls.get("room"), 300)
+        self.assertEqual(calls.get("room"), 600)
         self.assertEqual(out["pulled"], 2)
         self.assertIn("amz_on", out["recipes"])
 
@@ -202,7 +202,7 @@ class MorningRoutineTests(unittest.TestCase):
         self.assertLess(jobs._RUN_HOUR, 9)
 
     def test_one_daily_sheet_has_a_controlled_company_ceiling(self):
-        self.assertEqual(jobs._DAILY_COMPANY_CAP, 300)  # raised 2026-10-26 (maximize pulls)
+        self.assertEqual(jobs._DAILY_COMPANY_CAP, 600)
 
     def _run_with_campaigns(self, *, recipes, catalog, sourced, pull_calls, now, env=None,
                             engine=None, lister=None):

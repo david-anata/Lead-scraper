@@ -209,8 +209,16 @@ def fact_sheet(lead: dict[str, Any]) -> FactSheet:
     sheet = FactSheet(
         brand=brand or "This brand", category=category, recipe=recipe, trial_offer=trial,
     )
-    if _RESTRICTED.search(category) or _RESTRICTED.search(brand):
-        sheet.blocked = "restricted category"
+    from outbound_pipeline import company_blocked_reason
+
+    product = store.get("most_recently_published_product")
+    product_title = ""
+    if isinstance(product, dict):
+        product_title = str(product.get("title") or "")
+    blocked = company_blocked_reason(store) or company_blocked_reason(lead)
+    restricted_text = " ".join((category, brand, product_title))
+    if blocked or _RESTRICTED.search(restricted_text):
+        sheet.blocked = blocked or "restricted category"
         return sheet
     try:
         vendors = int(float(store.get("vendor_count") or 0))

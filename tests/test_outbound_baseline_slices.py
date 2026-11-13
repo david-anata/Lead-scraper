@@ -60,4 +60,4 @@ def test_pull_walks_slices_until_cap_and_dedupes():
 
 def test_caps_raised():
     assert rx.DEFAULT_SETTINGS["icp_baseline.max_per_run"] == 200
-    assert jobs._DAILY_COMPANY_CAP == 300
+    assert jobs._DAILY_COMPANY_CAP == 600

@@ -199,19 +199,27 @@ already pushed to another campaign are excluded.
 The weekday morning pull sources `amz_on`, `amz_off`, `plan_upgrade`, and
 `replatform` from each row's `storeleads_filters` before the older recipes.
 Those filters are confirmed List Domains parameters: Shopify, Active, US,
-an email, and about $10k to $20k a month, plus Amazon / not Amazon, a
+an email, and $10k a month through $20M a year, plus Amazon / not Amazon, a
 Shopify Plus plan change in the last 90 days, or a move off WooCommerce,
-Magento, or BigCommerce in the last 120 days. Domains already in
-`outbound_contacted_domains` are skipped. New companies stay inside the
-300 company and 1100 credit daily caps. Each campaign also stops at its
-own `daily_cap`. When those caps add up to more than the room left in
-the 300, the room is shared so `replatform` still receives leads. Five
-caps of 100 do not fit: `abby_reengage` has no StoreLeads filters, and
-the other four at 100 are 400. Sharing a full 300 across those four
-gives each 75. Raising the 300 ceiling to 400 would fund each sourcing cap in full
-and would leave the morning pull with no room for `social_surge` or
-`icp_baseline`. Sourcing does not spend Prospeo credits and does not
-call Instantly.
+Magento, or BigCommerce in the last 120 days. The code applies that revenue
+band at query time, so a stored row that still says $10k to $20k a month
+does not need a database edit. Domains already in
+`outbound_contacted_domains` are skipped. CBD, hemp, functional mushrooms,
+microdosing, injectable or research peptides, kratom, nicotine, vape, and
+drug claims are rejected before a company is recorded. Cosmetic skincare
+peptides stay in. New companies stay inside the company and credit ceilings
+(600 companies and 228 credits, or the lower `OUTBOUND_ENRICH_DAILY_*` env
+value). Each campaign starts with a share of that room, capped by its
+`daily_cap`. A recipe that cannot fill its share gives the unused companies
+to recipes that still have results. Each recipe resumes after the pages it
+already read, and a dead StoreLeads cursor continues from the last rank
+instead of the top 500 of `-rank`. Sourcing does not spend Prospeo credits
+and does not call Instantly.
+
+Smaller revenue bands (`under_10k`, `10k_25k`, `25k_100k`) are separate
+recipe tags such as `amz_off__under_10k`. They stay off unless
+`OUTBOUND_REVENUE_BAND_EXPERIMENTS=true`. Turning that on does not create
+an Instantly campaign and does not spend the contact-finding cap.
 
 The hourly enrich job tries active `outbound_campaigns` recipes first,
 oldest unenriched brand first, up to each row's remaining `daily_cap`
@@ -237,11 +245,12 @@ is `{"domains": ["brand.com"], "dry_run": true}`. `dry_run` defaults to true,
 which only normalizes the list. `dry_run: false` finds contacts and stores
 them with `recipe=redo_partner`. It does not add them to Instantly.
 
-To aim at about 540 contacts a weekday across the four enrich runs, set
-companies 300, per run 75, max contacts 2, and credits 1100. Expected spend is
-about 840 Prospeo credits when each company yields about 1.8 verified emails
-(one search credit plus one credit per email). See the docstring on
-`sales_support_agent/api/outbound_enrich_job.py` before raising the caps.
+To aim at about 600 companies a weekday, set
+`OUTBOUND_ENRICH_DAILY_COMPANIES=600` and
+`OUTBOUND_ENRICH_DAILY_CREDITS=228`. Leave per run at 75 and max contacts
+at 2. 228 credits is 114 per 300 companies, the rate measured on the day
+that processed 300 companies. See the docstring on
+`sales_support_agent/api/outbound_enrich_job.py`.
 
 Abby runs every 5 minutes and, after she finishes replies, calls the enrich
 job directly. The same tick registers the Instantly reply webhook when

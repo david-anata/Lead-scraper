@@ -43,19 +43,18 @@ Abby already took. The first Abby tick runs enrich when no attempt has
 succeeded today or in the last 6 hours. After that, enrich runs at most once
 per America/Denver hour on weekdays. ``OUTBOUND_AUTO_ENRICH`` is still required.
 
-  OUTBOUND_ENRICH_DAILY_COMPANIES=300
+  OUTBOUND_ENRICH_DAILY_COMPANIES=600
   OUTBOUND_ENRICH_PER_RUN=75
   OUTBOUND_ENRICH_MAX_CONTACTS=2
-  OUTBOUND_ENRICH_DAILY_CREDITS=1100
+  OUTBOUND_ENRICH_DAILY_CREDITS=228
 
-Prospeo charges 1 credit for a search that returns people and 1 credit for each
-verified email. Misses are not charged. 300 companies that yield about 1.8
-verified emails each is about 300 + 540 = 840 credits for about 540 contacts.
-The 1100 cap is headroom so a search-heavy morning is not cut off early.
-If yield stays closer to one verified email per company, 300 companies produce
-about 300 contacts and about 600 credits, and the 540 second time budget (about
-70 to 90 companies per run) is the real ceiling. In that case raise the daily
-company cap toward 400 and the credit cap toward 1200.
+The credit cap follows the observed ratio of 114 Prospeo credits per 300
+companies. 600 companies at that ratio is 228 credits. Sourcing uses the
+same two ceilings and will not go above them. ``OUTBOUND_ENRICH_PER_RUN``
+stays 75: the weekday hourly runs between 07:00 and 18:00 America/Denver
+can cover 600 companies without a larger slice. Comparison revenue bands
+stay off unless ``OUTBOUND_REVENUE_BAND_EXPERIMENTS=true``. That flag does
+not create an Instantly campaign.
 """
 
 from __future__ import annotations
