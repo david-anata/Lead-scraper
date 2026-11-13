@@ -35,9 +35,10 @@ FOLLOW_ASK = "Mind if I put something together for you?"
 
 _CTA_RE = re.compile(
     r"book(?:ing)?\s+(?:a\s+)?(?:call|time)|grab a time|calendar|reply\s+[\"']|"
-    r"reply with|intro with david|open to a quick intro|want it\??|should i send|"
-    r"which do you prefer|david'?s calendar|worth a look\??|want me to set it up|"
-    r"just reply",
+    r"reply with|intro with|worth a (?:quick )?intro|worth a chat|15-minute|"
+    r"set one up|would a short|would that be more useful|open to a quick|"
+    r"want it\??|should i send|which do you prefer|david'?s calendar|"
+    r"worth a look\??|want me to set|just reply",
     re.I,
 )
 _TAG_RE = re.compile(r"<[^>]+>")
@@ -100,16 +101,45 @@ def rewrite_body(body: str, step_index: int) -> str:
                 rewritten.append(use)
             continue
         rewritten.append(line)
-    text = "\n".join(part for part in rewritten if part is not None)
-    if not replaced and not _ASK_ALREADY.search(visible_text(text)):
-        use = ask
-        if "<div" in raw.lower():
-            text = text.rstrip() + f"\n<div>{use}</div>"
-        else:
-            text = text.rstrip() + f"\n\n{use}"
+    text = "\n".join(_place_ask(rewritten, ask, replaced, html="<" in raw.lower()))
     if cold_urls(visible_text(text)):
         raise ValueError("Rewritten cold copy still contains a URL.")
     return text
+
+
+def _is_signature(visible: str) -> bool:
+    text = visible.strip()
+    return text in {"Abby", "Anna"} or text.startswith("Account Specialist")
+
+
+def _is_standard_ask(visible: str) -> bool:
+    return bool(_ASK_ALREADY.search(visible or ""))
+
+
+def _place_ask(lines: list[str], ask: str, replaced: bool, *, html: bool) -> list[str]:
+    """Keep one ask, and keep it above the signature.
+
+    A previous run appended the ask under the signature. That copy is moved
+    up. A step that already asks a small yes, such as "still on your list?",
+    does not get a second question.
+    """
+
+    signature_at = next((i for i, line in enumerate(lines) if _is_signature(visible_text(line))), None)
+    kept: list[str] = []
+    for index, line in enumerate(lines):
+        visible = visible_text(line)
+        if signature_at is not None and index >= signature_at and _is_standard_ask(visible):
+            continue
+        kept.append(line)
+    before = kept if signature_at is None else kept[:signature_at]
+    already = any(_is_standard_ask(visible_text(line)) for line in before)
+    soft = any("still on your list?" in visible_text(line).lower() for line in before)
+    if replaced or already or soft:
+        return kept
+    block = f"<div>{ask}</div>" if html else ask
+    if signature_at is None:
+        return [*kept, "", block]
+    return [*kept[:signature_at], block, *kept[signature_at:]]
 
 
 def rewrite_steps(steps: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], list[dict[str, str]]]:
@@ -275,7 +305,7 @@ def apply_with_instantly(api_key: str, post: Optional[Callable[..., Any]] = None
     return apply_yes_cta(_Client())
 
 
-APPLY_KEY = "yes-cta-v1"
+APPLY_KEY = "yes-cta-v2"
 _APPLY_TABLE = "abby_copy_applies"
 
 
