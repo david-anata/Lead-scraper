@@ -63,6 +63,32 @@ _DDL = (
         status TEXT DEFAULT 'pending', body TEXT, source_email_id TEXT, detail TEXT,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, sent_at TIMESTAMP,
         UNIQUE (source_email_id, kind))""",
+    """CREATE TABLE IF NOT EXISTS abby_deck_sends (
+        id SERIAL PRIMARY KEY,
+        lead TEXT NOT NULL,
+        campaign_id TEXT NOT NULL DEFAULT '',
+        thread_id TEXT NOT NULL DEFAULT '',
+        source_email_id TEXT NOT NULL,
+        reply_id TEXT NOT NULL DEFAULT '',
+        cc_address TEXT NOT NULL DEFAULT '',
+        deck_url TEXT NOT NULL DEFAULT '',
+        status TEXT NOT NULL DEFAULT 'sent',
+        sent_at TIMESTAMP,
+        founder_reply_id TEXT NOT NULL DEFAULT '',
+        detail TEXT NOT NULL DEFAULT '',
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE (source_email_id))""",
+    """CREATE TABLE IF NOT EXISTS abby_missed_reply_fixes (
+        email_id TEXT PRIMARY KEY,
+        lead TEXT NOT NULL DEFAULT '',
+        campaign_id TEXT NOT NULL DEFAULT '',
+        previous_action TEXT NOT NULL DEFAULT '',
+        outcome TEXT NOT NULL DEFAULT '',
+        reply_id TEXT NOT NULL DEFAULT '',
+        detail TEXT NOT NULL DEFAULT '',
+        attempts INTEGER NOT NULL DEFAULT 0,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        sent_at TIMESTAMP)""",
 )
 
 
@@ -621,6 +647,24 @@ def already_answered(thread: list[dict], received: dict,
     return False
 
 
+def subsequence_already_replied(thread: list[dict], received: dict) -> bool:
+    """True when the calendar subsequence already wrote on this thread.
+
+    A campaign step does not count. A subsequence send does, so Abby does
+    not add a second reply on top of that calendar email.
+    """
+
+    t = _ts(received)
+    for message in thread:
+        if message.get("id") == received.get("id"):
+            continue
+        if not any(message.get(key) for key in ("subsequence_id", "subsequence")):
+            continue
+        if not t or _ts(message) >= t:
+            return True
+    return False
+
+
 def _subject(s: str) -> str:
     s = (s or "").strip()
     return s if s.lower().startswith("re:") else f"Re: {s}"
@@ -824,23 +868,90 @@ def confirm_interest(client: Any, lead: str, value: int, campaign_id: str,
 
 
 def interest_to_confirm(decision: abby.Decision) -> Optional[int]:
-    """The interest value Abby may write. 1 is only for interested and price replies.
+    """The interest value Abby may write.
 
-    A referral, a question, a hold, or an ignore must not enroll Instantly's
-    "Interested - book with David" subsequence.
+    1 enrolls Instantly's "Interested - book with David" subsequence, which
+    sends a calendar email and races the deck. Abby never writes 1. Opt-out
+    still writes -1. A deck send leaves interest unset.
     """
 
-    if decision.interest is None:
+    if decision.send_deck or decision.interest is None:
         return None
     try:
         value = int(decision.interest)
     except (TypeError, ValueError):
         return None
     if value == 1:
-        if decision.action == "reply" and decision.category in {"interested", "price"}:
-            return 1
         return None
     return value
+
+
+def _build_deck_url(build_deck: Optional[Callable[..., str]], *, lead: str,
+                    company: str, domain: str, first_name: str) -> str:
+    """The prospect plan URL, or '' when the generator cannot build one."""
+
+    builder = build_deck
+    if builder is None:
+        try:
+            from abby_deck import build_prospect_deck
+
+            builder = build_prospect_deck
+        except Exception:  # noqa: BLE001
+            logger.exception("[abby] deck builder is not available")
+            return ""
+    try:
+        url = str(builder(lead=lead, company=company, domain=domain, first_name=first_name) or "").strip()
+    except Exception:  # noqa: BLE001
+        logger.exception("[abby] deck generation failed")
+        return ""
+    if url.startswith("/"):
+        url = "https://agent.anatainc.com" + url
+    if not url.startswith("https://"):
+        return ""
+    return url
+
+
+def _record_deck_send(engine, *, lead: str, campaign_id: str, thread_id: str,
+                      source_email_id: str, reply_id: str, cc_address: str,
+                      deck_url: str, status: str, sent_at: datetime, detail: str) -> None:
+    """One row per prospect message. A sent row is not overwritten by a later failure."""
+
+    if not source_email_id:
+        return
+    try:
+        _write_deck_send(
+            engine, lead=lead, campaign_id=campaign_id, thread_id=thread_id,
+            source_email_id=source_email_id, reply_id=reply_id, cc_address=cc_address,
+            deck_url=deck_url, status=status, sent_at=sent_at, detail=detail,
+        )
+    except Exception:  # noqa: BLE001 — the reply already went out; the log must not undo it
+        logger.exception("[abby] deck send was not recorded")
+
+
+def _write_deck_send(engine, *, lead: str, campaign_id: str, thread_id: str,
+                     source_email_id: str, reply_id: str, cc_address: str,
+                     deck_url: str, status: str, sent_at: datetime, detail: str) -> None:
+    ensure_tables(engine)
+    stamp = sent_at.replace(tzinfo=None) if sent_at.tzinfo else sent_at
+    with engine.begin() as conn:
+        current = conn.execute(text(
+            "SELECT status FROM abby_deck_sends WHERE source_email_id = :s"
+        ), {"s": source_email_id}).fetchone()
+        if current and str(current[0]) == "sent" and status != "sent":
+            return
+        conn.execute(text(
+            "INSERT INTO abby_deck_sends (lead, campaign_id, thread_id, source_email_id, "
+            "reply_id, cc_address, deck_url, status, sent_at, detail) "
+            "VALUES (:lead, :campaign, :thread, :source, :reply, :cc, :url, :status, :sent, :detail) "
+            "ON CONFLICT (source_email_id) DO UPDATE SET "
+            "reply_id = excluded.reply_id, cc_address = excluded.cc_address, "
+            "deck_url = excluded.deck_url, status = excluded.status, "
+            "sent_at = excluded.sent_at, detail = excluded.detail"
+        ), {
+            "lead": lead, "campaign": campaign_id, "thread": thread_id, "source": source_email_id,
+            "reply": reply_id, "cc": cc_address, "url": deck_url, "status": status,
+            "sent": stamp, "detail": detail[:500],
+        })
 
 
 def handle_email(engine, email: dict, *, client: Instantly, campaign_id: str,
@@ -848,7 +959,8 @@ def handle_email(engine, email: dict, *, client: Instantly, campaign_id: str,
                  think: Optional[Callable[..., abby.Decision]] = None,
                  post_slack: Optional[Callable[[str], Any]] = None,
                  lead_info: Optional[Callable[[str], dict]] = None,
-                 run_mode: Optional[str] = None, cap: Optional[int] = None) -> dict[str, int]:
+                 run_mode: Optional[str] = None, cap: Optional[int] = None,
+                 build_deck: Optional[Callable[..., str]] = None) -> dict[str, int]:
     """Apply every guardrail to one received email and record the result.
 
     The poll and the reply webhook both call this. A second call for the same
@@ -879,7 +991,7 @@ def handle_email(engine, email: dict, *, client: Instantly, campaign_id: str,
         return _handle_claimed(
             engine, email, client=client, campaign_id=active_campaign, now=now,
             think=think, post_slack=post_slack, lead_info=lead_info,
-            run_mode=run_mode, cap=cap, counts=counts,
+            run_mode=run_mode, cap=cap, counts=counts, build_deck=build_deck,
         )
     except Exception:  # noqa: BLE001
         logger.exception("[abby] failed while handling %s", email.get("id"))
@@ -892,7 +1004,8 @@ def handle_email(engine, email: dict, *, client: Instantly, campaign_id: str,
 def _handle_claimed(engine, email: dict, *, client: Instantly, campaign_id: str, now: datetime,
                     think: Callable[..., abby.Decision], post_slack: Callable[[str], Any],
                     lead_info: Callable[[str], dict], run_mode: str, cap: int,
-                    counts: dict[str, int]) -> dict[str, int]:
+                    counts: dict[str, int],
+                    build_deck: Optional[Callable[..., str]] = None) -> dict[str, int]:
     lead = str(email.get("lead") or email.get("from_address_email") or "").lower()
     if is_team(_sender(email)) or is_team(lead):
         _finish(engine, email=email, decision=abby.Decision("other", "skip", reason="written by our team"),
@@ -927,17 +1040,68 @@ def _handle_claimed(engine, email: dict, *, client: Instantly, campaign_id: str,
                                  slack=f"Abby hit her daily cap; {lead} is waiting for a reply.")
 
     reply_id, detail = "", ""
+    deck_url = ""
+    if decision.send_deck and subsequence_already_replied(thread, email):
+        decision = abby.Decision(
+            decision.category, "skip", reason="subsequence already replied",
+            note="deck not sent",
+        )
+    if decision.action == "reply" and decision.send_deck:
+        founder = abby.founder_email()
+        if founder and founder not in decision.cc:
+            decision.cc.append(founder)
+        if run_mode != "live":
+            detail = "shadow: deck"
+        else:
+            url = _build_deck_url(
+                build_deck, lead=lead, company=info.get("company", ""),
+                domain=str(info.get("domain") or ""),
+                first_name=info.get("first_name", ""),
+            )
+            if not url:
+                cc_address = ",".join(decision.cc)
+                decision = abby.Decision(
+                    decision.category, "hold", reason="deck generation failed",
+                    note="deck", send_deck=False,
+                )
+                _record_deck_send(
+                    engine, lead=lead, campaign_id=campaign_id, thread_id=str(email.get("thread_id") or ""),
+                    source_email_id=str(email.get("id") or ""), reply_id="",
+                    cc_address=cc_address, deck_url="", status="failed",
+                    sent_at=now, detail="deck generation failed",
+                )
+            else:
+                deck_url = url
+                decision.reply = abby.deck_reply(info.get("first_name", ""), info.get("company", ""), url)
+                decision.cc = [founder] if founder else list(decision.cc)
+    sending_deck = bool(decision.send_deck and decision.action == "reply" and deck_url)
     if decision.action == "reply":
         if run_mode == "live":
             st, data = client.reply(reply_to=email["id"], eaccount=email.get("eaccount") or "",
                                     subject=_subject(email.get("subject") or ""), body=decision.reply,
                                     cc=decision.cc, extra=decision.to_extra)
             if st != 200:
+                if sending_deck:
+                    _record_deck_send(
+                        engine, lead=lead, campaign_id=campaign_id,
+                        thread_id=str(email.get("thread_id") or ""),
+                        source_email_id=str(email.get("id") or ""), reply_id="",
+                        cc_address=",".join(decision.cc), deck_url=deck_url,
+                        status="failed", sent_at=now, detail=f"send failed ({st})",
+                    )
                 decision = abby.Decision(decision.category, "hold", reason=f"send failed ({st})",
                                          slack=f"Abby's reply to {lead} failed to send ({st}). Nothing went out.")
             else:
                 reply_id = str((data or {}).get("id") or "")
                 counts["replied"] += 1
+                if sending_deck:
+                    _record_deck_send(
+                        engine, lead=lead, campaign_id=campaign_id,
+                        thread_id=str(email.get("thread_id") or ""),
+                        source_email_id=str(email.get("id") or ""), reply_id=reply_id,
+                        cc_address=",".join(decision.cc), deck_url=deck_url,
+                        status="sent", sent_at=now, detail="deck sent",
+                    )
                 if decision.follow_up_days:
                     with engine.begin() as conn:
                         conn.execute(text(
@@ -1257,8 +1421,8 @@ def _remember_opt_out(engine, value: str, post_slack: Optional[Callable[[str], A
 def followup_text(first_name: str) -> str:
     hi = f"Hi {first_name}," if first_name else "Hi,"
     return (f"{hi}\n\nChecking back in as promised. Is Amazon growth on the table now? "
-            f"Happy to set up the free 14-day trial, where we build your Amazon strategy and run the ad automation. "
-            f"Grab a time with David here: {abby.BOOKING_LINK}\n\n{abby.SIGNATURE}")
+            f"The free 14-day trial is there when the timing is better. "
+            f"Mind if I put something together for you?\n\n{abby.SIGNATURE}")
 
 
 def _send_due_followups(engine, client: Instantly, now: datetime, run_mode: str,
@@ -1416,19 +1580,18 @@ MAX_NUDGES_PER_RUN = 4
 
 def nudge_text(n: int, first_name: str, company: str) -> tuple[str, list[str]]:
     hi = f"Hi {first_name}," if first_name else "Hi there,"
-    link = abby.BOOKING_LINK
     sign = abby.SIGNATURE
+    who = company or "your brand"
     if n == 1:
-        body = (f"{hi}\n\nQuick nudge in case this got buried. Happy to set up the free 14-day trial, "
-                f"where we build your Amazon strategy and run the ad automation. Grab a time with David here: {link}\n\n{sign}")
+        body = (f"{hi}\n\nQuick nudge in case this got buried. "
+                f"I found something that could help {who}'s Amazon growth. Can I send it to you?\n\n{sign}")
         return body, []
     if n == 2:
-        who = company or "your brand"
-        body = (f"{hi}\n\nStill keen to show you what the free 14-day trial would look like for {who}. "
-                f"Here is David's calendar: {link}\n\n{sign}")
+        body = (f"{hi}\n\nStill happy to put a short Amazon plan together for {who}. "
+                f"Mind if I send it?\n\n{sign}")
         return body, []
-    body = (f"{hi}\n\nLast note from me. If the timing is off, no worries at all. If you want the free 14-day trial, "
-            f"David's calendar is here: {link}\n\n{sign}")
+    body = (f"{hi}\n\nLast note from me. If the timing is off, no worries at all. "
+            f"If you want the short Amazon plan for {who}, I can send it.\n\n{sign}")
     return body, []
 
 
@@ -1559,3 +1722,251 @@ def preview_takeover(engine, client: Instantly, campaign_id: str, now: datetime,
                         "category": d.category, "action": d.action, "cc": d.cc, "reply": d.reply,
                         "reason": d.reason})
     return {"backlog": backlog, "nudges": nudges, "takeover_at": takeover_at().isoformat()}
+
+
+def founder_reply_id(thread: list[dict], sent_at: Optional[datetime], own_reply_id: str) -> str:
+    """A later message from the founder, or '' when the thread has none."""
+
+    founder = abby.founder_email()
+    if isinstance(sent_at, str):
+        floor = _parse_ts(sent_at)
+    elif isinstance(sent_at, datetime) and sent_at.tzinfo is None:
+        floor = sent_at.replace(tzinfo=timezone.utc)
+    else:
+        floor = sent_at
+    for message in thread or []:
+        if str(message.get("id") or "") == (own_reply_id or ""):
+            continue
+        sender = _sender(message)
+        if sender != founder and not is_team(sender):
+            continue
+        stamp = _parse_ts(_ts(message))
+        if floor is not None and stamp is not None and stamp <= floor:
+            continue
+        if message.get("ue_type") not in (2, 3, None):
+            continue
+        found = str(message.get("id") or "").strip()
+        if found:
+            return found
+    return ""
+
+
+def list_deck_sends_since(engine, since: datetime,
+                          thread_lookup: Optional[Callable[[str], list[dict]]] = None) -> list[dict[str, Any]]:
+    """Deck sends at or after ``since`` that still have no founder reply.
+
+    When ``thread_lookup`` is set, a founder message on the thread is stored
+    and that send is left off the list.
+    """
+
+    ensure_tables(engine)
+    stamp = since.astimezone(timezone.utc).replace(tzinfo=None) if since.tzinfo else since
+    with engine.connect() as conn:
+        rows = conn.execute(text(
+            "SELECT lead, campaign_id, thread_id, source_email_id, reply_id, cc_address, "
+            "deck_url, sent_at FROM abby_deck_sends "
+            "WHERE status = 'sent' AND coalesce(founder_reply_id, '') = '' "
+            "AND sent_at >= :since ORDER BY sent_at"
+        ), {"since": stamp}).fetchall()
+    pending: list[dict[str, Any]] = []
+    for lead, campaign_id, thread_id, source_id, reply_id, cc_address, deck_url, sent_at in rows:
+        if thread_lookup is not None:
+            try:
+                looked = thread_lookup(str(thread_id or "")) or []
+            except Exception:  # noqa: BLE001
+                logger.exception("[abby] could not read a thread for the founder check")
+                looked = []
+            found = founder_reply_id(looked, sent_at, str(reply_id or ""))
+            if found:
+                with engine.begin() as conn:
+                    conn.execute(text(
+                        "UPDATE abby_deck_sends SET founder_reply_id = :f WHERE source_email_id = :s"
+                    ), {"f": found, "s": source_id})
+                continue
+        sent_iso = sent_at.isoformat() if hasattr(sent_at, "isoformat") else str(sent_at or "")
+        pending.append({
+            "lead": lead,
+            "campaign_id": campaign_id,
+            "thread_id": thread_id,
+            "source_email_id": source_id,
+            "reply_id": reply_id,
+            "cc_address": cc_address,
+            "deck_url": deck_url,
+            "sent_at": sent_iso,
+        })
+    return pending
+
+
+_FIX_LEAVE_REASONS = (
+    "already answered",
+    "subsequence already replied",
+    "written by our team",
+    "david has this thread",
+    "suppressed",
+    "campaign not watched",
+    "human asked to send info",
+)
+
+
+def _true_auto_text(reason: str, detail: str) -> bool:
+    text_value = f"{reason} {detail}".lower()
+    if "departed" in text_value or "out of office" in text_value:
+        return True
+    if "satisfaction survey" in text_value or "auto-reply header" in text_value:
+        return True
+    if "automated message" in text_value:
+        return True
+    return False
+
+
+def should_reopen_handled(action: str, category: str, reason: str, detail: str) -> bool:
+    """True when a stored decision should be tried again by the hourly fixer.
+
+    Deliberate send-info holds and true auto-replies stay closed.
+    """
+
+    blob = f"{reason} {detail}".lower()
+    if category == "send_info" or "send info" in blob:
+        return False
+    if _true_auto_text(reason, detail):
+        return False
+    if action in {"reply", "block", "nudge", "followup"}:
+        return False
+    if action == "skip" and any(part in blob for part in _FIX_LEAVE_REASONS):
+        return False
+    return action in {"hold", "ignore", "skip", ""}
+
+
+def _claim_fix(engine, email_id: str, *, lead: str, campaign_id: str, previous: str) -> bool:
+    """Own this fix. A sent or still-held row is not taken again.
+
+    A failed deck build can be retried twice more. Two workers cannot both own it.
+    """
+
+    with engine.begin() as conn:
+        row = conn.execute(text(
+            "SELECT outcome, attempts FROM abby_missed_reply_fixes WHERE email_id = :i"
+        ), {"i": email_id}).fetchone()
+        if row:
+            outcome, attempts = str(row[0] or ""), int(row[1] or 0)
+            if outcome != "failed" or attempts >= 3:
+                return False
+            updated = conn.execute(text(
+                "UPDATE abby_missed_reply_fixes SET attempts = attempts + 1, outcome = 'pending', "
+                "previous_action = :p WHERE email_id = :i AND outcome = 'failed' AND attempts < 3"
+            ), {"i": email_id, "p": previous[:200]}).rowcount
+            return bool(updated)
+        try:
+            conn.execute(text(
+                "INSERT INTO abby_missed_reply_fixes "
+                "(email_id, lead, campaign_id, previous_action, outcome, attempts) "
+                "VALUES (:i, :l, :c, :p, 'pending', 1)"
+            ), {"i": email_id, "l": lead, "c": campaign_id, "p": previous[:200]})
+        except Exception:  # noqa: BLE001 — the other worker inserted first
+            return False
+    return True
+
+
+def _finish_fix(engine, email_id: str, *, outcome: str, reply_id: str, detail: str, now: datetime) -> None:
+    stamp = now.replace(tzinfo=None) if now.tzinfo else now
+    with engine.begin() as conn:
+        conn.execute(text(
+            "UPDATE abby_missed_reply_fixes SET outcome = :o, reply_id = :r, detail = :d, sent_at = :n "
+            "WHERE email_id = :i"
+        ), {"o": outcome, "r": reply_id, "d": detail[:500], "n": stamp, "i": email_id})
+
+
+def _handled_decision(engine, email_id: str) -> Optional[tuple[str, str, str, str]]:
+    with engine.connect() as conn:
+        row = conn.execute(text(
+            "SELECT action, category, detail, coalesce(reply_id, '') FROM abby_handled WHERE email_id = :i"
+        ), {"i": email_id}).fetchone()
+    if not row:
+        return None
+    return str(row[0] or ""), str(row[1] or ""), str(row[2] or ""), str(row[3] or "")
+
+
+def run_missed_replies(engine, *, client: Any, campaign_ids: Iterable[str],
+                       now: Optional[datetime] = None,
+                       think: Optional[Callable[..., abby.Decision]] = None,
+                       lead_info: Optional[Callable[[str], dict]] = None,
+                       build_deck: Optional[Callable[..., str]] = None,
+                       limit: int = 15) -> dict[str, Any]:
+    """Send the reply Abby missed. No Slack. One send per email id.
+
+    Send-info holds and true auto-replies, out-of-office notes, and departed
+    notices are left alone. A second run does not send again.
+    """
+
+    now = now or datetime.now(timezone.utc)
+    summary: dict[str, Any] = {"seen": 0, "sent": 0, "skipped": 0, "failed": 0}
+    if mode() == "off":
+        summary["reason"] = "ABBY_MODE is off"
+        return summary
+    ensure_tables(engine)
+    think = think or abby.think
+    lead_info = lead_info or (lambda _email: {})
+    quiet = lambda _text: None  # noqa: E731 — the fixer does not ping David
+    since = backlog_since(now)
+    handled = 0
+    for campaign_id in list(campaign_ids):
+        if handled >= limit:
+            break
+        try:
+            received = client.received_since(since, campaign_id) or []
+        except Exception:  # noqa: BLE001
+            logger.exception("[abby] missed-reply scan failed")
+            continue
+        for email in received:
+            if handled >= limit:
+                break
+            email_id = str(email.get("id") or "")
+            lead = str(email.get("lead") or email.get("from_address_email") or "").lower()
+            if not email_id or is_team(lead) or is_team(_sender(email)):
+                continue
+            if abby.automated_notice(email, lead_email=lead):
+                summary["skipped"] += 1
+                continue
+            if abby.send_info_route(email, lead_email=lead):
+                summary["skipped"] += 1
+                continue
+            stored = _handled_decision(engine, email_id)
+            previous = ""
+            if stored:
+                action, category, detail, _reply = stored
+                previous = action
+                if not should_reopen_handled(action, category, detail, detail):
+                    summary["skipped"] += 1
+                    continue
+            if not _claim_fix(engine, email_id, lead=lead, campaign_id=str(campaign_id or ""), previous=previous):
+                summary["skipped"] += 1
+                continue
+            summary["seen"] += 1
+            handled += 1
+            if stored:
+                with engine.begin() as conn:
+                    conn.execute(text("DELETE FROM abby_handled WHERE email_id = :i"), {"i": email_id})
+            try:
+                part = handle_email(
+                    engine, email, client=client, campaign_id=str(campaign_id or ""), now=now,
+                    think=think, post_slack=quiet, lead_info=lead_info, build_deck=build_deck,
+                )
+            except Exception:  # noqa: BLE001
+                logger.exception("[abby] missed-reply fix failed")
+                _finish_fix(engine, email_id, outcome="failed", reply_id="", detail="fixer error", now=now)
+                summary["failed"] += 1
+                continue
+            after = _handled_decision(engine, email_id)
+            detail = after[2] if after else ""
+            reply_id = after[3] if after else ""
+            if part.get("replied"):
+                outcome = "sent"
+                summary["sent"] += 1
+            elif "deck generation failed" in detail:
+                outcome = "failed"
+                summary["failed"] += 1
+            else:
+                outcome = "still_held" if part.get("held") else "skipped"
+                summary["skipped"] += 1
+            _finish_fix(engine, email_id, outcome=outcome, reply_id=reply_id, detail=detail or outcome, now=now)
+    return summary

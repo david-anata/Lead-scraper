@@ -20,21 +20,22 @@ def d(cat, reply="", conf=0.9, **kw):
                        lead_email="ann@huppy.com", thread_categories=kw.pop("prior", []) if "prior" in kw else [])
 
 
-def test_interested_replies_with_link_and_does_not_cc_david():
+def test_interested_sends_the_deck_and_ccs_the_founder():
     r = d("interested", f"Thanks Ann. Grab a time with David here: {LINK}\n\n{abby.SIGNATURE}")
-    assert r.action == "reply" and r.cc == [] and r.interest == 1 and r.slack
-    assert "CC'd David" not in r.slack
+    assert r.action == "reply" and r.send_deck and r.cc == [abby.founder_email()]
+    assert r.interest is None and LINK not in r.reply and "{deck_url}" in r.reply
 
 
-def test_interested_without_link_is_held():
+def test_interested_without_a_model_link_still_sends_the_deck():
     r = d("interested", "Thanks Ann, David will reach out.")
-    assert r.action == "hold" and "missing booking link" in r.reason
+    assert r.action == "reply" and r.send_deck and "deck" in r.note
 
 
-def test_price_mentions_99_ok_but_made_up_numbers_held():
+def test_price_sends_the_deck_and_does_not_keep_a_made_up_stat():
     ok = d("price", f"Plans start at $99 a month after the free 14-day trial. {LINK}")
     bad = d("price", f"Brands like yours grow 40% with us. {LINK}")
-    assert ok.action == "reply" and bad.action == "hold"
+    assert ok.action == "reply" and ok.send_deck
+    assert bad.action == "reply" and bad.send_deck and "40" not in bad.reply
 
 
 def test_opt_out_blocks_domain_and_never_replies():
@@ -271,7 +272,7 @@ def test_quoted_departed_notice_does_not_hide_a_new_human_reply():
     r = abby.think([{"ue_type": 2, "body": {"text": body}, "is_auto_reply": 0}],
                    lead_email="newperson@riomarshoes.com", company="Riomar", first_name="Sam",
                    thread_categories=[], llm=lambda _p: raw)
-    assert r.action == "reply" and r.interest == 1 and r.note == ""
+    assert r.action == "reply" and r.send_deck and r.interest is None and r.note == "deck"
 
 
 def test_signature_info_address_does_not_block_a_human():
@@ -283,7 +284,7 @@ def test_signature_info_address_does_not_block_a_human():
     r = abby.think([{"ue_type": 2, "body": {"text": body}, "headers": {"Auto-Submitted": "no"}}],
                    lead_email="ann@huppy.com", company="Huppy", first_name="Ann",
                    thread_categories=[], llm=lambda _p: raw)
-    assert r.action == "reply" and r.interest == 1 and r.cc == [] and r.to_extra == []
+    assert r.action == "reply" and r.send_deck and r.interest is None and r.cc == [abby.founder_email()]
 
 
 @pytest.mark.parametrize("lead,body,address,name,first,company", [
@@ -316,16 +317,18 @@ def test_human_referral_survives_decide_when_the_message_is_passed():
 
 
 def test_em_dash_cleaned_and_unknown_links_held():
-    r = d("interested", f"Great — here: {LINK} Abby")
+    r = d("question", "Great — the trial is 14 days.\n\nAbby")
     assert "—" not in r.reply and r.action == "reply"
-    assert d("interested", f"See https://evil.example.com and {LINK}").action == "hold"
+    held = d("question", "See https://evil.example.com for the 14 day trial.")
+    assert "evil.example.com" not in held.reply
+    assert held.action == "reply" and "Can I send it to you?" in held.reply
 
 
 def test_model_failure_becomes_hold():
     def boom(_):
         raise RuntimeError("down")
-    r = abby.think([{"ue_type": 2, "body": {"text": "yes"}}], lead_email="a@b.com", company="B",
-                   first_name="A", thread_categories=[], llm=boom)
+    r = abby.think([{"ue_type": 2, "body": {"text": "What happens on day 10?"}}], lead_email="a@b.com",
+                   company="B", first_name="A", thread_categories=[], llm=boom)
     assert r.action == "hold"
 
 
@@ -418,7 +421,7 @@ def test_live_reply_sent_once_and_recorded(engine):
     again = runner.run(engine, client=c, campaign_id="camp", now=NOW, think=fixed(dec), post_slack=posts.append)
     assert out["replied"] == 1 and again["seen"] == 0 and len(c.replies) == 1
     assert c.replies[0]["cc"] == [abby.DAVID_EMAIL] and c.replies[0]["subject"] == "Re: Idea for Huppy"
-    assert c.interest == [("ann@huppy.com", 1)]
+    assert c.interest == []
 
 
 def test_shadow_mode_sends_nothing(engine, monkeypatch):
@@ -489,7 +492,10 @@ def test_nudge_1_after_3_days_replies_to_prospects_email(engine):
     c = nudge_client(4)
     out = runner.run(engine, client=c, campaign_id="camp", now=NOW)
     assert out["nudges"] == 1 and c.replies[0]["reply_to"] == "e1"
-    assert LINK in c.replies[0]["body"] and "Hi Ann" in c.replies[0]["body"] and c.replies[0]["cc"] == []
+    body = c.replies[0]["body"]
+    assert "Hi Ann" in body and c.replies[0]["cc"] == []
+    assert abby.BOOKING_LINK not in body
+    assert "Can I send it to you?" in body or "Mind if I send it?" in body
 
 
 def test_no_nudge_before_3_days_or_when_prospect_wrote_last(engine):
@@ -570,7 +576,7 @@ def test_not_now_followup_sent_after_60_days(engine):
     c2 = FakeClient([])
     late = runner.run(engine, client=c2, campaign_id="camp", now=NOW + timedelta(days=61))
     assert early["followups"] == 0 and late["followups"] == 1
-    assert LINK in c2.replies[0]["body"]
+    assert "Mind if I put something together for you?" in c2.replies[0]["body"]
 
 
 def test_followup_text_has_no_stray_numbers():
@@ -703,21 +709,20 @@ def test_out_of_office_is_not_suppressed(engine):
     assert action == "ignore" and "out of office" in detail.lower()
 
 
-def test_prompt_uses_the_booking_link_signature_and_optional_founder_cc():
+def test_prompt_asks_for_a_yes_and_does_not_offer_the_calendar():
     assert abby.BOOKING_LINK == "https://calendar.app.google/5TwjbbpmKaGAQuBk8"
-    assert abby.BOOKING_LINK in abby.SYSTEM
+    assert abby.BOOKING_LINK not in abby.SYSTEM
     assert "AI account specialist on David's team" in abby.SYSTEM
     assert "Never say \"virtual assistant\"" in abby.SYSTEM
     assert "Looping David" not in abby.SYSTEM
     assert "cc_david" in abby.SYSTEM
-    assert "because he is the one managing the calls" in abby.SYSTEM
+    assert "Do not send a booking link" in abby.SYSTEM
     assert abby.SIGNATURE in abby.SYSTEM
     reply = (f"Thanks Ann. Grab a time with David here: {LINK}\n\n"
              f"David, any thoughts on timing for the 14-day trial?\n\n{abby.SIGNATURE}")
-    assert abby.validate_reply("interested", reply)[0]
-    assert d("interested", reply).cc == []
+    assert abby.validate_reply("interested", reply) == (False, "booking link")
     chosen = d("interested", reply, cc_david=True)
-    assert chosen.cc == [abby.DAVID_EMAIL] and "CC'd David" in chosen.slack
+    assert chosen.send_deck and chosen.cc == [abby.founder_email()] and chosen.interest is None
 
 
 def test_templates_sign_as_account_specialist_and_do_not_cc():
@@ -1189,7 +1194,7 @@ def test_unassigned_mail_is_read_outside_the_campaign_poll(engine):
     )
     assert client.asked == ""
     assert out["replied"] == 1 and client.replies[0]["reply_to"] == "e1"
-    assert client.interest == [("cheyanne@rookiewellness.com", 1)]
+    assert client.interest == []
     with engine.connect() as conn:
         stored = conn.execute(text("SELECT campaign_id FROM abby_handled")).scalar()
     assert stored == "camp"

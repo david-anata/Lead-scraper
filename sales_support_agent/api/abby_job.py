@@ -13,7 +13,7 @@ import os
 from datetime import datetime, timezone
 from typing import Any
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Header, HTTPException, Request
 
 from sales_support_agent.api.outbound_jobs import _require_scheduler_auth
 
@@ -27,10 +27,10 @@ def lead_info_from_db(engine):
         try:
             with engine.connect() as conn:
                 row = conn.execute(text(
-                    "SELECT first_name, brand FROM outbound_enriched_contacts WHERE email = :e"),
+                    "SELECT first_name, brand, domain FROM outbound_enriched_contacts WHERE email = :e"),
                     {"e": email}).fetchone()
             if row:
-                return {"first_name": row[0] or "", "company": row[1] or ""}
+                return {"first_name": row[0] or "", "company": row[1] or "", "domain": row[2] or ""}
         except Exception:  # noqa: BLE001
             logger.exception("[abby] lead lookup failed")
         return {}
@@ -128,6 +128,27 @@ def _maybe_analytics_backfill() -> dict[str, Any] | None:
         return {"ok": False, "ran": False, "reason": "backfill skipped"}
 
 
+def _maybe_apply_yes_cta() -> dict[str, Any]:
+    """One live rewrite of the cold asks. Later ticks leave Instantly alone."""
+
+    try:
+        from outbound_yes_cta import maybe_apply_yes_cta
+        from sales_support_agent.models.database import get_engine
+
+        result = maybe_apply_yes_cta(get_engine())
+        if isinstance(result, dict):
+            # The stored report has the full bodies. The cron response stays short.
+            return {
+                "ok": bool(result.get("ok")),
+                "skipped": bool(result.get("skipped")),
+                "status": result.get("status") or "",
+                "reason": result.get("reason") or result.get("error") or "",
+            }
+    except Exception:  # noqa: BLE001
+        logger.exception("[abby] yes-cta apply hook failed")
+    return {"ok": False, "skipped": True, "reason": "hook failed"}
+
+
 def _maybe_register_webhook(request: Request) -> dict[str, Any]:
     """Register Abby's Instantly webhook after deploy. Missing keys skip quietly."""
 
@@ -149,6 +170,7 @@ def run_scheduled_abby(request: Request) -> dict:
         "details": details,
         "enrich_via_abby": _run_enrich_after_abby(),
         "webhook_registration": _maybe_register_webhook(request),
+        "yes_cta": _maybe_apply_yes_cta(),
     }
     backfill = _maybe_analytics_backfill()
     if backfill is not None:
@@ -180,3 +202,95 @@ def run_scheduled_followups(request: Request) -> dict[str, Any]:
         logger.exception("[abby] scheduled follow-ups failed")
         return {"status": "error", "error": type(exc).__name__}
     return {"status": "ok", "sent": sent}
+
+
+def _require_internal_key(request: Request, provided: str) -> None:
+    """The same ``X-Internal-Api-Key`` check the other internal routes use."""
+
+    import secrets
+
+    configured = str(getattr(request.app.state.settings, "internal_api_key", "") or "").strip()
+    if not configured:
+        raise HTTPException(status_code=503, detail="Internal API is not configured.")
+    if not secrets.compare_digest(str(provided or "").strip(), configured):
+        raise HTTPException(status_code=401, detail="Invalid internal API key.")
+
+
+@router.api_route("/missed-replies", methods=["GET", "POST"])
+def run_missed_replies(request: Request) -> dict[str, Any]:
+    """Hourly pass for human replies Abby missed. It does not post to Slack."""
+
+    _require_scheduler_auth(request)
+    import abby_runner
+    import outbound_instantly_push as instantly_push
+    import outbound_reengage as reengage
+    from sales_support_agent.models.database import get_engine
+
+    if abby_runner.mode() == "off":
+        return {"status": "ok", "sent": 0, "reason": "ABBY_MODE is off"}
+    try:
+        engine = get_engine()
+        client = abby_runner.Instantly(instantly_push.api_key())
+        campaigns = abby_runner.watched_campaign_ids(
+            client.campaign_ids_named(reengage.NAME), engine,
+        )
+        summary = abby_runner.run_missed_replies(engine, client=client, campaign_ids=campaigns)
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("[abby] missed-reply fix failed")
+        return {"status": "error", "error": type(exc).__name__}
+    return {"status": "ok", **summary}
+
+
+@router.get("/deck-sends")
+def list_deck_sends(
+    request: Request,
+    since: str = "",
+    x_internal_api_key: str = Header(default=""),
+) -> dict[str, Any]:
+    """Deck sends since ``since`` that still have no founder reply on the thread."""
+
+    _require_internal_key(request, x_internal_api_key)
+    import abby_runner
+    import outbound_instantly_push as instantly_push
+    from datetime import datetime, timezone
+
+    from sales_support_agent.models.database import get_engine
+
+    raw = (since or "").strip()
+    if not raw:
+        raise HTTPException(status_code=400, detail="since is required.")
+    try:
+        parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="since must be an ISO timestamp.") from exc
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+
+    def threads(thread_id: str) -> list[dict]:
+        key = instantly_push.api_key()
+        if not key or not thread_id:
+            return []
+        return abby_runner.Instantly(key).thread(thread_id)
+
+    try:
+        rows = abby_runner.list_deck_sends_since(get_engine(), parsed, threads)
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("[abby] deck send list failed")
+        raise HTTPException(status_code=500, detail="Could not list deck sends.") from exc
+    return {"sends": rows}
+
+
+@router.api_route("/apply-yes-cta", methods=["POST"])
+def apply_yes_cta(request: Request) -> dict[str, Any]:
+    """Rewrite live cold asks and pause the calendar subsequence.
+
+    Not on the cron. Call it once after this code is deployed. The response
+    lists every step that changed. The Instantly key is not returned.
+    """
+
+    _require_scheduler_auth(request)
+    import outbound_instantly_push as instantly_push
+    from outbound_yes_cta import apply_with_instantly
+
+    report = apply_with_instantly(instantly_push.api_key())
+    return {"status": "ok" if not report.get("errors") else "error", **report}

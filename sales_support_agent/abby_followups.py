@@ -99,8 +99,8 @@ _OOO = ApprovedFollowup(
             ),
             body=(
                 "Hi {first_name}, {personal_line} Circling back on my note about "
-                "{brand}'s Amazon and Shopify growth. Worth a quick look this week? "
-                "Here's my calendar: {booking_link}"
+                "{brand}'s Amazon growth. I found something that could help. "
+                "Can I send it to you?"
             ),
         ),
     ),
@@ -120,9 +120,7 @@ _INTERESTED = ApprovedFollowup(
             ),
             body=(
                 "Hi {first_name}, {personal_line} That's exactly what the free "
-                "14-day trial is built for. Here's my calendar if a quick call works: "
-                "{booking_link}. Or you can start the trial today here: "
-                "https://dashboard.anatainc.com/signup. Which do you prefer?"
+                "14-day trial is built for. Mind if I put something together for {brand}?"
             ),
         ),
         FollowupStep(

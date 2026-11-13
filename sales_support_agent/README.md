@@ -282,10 +282,29 @@ kept on the `abby_reply_webhook_v1` sync marker.
 
 A human who asks Abby to send information to an address, including a role
 inbox such as partnerships@, is held for Slack. Abby does not email that
-address. Interest is set to Interested only for an interested or price reply.
-A referral, a question, or a wrong-person note does not. Instantly's own AI
-interest label can still enroll the Trial Offer subsequence "Interested -
-book with David"; that setting is changed in Instantly, not in this app.
+address. A yes, or a price question, does not mark the lead Interested.
+That status enrolls the Trial Offer subsequence "Interested - book with
+David", which would send a calendar email on top of the plan. Abby instead
+builds the prospect strategy deck and replies on the same thread, CC'ing
+the founder address from `RBAC_SUPERADMIN_EMAILS` (default
+`david@anatainc.com`). The send is stored in `abby_deck_sends`. Apply
+`sales_support_agent/migrations/20261113_abby_deck_sends.sql` before the
+first live send. `GET /api/jobs/abby/deck-sends?since=` with
+`X-Internal-Api-Key` lists sends since that time that still have no founder
+reply on the thread.
+
+Cold steps ask for a small yes instead of a call. The five-minute Abby job
+rewrites the live campaign steps once and pauses subsequence
+`0c2f113f-ebed-4890-92df-c241d925dcdf`. The before/after report is stored on
+`abby_copy_applies` (`apply_key = yes-cta-v1`). A later tick does not call
+Instantly again. `POST /api/jobs/abby/apply-yes-cta` is the same rewrite,
+for a manual run. Instantly's own AI interest label can still enroll that
+subsequence until the pause has run.
+
+`GET /api/jobs/abby/missed-replies` runs hourly. It sends the reply for a
+human message Abby missed, ignored, or held, except a send-info hold and a
+true auto-reply, out-of-office note, or departed notice. It does not post
+to Slack. Each fix is one row in `abby_missed_reply_fixes`.
 
 Out-of-office replies schedule one follow-up for the day after the parsed
 return date, or 7 days when no date is present. Not-now replies schedule

@@ -5,9 +5,10 @@ drafts text; this module decides what is allowed to happen, so a bad model
 answer can never send to the wrong person, skip an opt-out, or promise
 something outside the offer.
 
-  interested / asks for the breakdown -> reply with the 14-day trial and the
-      booking link, mark Interested. David is CC'd only when Abby sets cc_david.
-  price question -> "plans start at $99/mo", trial, booking link. No automatic CC.
+  interested / a clear yes / a price question -> build that brand's Amazon
+      strategy deck and reply with it on the same thread. David is CC'd.
+      Interest is not set, so the calendar subsequence does not start.
+  price question -> the same deck, not a booking link.
   not now -> short thanks, then check-ins at 30 and 75 days.
   already has an agency or tool -> ONE reply (operating cost, how do they know
       it covers everything), then one later note that the free trial can run
@@ -24,7 +25,8 @@ something outside the offer.
       Address the person who wrote, not the stored lead, when those differ.
       Post the send to Slack.
   opt-out -> no reply, block the whole company domain, mark not interested.
-  question Abby is unsure about -> answer what she can, offer the call.
+  question Abby is unsure about -> answer what she can, then ask for a small
+      yes (can she send a short plan). No booking link.
   hostile / legal -> no reply, blocklist the lead, mark not interested.
   low confidence -> no reply, ask David in Slack.
   asked whether she is AI -> she is an AI account specialist on David's team.
@@ -68,26 +70,26 @@ CATEGORIES = (
 # Categories where Abby writes back. send_info is held for a person.
 REPLY_CATEGORIES = {"interested", "price", "not_now", "has_solution", "referral",
                     "question", "ai_question", "wrong_person"}
-# Instantly interest. 1 enrolls the "Interested - book with David" subsequence,
-# so only a real interested or price reply may set it. Referrals, questions,
-# and wrong-person notes must not.
-INTEREST = {"interested": 1, "price": 1, "opt_out": -1}
+# Instantly interest. 1 enrolls "Interested - book with David", which sends a
+# calendar email and races the deck. Abby does not write 1. Opt-out still
+# writes -1. Referrals, questions, and deck sends leave interest unset.
+INTEREST = {"opt_out": -1}
 
 FACTS = f"""About Anata (only use these facts):
 - Anata Intelligence builds a brand's Amazon growth strategy and then runs the ad actions automatically to hit it.
 - Offer: a free 14-day trial (card on file, nothing charged for 14 days), then the $99/mo Starter plan. Sign up: https://dashboard.anatainc.com/signup. We review results with them on day 10.
 - During the trial we build their Amazon strategy and test full ad automation on their account.
 - Never say no card is needed.
-- David Narayan is the founder and owner; he takes every call. Anata is based in Lehi, Utah.
-- Booking link for a call with David: {BOOKING_LINK}
-- The cold emails offered a short Amazon breakdown. David records a custom video for interested brands."""
+- David Narayan is the founder and owner. He is CC'd when the Amazon plan goes out, and he follows up himself. Anata is based in Lehi, Utah.
+- Do not send a booking link, a calendar link, or a request to book a call.
+- The cold emails ask for a small yes, such as whether Abby can send a short Amazon plan. A yes gets that plan on this thread."""
 
 SYSTEM = f"""You are Abby from Anata, replying inside an existing cold email thread.
 {FACTS}
 
 Classify the prospect's latest message and draft Abby's reply.
 Categories: {", ".join(CATEGORIES)}.
-- interested: wants to learn more, see the breakdown/video, or talk.
+- interested: says yes, wants the plan, or wants to learn more. A clear yes is interested even when it is only one word.
 - price: asks what it costs (you may say plans start at $99/month).
 - not_now: timing is wrong, maybe later.
 - has_solution: already has an agency, tool, or team for Amazon, or says they already sell on Amazon.
@@ -102,16 +104,15 @@ Categories: {", ".join(CATEGORIES)}.
 - wrong_person: a human says this is not their area and names no colleague and no address to send information to.
 
 Reply rules by category:
-- interested: thank them, one line on the 14-day trial (we build their Amazon strategy and run the ad automation), invite them to grab a time with David at the booking link. Under 80 words. Do not say you are looping David in.
-- price: plans start at $99/month, mention the free 14-day trial, booking link. Do not say you are looping David in.
+- interested and price: reply must be null. Code sends the Amazon plan and CCs David. Do not ask them to book a call.
 - not_now: two short sentences: thanks, and you will check back in about a month. No link.
-- has_solution: respectful, one short paragraph: ask what it costs them to run that setup today and how they know it is covering everything they need on Amazon; mention the 14-day trial can run alongside what they have. No pressure.
-- referral: only when a human wrote the referral. Address the colleague by name if known, say who pointed you to them, one line on the trial, booking link.
-- question: answer only from the facts; for anything else say David covers it on a quick call and give the booking link.
-- ai_question: be honest. Say "{AI_DISCLOSURE}" Never say "virtual assistant". Then continue helpfully.
+- has_solution: respectful, one short paragraph: ask what it costs them to run that setup today and how they know it is covering everything they need on Amazon; mention the 14-day trial can run alongside what they have. No pressure. No booking link.
+- referral: only when a human wrote the referral. Address the colleague by name if known, say who pointed you to them, one line on the trial, and ask if you can send a short plan. No booking link.
+- question: answer only from the facts, then ask if you can send a short Amazon plan. No booking link and no calendar.
+- ai_question: be honest. Say "{AI_DISCLOSURE}" Never say "virtual assistant". Then ask if you can send a short Amazon plan. No booking link.
 - wrong_person: thank them and ask who handles Amazon or marketing growth. No booking link. Address the person who wrote, not a different name on the stored lead.
 - send_info, opt_out, hostile, auto_reply, other: reply must be null.
-Bringing David in: he is CC'd only when you set cc_david to true, because he is the one managing the calls. Do that when a warm prospect is ready for a call, when they push back on something outside the facts, for a larger brand, or on a stalled thread. Frame it in the reply, for example "David, any thoughts on X?" Leave cc_david false otherwise, and do not mention looping him in.
+Bringing David in: set cc_david true only when they push back on something outside the facts, for a larger brand, or on a stalled thread. A yes does not need cc_david. Code CCs him when the plan goes out. Frame a cc in the reply, for example "David, any thoughts on X?" Do not mention looping him in otherwise. Do not ask anyone to book a call.
 Style: plain, warm, short, founder-to-founder, no em dashes, no exclamation marks overload, no claims about their numbers. Never say "virtual assistant". Sign exactly as:
 {SIGNATURE}
 
@@ -132,6 +133,7 @@ class Decision:
     reason: str = ""
     note: str = ""                   # recorded on the handled row; never sent
     schedule_kind: str = ""          # out_of_office | not_now | has_solution | ""
+    send_deck: bool = False          # reply with the Amazon plan, CC the founder
 
 
 def cc_david_requested(model_out: dict[str, Any]) -> bool:
@@ -152,17 +154,141 @@ def clean(text: str) -> str:
     return t.strip()
 
 
+def founder_email() -> str:
+    """The founder address Abby CCs on a deck send.
+
+    ``RBAC_SUPERADMIN_EMAILS`` is the configured list (the same default the
+    app uses). ``DAVID_EMAIL`` is that default when the env var is unset.
+    """
+
+    raw = (os.getenv("RBAC_SUPERADMIN_EMAILS") or "").strip()
+    for part in raw.split(","):
+        address = part.strip().lower()
+        if "@" in address:
+            return address
+    return DAVID_EMAIL
+
+
+_SHORT_YES = frozenset({
+    "yes", "yes please", "yes pls", "yeah", "yep", "yup", "sure", "sure thing",
+    "sounds good", "sounds great", "go ahead", "send it", "send it over",
+    "please do", "please send", "please send it", "ok", "okay", "absolutely",
+    "do it", "that works", "i'm in", "im in", "why not",
+})
+_NOT_A_YES = (
+    "not interested", "no thanks", "no thank", "unsubscribe", "stop email",
+    "already have", "not now", "don't send", "do not send", "not the right",
+    "wrong person", "left the", "out of the office", "out of office",
+)
+_CALL_ASK_RE = re.compile(
+    r"grab a time|book a (call|time)|booking link|calendar|quick call|hop on a call",
+    re.I,
+)
+
+
+def explicit_yes(text: str) -> bool:
+    """True when the prospect's own words are a small yes to the offer.
+
+    A long note, an opt-out, or a request to route us elsewhere is not a yes.
+    ``send_info_route`` still runs first.
+    """
+
+    own = _own_words(text)
+    low = re.sub(r"\s+", " ", own).strip().lower()
+    if not low or len(low) > 180 or "@" in low:
+        return False
+    if any(phrase in low for phrase in _NOT_A_YES):
+        return False
+    if re.search(r"\b(talk to|speak to|reach out to|contact)\b", low):
+        return False
+    compact = re.sub(r"[^a-z' ]", "", low).strip()
+    if compact in _SHORT_YES:
+        return True
+    words = compact.split()
+    if len(words) <= 14 and re.search(
+        r"\b(yes|yeah|yep|sure|sounds good|send it|go ahead|please do)\b",
+        compact,
+    ):
+        return True
+    return False
+
+
+def deck_reply(first_name: str, company: str, url: str) -> str:
+    """The short note that carries the plan. Signed Abby. No call ask."""
+
+    name = (first_name or "").strip().split()[:1]
+    first = name[0] if name and name[0].lower() not in {"there", "unknown"} else ""
+    hi = f"Hi {first}," if first else "Hi,"
+    brand = (company or "").strip() or "your brand"
+    link = (url or "").strip()
+    return (
+        f"{hi}\n\n"
+        f"I put a short Amazon plan together for {brand}. Here it is.\n\n"
+        f"{link}\n\n"
+        f"{SIGNATURE}"
+    )
+
+
+def yes_ask_reply(first_name: str, company: str) -> str:
+    """A small yes, used when they have not agreed to receive the plan yet."""
+
+    name = (first_name or "").strip().split()[:1]
+    first = name[0] if name and name[0].lower() not in {"there", "unknown"} else ""
+    hi = f"Hi {first}," if first else "Hi,"
+    brand = (company or "").strip() or "your brand"
+    return (
+        f"{hi}\n\n"
+        f"I found something that could help {brand}'s Amazon growth. Can I send it to you?\n\n"
+        f"{SIGNATURE}"
+    )
+
+
+def frame_yes_ask(reply: str, first_name: str, company: str) -> str:
+    """Drop a call ask and keep a small yes. The plan link is added later."""
+
+    kept: list[str] = []
+    for line in clean(reply).split("\n"):
+        stripped = line.strip()
+        if not stripped or stripped in {SIGNATURE, "Abby", "Account Specialist, Anata"}:
+            continue
+        if "Account Specialist" in stripped or BOOKING_LINK in stripped or _CALL_ASK_RE.search(stripped):
+            continue
+        kept.append(line.replace(" - ", ", ").rstrip())
+    body = "\n".join(kept).strip()
+    brand = (company or "").strip() or "your brand"
+    ask = f"I found something that could help {brand}'s Amazon growth. Can I send it to you?"
+    lowered = body.lower()
+    if "can i send" not in lowered and "mind if i put" not in lowered:
+        body = f"{body}\n\n{ask}".strip() if body else ask
+    return f"{body}\n\n{SIGNATURE}"
+
+
+def deck_decision(category: str, lead_email: str, first_name: str, company: str) -> Decision:
+    """Send the plan. Do not mark Instantly Interested and do not ask for a call."""
+
+    return Decision(
+        category,
+        "reply",
+        reply=deck_reply(first_name, company, "{deck_url}"),
+        cc=[founder_email()],
+        interest=None,
+        send_deck=True,
+        reason="yes: send the Amazon plan",
+        note="deck",
+    )
+
+
 def validate_reply(category: str, text: str) -> tuple[bool, str]:
     t = clean(text)
     if not t:
         return False, "empty"
     if len(t.split()) > MAX_WORDS:
         return False, "too long"
+    if BOOKING_LINK in t or "calendar.app.google" in t:
+        return False, "booking link"
     links = re.findall(r"https?://\S+", t)
-    if any(not l.rstrip(".,)").startswith(BOOKING_LINK) for l in links):
+    if links:
         return False, "unknown link"
-    if category in {"interested", "price", "referral"} and BOOKING_LINK not in t:
-        return False, "missing booking link"
     # Only the offer's own numbers may appear ($99, 14-day), never a made-up stat.
     bare = re.sub(r"https?://\S+", "", t)
     for num in re.findall(r"\d+(?:[.,]\d+)?", bare):
@@ -665,6 +791,13 @@ def decide(model_out: dict[str, Any], *, lead_email: str, thread_categories: lis
         return Decision(cat, "ignore", interest=-1, reason="already answered the agency objection once")
     if cat not in REPLY_CATEGORIES:
         return Decision(cat, "hold", slack=f"Unhandled reply type {cat} from {lead_email}.", reason="unhandled")
+    if cat in {"interested", "price"} or (
+        cat in {"question", "other"} and explicit_yes(own_text)
+    ):
+        return deck_decision(
+            "interested" if cat == "other" else cat,
+            lead_email, addressed, company,
+        )
 
     from sales_support_agent.abby_playbook import render_immediate_reply
 
@@ -683,6 +816,11 @@ def decide(model_out: dict[str, Any], *, lead_email: str, thread_categories: lis
     )
     if approved:
         reply = approved
+    elif cat in {"question", "ai_question"}:
+        reply = frame_yes_ask(reply, addressed, company)
+        ok, why = validate_reply(cat, reply)
+        if not ok:
+            reply = yes_ask_reply(addressed, company)
     else:
         ok, why = validate_reply(cat, reply)
         if not ok:
@@ -705,11 +843,11 @@ def decide(model_out: dict[str, Any], *, lead_email: str, thread_categories: lis
         d.schedule_kind = "has_solution"
     if cat in {"interested", "price", "referral"} and not d.slack:
         cc_note = " and CC'd David" if DAVID_EMAIL in d.cc else ""
-        if cat == "referral" and BOOKING_LINK not in d.reply:
+        if cat == "referral":
             named = str(model_out.get("referral_name") or "the colleague")
             d.slack = f"Referral from {lead_email}. Abby wrote {named}."
         else:
-            d.slack = f"Positive reply from {lead_email} ({cat}). Abby replied with the booking link{cc_note}."
+            d.slack = f"Positive reply from {lead_email} ({cat}). Abby replied{cc_note}."
     if cat == "wrong_person" and not d.slack:
         wrote = addressed or "them"
         d.slack = (
@@ -767,7 +905,7 @@ CLASSIFY_SYSTEM = f"""You classify a prospect's latest email for Abby at Anata.
 {FACTS}
 
 Categories: {", ".join(CATEGORIES)}.
-- interested: wants to learn more, see the breakdown/video, or talk.
+- interested: says yes, wants the plan, or wants to learn more. A clear yes is interested even when it is only one word.
 - price: asks what it costs.
 - not_now: timing is wrong, maybe later.
 - has_solution: already has an agency, tool, or team for Amazon, or says they already sell on Amazon.
@@ -802,7 +940,7 @@ def call_model(prompt: str, api_key: Optional[str] = None) -> str:
     )
     data = parse_model_json(_message_text(classified))
     category = str(data.get("category") or "other")
-    if category not in REPLY_CATEGORIES:
+    if category not in REPLY_CATEGORIES or category in {"interested", "price"}:
         data["reply"] = None
         return json.dumps(data)
     drafted = llm_client(caller="abby_draft", api_key=api_key).messages.create(
@@ -856,6 +994,9 @@ def think(thread: list[dict[str, Any]], *, lead_email: str, company: str, first_
         if route:
             writer = greeting_name(latest, lead_email=lead_email, lead_first_name=first_name)
             return _hold_send_info(route, lead_email=lead_email, message=latest, writer=writer)
+    if explicit_yes(body):
+        writer = greeting_name(latest, lead_email=lead_email, lead_first_name=first_name)
+        return deck_decision("interested", lead_email, writer, company)
     if not _own_words(body).strip():
         return Decision(
             "other", "hold",

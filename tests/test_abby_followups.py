@@ -49,15 +49,17 @@ def test_out_of_office_personal_lines_and_timing():
     assert lines["vacation"] == "Hope you had a great vacation."
     assert lines["conference_or_trade_show"] == "Hope the show was worth the trip."
     assert lines["no_reason"] == "Hope your time away went well."
-    assert "{personal_line}" in step.body and "{booking_link}" in step.body
-    assert "{brand}'s Amazon and Shopify growth" in step.body
+    assert "{personal_line}" in step.body and "{booking_link}" not in step.body
+    assert "Can I send it to you?" in step.body
+    assert "{brand}'s Amazon growth" in step.body
 
 
 def test_interested_not_booked_steps():
     steps = load_approved_followups()["interested_not_booked"].steps
     assert steps[0].send_when == "2 days after their reply"
     assert "free 14-day trial" in steps[0].body
-    assert "{booking_link}" in steps[0].body
+    assert "{booking_link}" not in steps[0].body
+    assert "Mind if I put something together" in steps[0].body
     assert steps[1].send_when == "4 days after step 1"
     assert steps[1].body == (
         "Hi {first_name}, should I hold a trial spot for {brand}, "

@@ -25,7 +25,7 @@ EMAIL_1 = """Hi {{firstName}},
 
 At a lot of brands, Amazon sits with sales, and it's one of the quickest places to add revenue against the number. We handle the strategy and the day-to-day ads, and we keep an eye on price and the buy box so growth doesn't come at the cost of margin. You can try it free for 14 days, and plans start at $99 a month after that.
 
-Open to a quick intro with David, or should I send a short strategy deck for {{companyName}}?
+I found something that could help {{companyName}}'s Amazon growth. Can I send it to you?
 
 Abby
 Account Specialist, Anata"""
@@ -34,14 +34,16 @@ EMAIL_2 = """Hi {{firstName}},
 
 Quick follow-up. If Amazon is part of how {{companyName}} hits its number, we can usually find revenue that's being left on the table, whether that's listings, ads, or price and buy box issues. It's free to try for 14 days, then plans start at $99 a month.
 
-Would a quick intro with David help, or should I send over a short strategy deck?
+Mind if I put something together for you?
 
 Abby
 Account Specialist, Anata"""
 
 EMAIL_3 = """Hi {{firstName}},
 
-I'll leave it here. If Amazon isn't a priority for {{companyName}} right now, no worries at all. If it is, just reply "intro" or "deck" and I'll take care of the rest.
+I'll leave it here. If Amazon isn't a priority for {{companyName}} right now, no worries at all. If it is, I can put a short plan together.
+
+Want me to send it?
 
 Abby
 Account Specialist, Anata"""

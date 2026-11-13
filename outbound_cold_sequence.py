@@ -1,8 +1,8 @@
 """Rules for outbound cold sequences.
 
 A cold step is the first-touch email we generate for Instantly. It cannot
-contain a URL. The booking link belongs in Abby's reply after a prospect
-responds, not in these steps.
+contain a URL. The ask is a small yes. The plan goes out in Abby's reply
+after the prospect says yes, not in these steps.
 """
 
 from __future__ import annotations

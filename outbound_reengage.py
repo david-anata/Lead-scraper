@@ -29,14 +29,14 @@ I reached out a while back about {{companyName}} on Amazon. Since then we change
 
 We now build your Amazon strategy and run the ad actions automatically, and you can try it free for 14 days. After that, plans start at $99 a month.
 
-Worth a look for {{companyName}}?
+I found something that could help {{companyName}}'s Amazon growth. Can I send it to you?
 
 {{RANDOM | Best | Cheers}},
 {{sendingAccountFirstName}}"""
-EMAIL_2 = """{{firstName | there}}, short version: free for 14 days, we build the strategy and run the ads. Want me to set it up?
+EMAIL_2 = """{{firstName | there}}, short version: free for 14 days, we build the strategy and run the ads. Mind if I put something together for {{companyName}}?
 
 {{sendingAccountFirstName}}"""
-EMAIL_3 = """Last one from me. If Amazon isn't a priority for {{companyName}} right now, no worries. If it is, just reply "trial" and I'll get it started.
+EMAIL_3 = """Last one from me. If Amazon isn't a priority for {{companyName}} right now, no worries. If it is, mind if I put something together?
 
 {{sendingAccountFirstName}}"""
 
