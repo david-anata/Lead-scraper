@@ -158,6 +158,57 @@ def test_process_reply_does_not_send_when_mode_is_off(monkeypatch):
     assert client.replies == []
 
 
+def test_webhook_fetches_a_full_email_when_the_body_is_empty(monkeypatch):
+    monkeypatch.setenv("ABBY_MODE", "live")
+    monkeypatch.setenv("ABBY_CAMPAIGN_IDS", "camp")
+    monkeypatch.setenv("ABBY_TAKEOVER_AT", "2020-01-01T00:00:00Z")
+    engine = create_engine("sqlite://")
+    seen = {}
+
+    class Client(_Client):
+        def get_email(self, email_id):
+            self.fetched = email_id
+            return {
+                "id": email_id, "thread_id": "t-full", "lead": "cheyanne@rookiewellness.com",
+                "from_address_email": "cheyanne@rookiewellness.com", "campaign_id": "camp",
+                "ue_type": 2, "is_auto_reply": 0,
+                "body": {"text": "Yes, tell me more about the trial."},
+            }
+
+    def think(thread, **_kwargs):
+        seen["text"] = (thread[-1].get("body") or {}).get("text")
+        return abby.Decision("interested", "reply", reply=f"Hi {LINK}", interest=1)
+
+    client = Client()
+    result = process_reply(
+        {
+            "event_type": "reply_received", "email_id": "empty-1", "thread_id": "t-full",
+            "lead_email": "cheyanne@rookiewellness.com", "campaign_id": "",
+            "reply_text": "", "timestamp": "2026-11-02T10:00:00Z",
+        },
+        engine=engine, client=client, now=NOW, think=think,
+    )
+    assert client.fetched == "empty-1"
+    assert seen["text"] == "Yes, tell me more about the trial."
+    assert result["status"] == "processed" and result["counts"]["replied"] == 1
+
+
+def test_process_reply_still_handles_mail_with_no_campaign(monkeypatch):
+    monkeypatch.setenv("ABBY_MODE", "live")
+    monkeypatch.setenv("ABBY_CAMPAIGN_IDS", "camp")
+    engine = create_engine("sqlite://")
+    result = process_reply(
+        {
+            "event_type": "reply_received", "email_id": "none-1",
+            "lead_email": "cheyanne@rookiewellness.com", "reply_text": "Interested.",
+            "campaign_id": None, "timestamp": "2026-11-02T10:00:00Z",
+        },
+        engine=engine, client=_Client(), now=NOW,
+        think=lambda *_a, **_k: abby.Decision("interested", "reply", reply=f"Hi {LINK}", interest=1),
+    )
+    assert result["status"] == "processed"
+
+
 def test_process_reply_ignores_an_unwatched_campaign(monkeypatch):
     monkeypatch.setenv("ABBY_MODE", "live")
     monkeypatch.delenv("ABBY_CAMPAIGN_IDS", raising=False)

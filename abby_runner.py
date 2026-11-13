@@ -15,7 +15,13 @@ Safety rails, all in code:
   * departed-employee notices and automated forwards are ignored: no reply,
     no Interested status, no David CC, no follow-up. A departed contact is
     recorded and suppressed from future Instantly pushes. The company can
-    still be tried later through a different person;
+    still be tried later through a different person. A message Instantly
+    marked human is still posted to Slack when it is ignored;
+  * a human who asks us to send information to an address, including a role
+    inbox, is held for Slack. That address is not emailed;
+  * interest=1 is written only for a live interested or price reply;
+  * a later campaign step, subsequence send, nudge, or scheduled follow-up
+    does not count as an answer to a human question;
   * out-of-office replies are not answered now. A follow-up is scheduled
     for the day after the parsed return date, or 7 days when no date is found;
   * the same handle_email() path serves the 5-minute poll and the reply webhook.
@@ -163,6 +169,15 @@ def start_at() -> datetime:
         return datetime.now(timezone.utc) - timedelta(hours=2)
 
 
+def backlog_since(now: datetime) -> datetime:
+    """How far back this pass reads. Before takeover, only the last two days."""
+
+    since = now - timedelta(days=int(os.getenv("ABBY_BACKLOG_DAYS") or 30))
+    if now < takeover_at():
+        return max(start_at(), now - timedelta(days=2))
+    return since
+
+
 def takeover_at() -> datetime:
     """When the backlog sweep and nudges begin (previewed first)."""
     raw = (os.getenv("ABBY_TAKEOVER_AT") or "2026-10-26T23:30:00Z").strip()
@@ -256,11 +271,17 @@ class Instantly:
     def received_since(self, since: datetime, campaign_id: str, pages: int = 3) -> list[dict]:
         items: list[dict] = []
         params: dict[str, Any] = {
-            "email_type": "received", "campaign_id": campaign_id, "sort_order": "asc",
+            "email_type": "received", "sort_order": "asc",
             "limit": 100, "min_timestamp_created": since.isoformat().replace("+00:00", "Z")}
+        if campaign_id:
+            params["campaign_id"] = campaign_id
         for _ in range(pages):
             st, data = self._call("GET", "emails", params=params)
             if st != 200:
+                logger.warning(
+                    "[abby] received list failed status=%s campaign=%s",
+                    st, campaign_id or "none",
+                )
                 break
             items += (data or {}).get("items") or []
             nxt = (data or {}).get("next_starting_after")
@@ -507,14 +528,54 @@ def _human_already_replied(thread: list[dict], received: dict, abby_ids: set[str
     return any(m.get("ue_type") == 3 and m.get("id") not in abby_ids for m in thread)
 
 
-def already_answered(thread: list[dict], received: dict) -> bool:
-    """Someone (Gabe, Abby, or a campaign step) sent something after this reply,
-    or the prospect wrote again later (the later message is the one to answer)."""
+def _outbound_actions(engine) -> dict[str, str]:
+    """Instantly message id -> abby_handled action for sends Abby recorded."""
+
+    try:
+        with engine.connect() as conn:
+            rows = conn.execute(text(
+                "SELECT reply_id, action FROM abby_handled WHERE reply_id <> ''"
+            )).fetchall()
+    except Exception:  # noqa: BLE001
+        logger.exception("[abby] could not read recorded sends")
+        return {}
+    return {str(row[0]): str(row[1] or "") for row in rows if row[0]}
+
+
+def _machine_send(message: dict, outbound_actions: dict[str, str]) -> bool:
+    """A campaign step, subsequence send, nudge, or scheduled follow-up.
+
+    None of those answer a human question. Abby's own reply and a teammate's
+    manual reply are not machine sends.
+    """
+
+    if message.get("ue_type") == 1:
+        return True
+    if message.get("ue_type") != 2 and any(
+        message.get(key) for key in ("subsequence_id", "subsequence", "step", "step_id", "campaign_step")
+    ):
+        return True
+    action = outbound_actions.get(str(message.get("id") or ""))
+    return action in {"nudge", "followup"}
+
+
+def already_answered(thread: list[dict], received: dict,
+                     outbound_actions: Optional[dict[str, str]] = None) -> bool:
+    """True when Abby or a teammate already replied, or the prospect wrote again.
+
+    A later campaign step, subsequence send, nudge, or scheduled follow-up
+    does not count. The later prospect message is answered on its own, so
+    the earlier one is left alone.
+    """
+
+    outbound_actions = outbound_actions or {}
     t = _ts(received)
-    for m in thread:
-        if m.get("id") == received.get("id") or not t:
+    for message in thread:
+        if message.get("id") == received.get("id") or not t or _ts(message) <= t:
             continue
-        if _ts(m) > t and m.get("ue_type") in (1, 2, 3):
+        if _machine_send(message, outbound_actions):
+            continue
+        if message.get("ue_type") in (2, 3):
             return True
     return False
 
@@ -721,6 +782,26 @@ def confirm_interest(client: Any, lead: str, value: int, campaign_id: str,
     return {"ok": False, "status": last_status, "confirmed": confirmed, "attempts": attempts}
 
 
+def interest_to_confirm(decision: abby.Decision) -> Optional[int]:
+    """The interest value Abby may write. 1 is only for interested and price replies.
+
+    A referral, a question, a hold, or an ignore must not enroll Instantly's
+    "Interested - book with David" subsequence.
+    """
+
+    if decision.interest is None:
+        return None
+    try:
+        value = int(decision.interest)
+    except (TypeError, ValueError):
+        return None
+    if value == 1:
+        if decision.action == "reply" and decision.category in {"interested", "price"}:
+            return 1
+        return None
+    return value
+
+
 def handle_email(engine, email: dict, *, client: Instantly, campaign_id: str,
                  now: Optional[datetime] = None,
                  think: Optional[Callable[..., abby.Decision]] = None,
@@ -788,7 +869,7 @@ def _handle_claimed(engine, email: dict, *, client: Instantly, campaign_id: str,
                 run_mode=run_mode)
         counts["skipped"] += 1
         return counts
-    if already_answered(thread, email):
+    if already_answered(thread, email, _outbound_actions(engine)):
         _finish(engine, email=email, decision=abby.Decision("other", "skip", reason="already answered"),
                 run_mode=run_mode)
         counts["skipped"] += 1
@@ -838,13 +919,16 @@ def _handle_claimed(engine, email: dict, *, client: Instantly, campaign_id: str,
         counts["blocked"] += 1
     elif decision.action == "reply" and decision.category in {"interested", "price", "question"}:
         _cancel_scheduled(engine, lead)
-    if decision.interest is not None and run_mode == "live" and decision.action in {"reply", "block", "ignore", "hold"}:
-        confirm_interest(client, lead, decision.interest, campaign_id, post_slack=post_slack)
+    interest = interest_to_confirm(decision)
+    if interest is not None and run_mode == "live" and campaign_id:
+        confirm_interest(client, lead, interest, campaign_id, post_slack=post_slack)
     if decision.action == "hold":
         counts["held"] += 1
     if decision.action == "ignore":
         counts["ignored"] += 1
-    if decision.slack and (decision.action in {"hold", "block"} or run_mode == "live"):
+    # Holds, blocks, and ignores that need a person stay visible. Reply notes
+    # (a wrong-person send, a booking-link send) post in live mode.
+    if decision.slack and (decision.action in {"hold", "block", "ignore"} or run_mode == "live"):
         post_slack(decision.slack)
     counts["scheduled"] += _schedule_rows(
         engine, email=email, decision=decision, info=info, lead=lead,
@@ -875,9 +959,7 @@ def run(engine, *, client: Instantly, campaign_id: str, now: Optional[datetime] 
 
     # David 2026-10-26: Abby takes over follow-ups, including the backlog of
     # unanswered replies from the last 30 days (threads Gabe started included).
-    since = now - timedelta(days=int(os.getenv("ABBY_BACKLOG_DAYS") or 30))
-    if now < takeover_at():
-        since = max(start_at(), now - timedelta(days=2))   # before takeover: new replies only
+    since = backlog_since(now)
     received = [e for e in client.received_since(since, campaign_id) if e.get("id")]
     done = _handled_ids(engine, [e["id"] for e in received])
     todo = [e for e in received if e["id"] not in done][:MAX_PER_RUN]
@@ -895,6 +977,102 @@ def run(engine, *, client: Instantly, campaign_id: str, now: Optional[datetime] 
     out["scheduled_sent"] = send_due_scheduled(engine, client, now, run_mode, post_slack, cap)
     out["followups"] = _send_due_followups(engine, client, now, run_mode, post_slack)
     out["nudges"] = _send_nudges(engine, client, campaign_id, now, run_mode, post_slack, lead_info, cap)
+    return out
+
+
+def _lead_campaigns(client: Any, lead: str) -> list[str]:
+    getter = getattr(client, "leads_for_email", None)
+    if getter is None or not lead:
+        return []
+    try:
+        records = list(getter(lead) or [])
+    except Exception:  # noqa: BLE001
+        logger.exception("[abby] could not list campaigns for an unassigned reply")
+        return []
+    found: list[str] = []
+    for record in records:
+        if not isinstance(record, dict):
+            continue
+        campaign = str(record.get("campaign") or record.get("campaign_id") or "").strip()
+        if campaign and campaign not in found:
+            found.append(campaign)
+    return found
+
+
+def campaign_for_unassigned(client: Any, lead: str, watched: Iterable[str]) -> Optional[str]:
+    """Campaign to use for a reply Instantly did not attach to one.
+
+    ``''`` when the lead has no campaign, so Abby still reads the mail and
+    does not call the interest API. None when every campaign on the lead is
+    outside the watch list.
+    """
+
+    campaigns = _lead_campaigns(client, lead)
+    if not campaigns:
+        return ""
+    allowed = {str(item).strip() for item in watched if str(item).strip()}
+    for campaign in campaigns:
+        if campaign in allowed:
+            return campaign
+    return None
+
+
+def run_unassigned(engine, *, client: Instantly, watched: Iterable[str],
+                   now: Optional[datetime] = None,
+                   think: Optional[Callable[..., abby.Decision]] = None,
+                   post_slack: Optional[Callable[[str], Any]] = None,
+                   lead_info: Optional[Callable[[str], dict]] = None) -> dict[str, Any]:
+    """Read received mail with no campaign id.
+
+    The per-campaign poll never returns those rows. ``auto_reply_received``
+    cannot be registered on Instantly's create-webhook API, so this poll is
+    how a reply that Instantly did not attach to a campaign gets seen.
+    """
+
+    now = now or datetime.now(timezone.utc)
+    run_mode = mode()
+    out: dict[str, Any] = {"mode": run_mode, "seen": 0, "replied": 0, "held": 0, "blocked": 0,
+                           "ignored": 0, "skipped": 0, "scheduled": 0}
+    if run_mode == "off":
+        out["reason"] = "ABBY_MODE is off"
+        return out
+    ensure_tables(engine)
+    since = backlog_since(now)
+    try:
+        listed = client.received_since(since, "", pages=5)
+    except TypeError:
+        listed = client.received_since(since, "")
+    received = [
+        email for email in (listed or [])
+        if email.get("id") and not email_campaign_id(email)
+    ]
+    done = _handled_ids(engine, [email["id"] for email in received])
+    todo = [email for email in received if email["id"] not in done][:MAX_PER_RUN]
+    out["seen"] = len(todo)
+    think = think or abby.think
+    post_slack = post_slack or (lambda _t: None)
+    lead_info = lead_info or (lambda _e: {})
+    cap = int(os.getenv("ABBY_DAILY_CAP") or 60)
+    watched_ids = list(watched or [])
+    for email in todo:
+        lead = str(email.get("lead") or email.get("from_address_email") or "").lower()
+        campaign = campaign_for_unassigned(client, lead, watched_ids)
+        if campaign is None:
+            if _claim(engine, email, run_mode, ""):
+                _finish(
+                    engine, email=email,
+                    decision=abby.Decision("other", "skip", reason="campaign not watched"),
+                    run_mode=run_mode,
+                )
+            out["skipped"] += 1
+            continue
+        part = handle_email(
+            engine, email, client=client, campaign_id=campaign, now=now,
+            think=think, post_slack=post_slack, lead_info=lead_info,
+            run_mode=run_mode, cap=cap,
+        )
+        for key in ("replied", "held", "blocked", "ignored", "skipped", "scheduled"):
+            out[key] = out.get(key, 0) + part.get(key, 0)
     return out
 
 
@@ -1233,7 +1411,7 @@ def preview_takeover(engine, client: Instantly, campaign_id: str, now: datetime,
         if e["id"] in done or len(backlog) >= limit or is_team(_sender(e)):
             continue
         thread = client.thread(e.get("thread_id") or "") or [e]
-        if team_in_thread(thread) or already_answered(thread, e):
+        if team_in_thread(thread) or already_answered(thread, e, _outbound_actions(engine)):
             continue
         lead = str(e.get("lead") or "").lower()
         info = lead_info(lead) or _instantly_info(client, lead)

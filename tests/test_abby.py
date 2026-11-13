@@ -71,8 +71,10 @@ def test_referral_adds_colleague_and_ccs_david():
     assert r.to_extra == ["sam@huppy.com"] and r.cc == []
 
 
-def test_auto_reply_ignored():
-    assert d("auto_reply").action == "ignore"
+def test_auto_reply_without_evidence_is_held():
+    held = d("auto_reply")
+    assert held.action == "hold" and held.interest is None and held.slack
+    assert held.reason != "automatic reply"
 
 
 # Real mailbox rules from Oct 26-27, 2026. Each one was labeled a referral
@@ -168,7 +170,8 @@ def test_prompt_treats_departed_and_ooo_as_auto_reply():
                    "please direct inquiries", "customerservice@", "info@", "sales@", "support@"):
         assert phrase in text
     assert "a human wrote this reply" in text
-    assert "unsure a human wrote" in text
+    assert "If a human wrote it, or you are unsure, choose other" in text
+    assert "unsure a human wrote the message, choose auto_reply" not in text
 
 
 @pytest.mark.parametrize("lead,body,bits", [
@@ -208,19 +211,22 @@ def test_decide_overrides_interested_on_a_departed_notice():
     _assert_ignored(r, "Departed contact")
 
 
-def test_shared_inbox_referral_is_ignored_even_without_the_body():
+def test_shared_inbox_referral_is_held_for_review():
     r = d("referral", f"Hi. {LINK} Abby", referral_email="sales@bellocq.com")
-    _assert_ignored(r, "sales@bellocq.com")
+    assert r.action == "hold" and r.category == "send_info"
+    assert r.reply == "" and r.to_extra == [] and r.interest is None
+    assert "sales@bellocq.com" in r.slack and "Nothing was sent" in r.slack
 
 
-def test_please_email_support_is_not_a_colleague():
+def test_please_email_support_is_held_not_sent():
     body = "Hello, please email support@acme.com and someone on the team will help."
     calls = []
-    r = abby.think([{"ue_type": 2, "body": {"text": body}}],
+    r = abby.think([{"ue_type": 2, "body": {"text": body}, "is_auto_reply": 0}],
                    lead_email="person@acme.com", company="Acme", first_name="Pat",
                    thread_categories=[], llm=lambda p: calls.append(p) or _bad_referral(p))
     assert calls == []
-    _assert_ignored(r, "support@acme.com")
+    assert r.action == "hold" and r.category == "send_info"
+    assert r.to_extra == [] and r.interest is None and "support@acme.com" in r.slack
 
 
 def test_auto_reply_header_blocks_a_named_forward():
@@ -292,7 +298,7 @@ def test_human_referral_still_writes_the_colleague(lead, body, address, name, fi
         lead_email=lead, company=company, first_name=first, thread_categories=[],
         llm=lambda _p: _referral_json(address, name, reply))
     assert r.action == "reply" and r.category == "referral"
-    assert r.to_extra == [address] and r.cc == [] and r.interest == 1
+    assert r.to_extra == [address] and r.cc == [] and r.interest is None
     assert r.note == "" and name.split()[0] in r.reply
     assert "free 14-day trial" in r.reply
     assert r.reply.rstrip().endswith("Account Specialist, Anata")
@@ -306,7 +312,7 @@ def test_human_referral_survives_decide_when_the_message_is_passed():
         {"category": "referral", "confidence": 0.95, "referral_email": "sarah.chen@huppy.com",
          "referral_name": "Sarah Chen", "reply": reply},
         lead_email="ann@huppy.com", thread_categories=[], message=SARAH)
-    assert r.action == "reply" and r.to_extra == ["sarah.chen@huppy.com"] and r.interest == 1
+    assert r.action == "reply" and r.to_extra == ["sarah.chen@huppy.com"] and r.interest is None
 
 
 def test_em_dash_cleaned_and_unknown_links_held():
@@ -944,3 +950,264 @@ def test_scheduled_followup_sends_once_and_stops_at_the_cap(engine):
     assert runner.send_due_scheduled(engine, client, now, "live", posts.append, 1) == 0
     assert any("daily cap" in post for post in posts)
     assert runner.send_due_scheduled(engine, FakeClient([]), now, "shadow", posts.append, 5) == 0
+
+
+GLEEFULL = (
+    "Hi Anna,\n\nThanks for reaching out and sharing the idea. "
+    "Please send your information and collaboration details to our Creator "
+    "Partnerships Team at partnerships@gleefullsupplements.com.\n\nBest,\nJenny\n"
+)
+
+JACK = (
+    "Thank you for your email, I have now left Arena.Online\n"
+    "Please message a member of the consumer team using the emails below\n"
+    "olivia.smith@hellopatch.com (Head of consumer trading)\n"
+    "Thanks, Jack\n"
+)
+
+
+def test_send_info_to_a_role_inbox_is_held_and_not_sent():
+    calls = []
+    message = {
+        "ue_type": 2, "is_auto_reply": 0,
+        "from_address_email": "support@gleefullsupps.com",
+        "subject": "Re: Trial", "body": {"text": GLEEFULL},
+    }
+    result = abby.think(
+        [message], lead_email="marissa@gleefullsupps.com", company="GleeFull",
+        first_name="Marissa", thread_categories=[],
+        llm=lambda prompt: calls.append(prompt) or _bad_referral(prompt),
+    )
+    assert calls == []
+    assert result.action == "hold" and result.category == "send_info"
+    assert result.reply == "" and result.to_extra == [] and result.interest is None
+    assert "partnerships@gleefullsupplements.com" in result.slack
+    assert "Nothing was sent" in result.slack
+    assert "Marissa" not in result.reply
+
+
+def test_second_human_send_info_is_not_dropped_as_an_auto_reply():
+    """The model used to label the repeat 'auto_reply' and ignore it."""
+    message = {
+        "ue_type": 2, "is_auto_reply": 0,
+        "from_address_email": "support@gleefullsupps.com",
+        "body": {"text": "I don't have a specific contact name to share, but " + GLEEFULL},
+    }
+    result = abby.decide(
+        {"category": "auto_reply", "confidence": 0.99, "reply": None},
+        lead_email="marissa@gleefullsupps.com", thread_categories=[],
+        message=message, first_name="Marissa", company="GleeFull",
+    )
+    assert result.action == "hold" and result.category == "send_info"
+    assert result.reason != "automatic reply"
+    assert result.interest is None and result.to_extra == []
+
+
+def test_model_auto_reply_on_a_human_question_is_held():
+    message = {
+        "ue_type": 2, "is_auto_reply": 0,
+        "body": {"text": "Can you give me a brief on what kind of service you provide?"},
+    }
+    result = abby.decide(
+        {"category": "auto_reply", "confidence": 0.8},
+        lead_email="fischer@xviveaudio.com", thread_categories=[], message=message,
+    )
+    assert result.action == "hold" and result.interest is None and result.slack
+    assert result.reason != "automatic reply"
+
+
+def test_satisfaction_survey_stays_an_auto_reply():
+    body = (
+        "Hi Abby, How would you rate the help Jenny gave you? "
+        "https://example.gorgias.com/satisfaction-survey?token=secret-token"
+    )
+    result = abby.think(
+        [{"ue_type": 2, "is_auto_reply": 0, "body": {"text": body}}],
+        lead_email="marissa@gleefullsupps.com", company="GleeFull", first_name="Marissa",
+        thread_categories=[], llm=_bad_referral,
+    )
+    assert result.action == "ignore" and "survey" in result.reason
+    assert "secret-token" not in result.slack
+    assert result.slack
+
+
+def test_wrong_person_addresses_the_writer_when_from_differs():
+    message = {
+        "ue_type": 2, "is_auto_reply": 0,
+        "from_address_email": "support@gleefullsupps.com",
+        "body": {"text": "This is not my area.\n\nBest,\nJenny"},
+    }
+    result = abby.decide(
+        {"category": "wrong_person", "confidence": 0.95, "reply": "Thanks Marissa, who handles this?"},
+        lead_email="marissa@gleefullsupps.com", thread_categories=[],
+        message=message, first_name="Marissa", company="GleeFull",
+    )
+    assert result.action == "reply" and result.interest is None
+    assert "Thanks Jenny," in result.reply
+    assert "Marissa" not in result.reply
+    assert "wrong-person" in result.slack
+
+
+def test_wrong_person_drops_the_lead_name_when_the_writer_is_unknown():
+    message = {
+        "ue_type": 2, "is_auto_reply": 0,
+        "from_address_email": "support@gleefullsupps.com",
+        "body": {"text": "This is not my area."},
+    }
+    result = abby.decide(
+        {"category": "wrong_person", "confidence": 0.95, "reply": "Thanks Marissa"},
+        lead_email="marissa@gleefullsupps.com", thread_categories=[],
+        message=message, first_name="Marissa", company="GleeFull",
+    )
+    assert result.reply.startswith("Thanks, who handles")
+    assert "Marissa" not in result.reply
+
+
+def test_i_have_now_left_is_departed_and_not_interested():
+    calls = []
+    message = {
+        "ue_type": 2, "is_auto_reply": 0,
+        "from_address_email": "jack@arena.online",
+        "subject": "OOO - Thank you for your email, I have left the business",
+        "body": {"text": JACK},
+    }
+    result = abby.think(
+        [message], lead_email="jack@arena.online", company="Arena", first_name="Jack",
+        thread_categories=[], llm=lambda prompt: calls.append(prompt) or _bad_referral(prompt),
+    )
+    assert calls == []
+    assert result.action == "ignore" and result.interest is None and result.to_extra == []
+    assert "departed" in result.reason
+    assert "olivia.smith@hellopatch.com" in result.note
+    assert "Nothing sent." in result.note
+    assert result.slack and "Instantly marked as human" in result.slack
+
+
+@pytest.mark.parametrize("body", [
+    "I no longer work at Phizz. Please reach out to thom@phizz.co.",
+    "Shenoa is no longer part of KaramMD Skin.",
+    "This email is no longer active. Please contact account@earthbath.com.",
+    "Mo has left REFY. This inbox is no longer monitored.",
+])
+def test_more_departed_wording_is_ignored_before_the_model(body):
+    calls = []
+    result = abby.think(
+        [{"ue_type": 2, "is_auto_reply": 0, "body": {"text": body}}],
+        lead_email="person@brand.com", company="Brand", first_name="Pat",
+        thread_categories=[], llm=lambda prompt: calls.append(prompt) or _bad_referral(prompt),
+    )
+    assert calls == []
+    assert result.action == "ignore" and "departed" in result.reason
+    assert result.interest is None and result.to_extra == []
+
+
+def test_question_and_referral_do_not_mark_interest():
+    question = d("question", "Happy to explain. David can cover the rest on a call.\n\nAbby")
+    assert question.action == "reply" and question.interest is None
+    referral = d("referral", f"Hi Sam. {LINK}\n\nAbby", referral_email="sam@huppy.com")
+    assert referral.action == "reply" and referral.interest is None and referral.to_extra == ["sam@huppy.com"]
+
+
+def test_flagged_auto_reply_still_ignores_a_role_forward():
+    message = {"ue_type": 2, "is_auto_reply": 1,
+               "body": {"text": "Hello, please email support@acme.com and someone will help."}}
+    result = abby.think(
+        [message], lead_email="person@acme.com", company="Acme", first_name="Pat",
+        thread_categories=[], llm=_bad_referral,
+    )
+    _assert_ignored(result, "support@acme.com")
+
+
+def test_campaign_send_and_nudge_do_not_skip_a_human_question(engine):
+    question = email(1)
+    campaign = {"id": "step1", "thread_id": "t1", "ue_type": 1,
+                "timestamp_created": "2026-10-22T12:00:00Z", "subsequence_id": "0c2f113f"}
+    nudge = {"id": "nudge1", "thread_id": "t1", "ue_type": 3,
+             "timestamp_created": "2026-10-23T12:00:00Z"}
+    runner.ensure_tables(engine)
+    with engine.begin() as conn:
+        conn.execute(text(
+            "INSERT INTO abby_handled "
+            "(email_id, thread_id, lead, category, action, mode, reply_id, detail) "
+            "VALUES ('nudge-row', 't1', 'ann@huppy.com', 'nudge', 'nudge', 'live', 'nudge1', '')"
+        ))
+    client = FakeClient([question], {"t1": [question, campaign, nudge]})
+    posts = []
+    decision = abby.Decision("question", "reply", reply="Here is the short version.\n\nAbby", interest=1)
+    out = runner.run(engine, client=client, campaign_id="camp", now=NOW,
+                     think=fixed(decision), post_slack=posts.append)
+    assert out["replied"] == 1 and client.replies[0]["reply_to"] == "e1"
+    assert client.interest == []
+
+
+def test_runner_posts_a_wrong_person_send(engine):
+    message = email(1)
+    message["from_address_email"] = "support@gleefullsupps.com"
+    message["lead"] = "marissa@gleefullsupps.com"
+    message["body"] = {"text": "This is not my area.\n\nBest,\nJenny"}
+
+    def think(thread, *, lead_email, company, first_name, thread_categories):
+        return abby.decide(
+            {"category": "wrong_person", "confidence": 0.95, "reply": "Thanks Marissa"},
+            lead_email=lead_email, thread_categories=thread_categories,
+            message=thread[-1], first_name=first_name, company=company,
+        )
+
+    client = FakeClient([message], {message["thread_id"]: [message]},
+                        leads={"marissa@gleefullsupps.com": {"first_name": "Marissa", "company_name": "GleeFull"}})
+    posts = []
+    runner.run(engine, client=client, campaign_id="camp", now=NOW, think=think, post_slack=posts.append)
+    assert client.replies and "Thanks Jenny," in client.replies[0]["body"]
+    assert "Marissa" not in client.replies[0]["body"]
+    assert client.interest == []
+    assert any("wrong-person" in post for post in posts)
+
+
+def test_unassigned_mail_is_read_outside_the_campaign_poll(engine):
+    loose = email(1, lead="cheyanne@rookiewellness.com", thread="tu")
+    owned = dict(email(2, lead="ann@huppy.com", thread="t2"), campaign_id="camp")
+
+    class Client(FakeClient):
+        def received_since(self, since, campaign_id, pages=3):
+            self.asked = campaign_id
+            if campaign_id:
+                return [item for item in self.received if item.get("campaign_id") == campaign_id]
+            return [item for item in self.received if not item.get("campaign_id")]
+
+        def leads_for_email(self, address):
+            marked = [row for row in getattr(self, "_marked", []) if row.get("email") == address]
+            if marked:
+                return marked
+            if address == "cheyanne@rookiewellness.com":
+                return [{"email": address, "campaign": "camp"}]
+            return []
+
+    client = Client([loose, owned])
+    out = runner.run_unassigned(
+        engine, client=client, watched=["camp"], now=NOW,
+        think=fixed(abby.Decision("interested", "reply", reply=f"Hi {LINK}", interest=1)),
+    )
+    assert client.asked == ""
+    assert out["replied"] == 1 and client.replies[0]["reply_to"] == "e1"
+    assert client.interest == [("cheyanne@rookiewellness.com", 1)]
+    with engine.connect() as conn:
+        stored = conn.execute(text("SELECT campaign_id FROM abby_handled")).scalar()
+    assert stored == "camp"
+
+
+def test_unassigned_lead_on_an_unwatched_campaign_is_skipped(engine):
+    loose = email(1, lead="other@brand.com", thread="tu")
+
+    class Client(FakeClient):
+        def received_since(self, since, campaign_id, pages=3):
+            return list(self.received)
+
+        def leads_for_email(self, address):
+            return [{"email": address, "campaign": "not-watched"}]
+
+    client = Client([loose])
+    out = runner.run_unassigned(
+        engine, client=client, watched=["camp"], now=NOW,
+        think=fixed(abby.Decision("interested", "reply", reply=f"Hi {LINK}", interest=1)),
+    )
+    assert out["skipped"] == 1 and client.replies == [] and client.interest == []

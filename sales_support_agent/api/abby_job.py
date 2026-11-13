@@ -80,9 +80,14 @@ def run_abby() -> dict[str, Any]:
         )
         out = {}
         post = slack_poster()
+        info = lead_info_from_db(engine)
         for cid in campaigns:
             out[cid] = abby_runner.run(engine, client=client, campaign_id=cid,
-                                       lead_info=lead_info_from_db(engine), post_slack=post)
+                                       lead_info=info, post_slack=post)
+        # Mail Instantly stored with no campaign id is invisible to the loop above.
+        out["_unassigned"] = abby_runner.run_unassigned(
+            engine, client=client, watched=campaigns, lead_info=info, post_slack=post,
+        )
         return out
     except Exception as exc:  # noqa: BLE001
         logger.exception("[abby] run failed")
