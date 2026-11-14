@@ -919,6 +919,16 @@ def push_pending(engine, campaign_id: str, *, dry_run: bool = True, limit: int =
     campaign_map = routing.by_recipe if routing.available else None
     signals_by_domain = _signals_for_domains(engine, (person.get("domain") for person in allowed))
     groups: dict[str, list[tuple[dict[str, Any], dict[str, Any]]]] = {}
+    profiles: dict[str, dict[str, Any]] = {}
+    try:
+        from sales_support_agent.services.outbound_memory import load_store_profiles
+
+        profiles = load_store_profiles(
+            engine, [str(person.get("domain") or "") for person in allowed],
+        )
+    except Exception:  # noqa: BLE001
+        logger.debug("[outbound-enrich] store profiles were not loaded for company names")
+        profiles = {}
     held = 0
     held_copy = 0
     queued = 0
@@ -964,8 +974,10 @@ def push_pending(engine, campaign_id: str, *, dry_run: bool = True, limit: int =
         if status != "routed" or not target or _push._closed_to_new_leads(target):
             queued += 1
             continue
+        profile = profiles.get(domain_key) or {}
         lead = {"domain": person["domain"], "brand": person["brand"], "categories": person["category"],
-                "recipe": route_name or recipe_name, "tier": person["tier"]}
+                "recipe": route_name or recipe_name, "tier": person["tier"],
+                "store_profile": profile}
         body = _push.build_lead(person, lead, person["opener"])
         if route_name and route_name != recipe_name:
             body["custom_variables"]["source_recipe"] = recipe_name

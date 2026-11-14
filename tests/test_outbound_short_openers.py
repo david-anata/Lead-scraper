@@ -70,10 +70,12 @@ def test_over_long_opener_is_regenerated_once_then_held():
         calls.append(prompt)
         if len(calls) == 1:
             return _words(30, "Huppy", "sells", "oral", "care")
-        return "Huppy sells oral care."
+        return "Huppy sells toothpaste tabs."
 
-    line, source = op.write_opener({**LEAD, "domain": "retry.com"}, CONTACT, llm=llm)
-    assert source == "ai" and line == "Huppy sells oral care."
+    line, source = op.write_opener(
+        {**LEAD, "domain": "retry.com", "site_product": "toothpaste tabs"}, CONTACT, llm=llm,
+    )
+    assert source == "ai" and line == "Huppy sells toothpaste tabs."
     assert len(calls) == 2
     assert "too long" in calls[1]
     assert "never more than 25" in calls[0]

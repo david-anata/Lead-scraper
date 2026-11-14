@@ -397,9 +397,17 @@ def api_key() -> str:
 
 
 def _company_name(lead: dict[str, Any]) -> str:
-    from outbound_pipeline import clean_brand_name
+    from outbound_pipeline import company_label
 
-    return clean_brand_name(lead.get("brand") or lead.get("domain") or "")
+    profile = lead.get("store_profile") if isinstance(lead.get("store_profile"), dict) else {}
+    title = str(lead.get("store_title") or "")
+    merchant = lead.get("brand") or lead.get("merchant_name") or ""
+    domain = lead.get("domain") or ""
+    if profile:
+        title = title or str(profile.get("title") or "")
+        merchant = merchant or profile.get("merchant_name") or ""
+        domain = domain or profile.get("name") or ""
+    return company_label(merchant or domain, title=title, domain=domain)
 
 
 def build_lead(contact: dict[str, Any], lead: dict[str, Any], opener: str) -> dict[str, Any]:

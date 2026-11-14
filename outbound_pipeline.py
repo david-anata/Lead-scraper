@@ -1197,13 +1197,18 @@ _STORE_WORDS = re.compile(
 _TRAILING_STORE = re.compile(r"(?:,|\s)+\b(?:shop|store)\b\.?$", re.I)
 _BRAND_TLD = re.compile(r"\.(?:com|net|org|io|co|shop|store|us)$", re.I)
 _TRAILING_TAG = re.compile(r"\s*[|]\s*.*$|\s+[–—-]\s+.+$")
+_TRAILING_REGION = re.compile(
+    r"(?:[\s\-_/,]+(?:u\.s\.a\.?|u\.s\.?|usa|us|uk|eu|prod|production))+$",
+    re.I,
+)
 
 
 def clean_brand_name(value: Any) -> str:
     """A company name safe to put in an opener or an Instantly field.
 
-    Legal suffixes, store words, a trailing TLD, and a tagline after a
-    separator come off. ALL CAPS and all-lowercase names are title-cased.
+    Legal suffixes, store words, a trailing region or prod tag, a trailing TLD,
+    and a tagline after a separator come off. ALL CAPS and all-lowercase names
+    are title-cased.
     Mixed case such as REV Gum or MyBevi is left as written.
     """
 
@@ -1214,7 +1219,7 @@ def clean_brand_name(value: Any) -> str:
     changed = True
     while changed and text:
         changed = False
-        for pattern in (_LEGAL_SUFFIX, _STORE_WORDS, _TRAILING_STORE, _BRAND_TLD):
+        for pattern in (_LEGAL_SUFFIX, _STORE_WORDS, _TRAILING_STORE, _BRAND_TLD, _TRAILING_REGION):
             nxt = pattern.sub("", text).strip(" ,.")
             if nxt and nxt != text:
                 text = nxt
@@ -1225,6 +1230,62 @@ def clean_brand_name(value: Any) -> str:
             for part in text.split(" ")
         )
     return text
+
+
+def _fold_brand(value: str) -> str:
+    return re.sub(r"[^a-z0-9]", "", (value or "").lower())
+
+
+def _domain_stem(domain: Any) -> str:
+    host = str(domain or "").strip().lower()
+    host = host.split("/")[0].split("?")[0].split(":")[0]
+    if host.startswith("www."):
+        host = host[4:]
+    return re.sub(r"[^a-z0-9]", "", host.split(".")[0])
+
+
+def _label_matches_domain(label: str, domain: Any) -> bool:
+    folded = _fold_brand(label)
+    stem = _domain_stem(domain)
+    if len(stem) < 4 or len(folded) < 3:
+        return False
+    return folded == stem or folded.startswith(stem) or stem.startswith(folded)
+
+
+def _interior_cap(value: str) -> bool:
+    for word in re.split(r"[\s\-]+", value or ""):
+        if len(word) > 2 and any(char.isupper() for char in word[1:]) and not word.isupper():
+            return True
+    return False
+
+
+def company_label(merchant: Any, *, title: Any = "", domain: Any = "") -> str:
+    """Company name safe for {{companyName}}.
+
+    Legal, store, and region suffixes come off. When the merchant label does
+    not match the domain, the store title is used if that title does. When
+    both names are the same brand, the title wins if it keeps real spacing
+    or interior capitals the merchant label flattened.
+    """
+
+    merchant_clean = clean_brand_name(merchant)
+    title_clean = clean_brand_name(title)
+    if (
+        title_clean
+        and merchant_clean
+        and _fold_brand(title_clean) == _fold_brand(merchant_clean)
+    ):
+        if " " in title_clean and " " not in merchant_clean:
+            return title_clean
+        if _interior_cap(title_clean) and not _interior_cap(merchant_clean):
+            return title_clean
+    title_matches = _label_matches_domain(title_clean, domain)
+    merchant_matches = _label_matches_domain(merchant_clean, domain)
+    if title_clean and title_matches and not merchant_matches:
+        return title_clean
+    if merchant_clean:
+        return merchant_clean
+    return title_clean
 
 
 def to_clay_lead(store: dict[str, Any], *, now: Optional[datetime] = None,
@@ -1246,7 +1307,11 @@ def to_clay_lead(store: dict[str, Any], *, now: Optional[datetime] = None,
             signals.append(token)
     lead = {
         "domain": _company.company_domain(str(store.get("name") or "")),
-        "brand": clean_brand_name(store.get("merchant_name") or store.get("name") or ""),
+        "brand": company_label(
+            store.get("merchant_name") or store.get("name") or "",
+            title=store.get("title") or "",
+            domain=store.get("name") or "",
+        ),
         "niche": store_niche(store),
         "country": headquarters_verdict(store)[0],
         "tier": scored["tier"],

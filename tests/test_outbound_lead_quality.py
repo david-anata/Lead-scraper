@@ -206,11 +206,12 @@ def test_personalization_stays_off_until_the_flag_and_then_stays_factual(monkeyp
     openers._ANGLES_BY_DOMAIN.clear()
     after, source = openers.write_opener(after_lead)
     angle, _angle_source = openers.write_brand_angle(after_lead)
-    assert source == "fallback"
+    assert source == "none" and after == "" and angle == ""
     assert "Klaviyo" not in after and "Meta" not in after and "pixel" not in after.lower()
+    assert "is sold in retail stores" not in after.lower()
+    assert "is sold in retail stores" not in openers.store_fact_phrases(after_lead)
     assert "does not sell" not in after.lower()
     assert not angle.lower().startswith("anata helps")
-    assert angle != after
     assert "is based in Philadelphia" in openers.store_fact_phrases(after_lead)
     for line in (after, angle):
         assert "—" not in line and "–" not in line
@@ -235,11 +236,12 @@ def test_rich_lines_sound_like_a_person_and_never_lead_with_a_negative(monkeypat
     }
     opener, _source = openers.write_opener(off_amazon)
     angle, _angle_source = openers.write_brand_angle(off_amazon)
+    assert opener == "" and angle == ""
+    assert "retail stores" not in opener.lower() and "saw " not in opener.lower()
     assert "does not" not in opener.lower()
     assert "does not sell" not in angle.lower()
     assert "meta" not in opener.lower() and "pixel" not in opener.lower()
     assert not angle.lower().startswith("anata helps")
-    assert angle != opener
 
     thin = {
         "brand": "North Trampoline",
@@ -314,8 +316,10 @@ def test_a_lone_product_is_kept_and_a_review_app_is_not_called_reviews(monkeypat
     angle, _angle_source = openers.write_brand_angle(product_only)
     facts = openers.collect_facts(product_only)
     assert "Cedar Soap" in facts.rich_phrases[0]
-    assert source == "none"
-    assert line == "" and angle == ""
+    assert source == "fallback"
+    assert "Cedar Soap" in line
+    assert "review" not in line.lower()
+    assert angle == ""
 
     installed = {
         "brand": "Example",
