@@ -208,7 +208,7 @@ does not need a database edit. Domains already in
 microdosing, injectable or research peptides, kratom, nicotine, vape, and
 drug claims are rejected before a company is recorded. Cosmetic skincare
 peptides stay in. New companies stay inside the company and credit ceilings
-(600 companies and 228 credits, or the lower `OUTBOUND_ENRICH_DAILY_*` env
+(825 companies and 396 credits, or the lower `OUTBOUND_ENRICH_DAILY_*` env
 value). Each campaign starts with a share of that room, capped by its
 `daily_cap`. A recipe that cannot fill its share, and any room those caps
 do not claim, goes to recipes that still have results. That extra may
@@ -246,11 +246,10 @@ is `{"domains": ["brand.com"], "dry_run": true}`. `dry_run` defaults to true,
 which only normalizes the list. `dry_run: false` finds contacts and stores
 them with `recipe=redo_partner`. It does not add them to Instantly.
 
-To aim at about 600 companies a weekday, set
-`OUTBOUND_ENRICH_DAILY_COMPANIES=600` and
-`OUTBOUND_ENRICH_DAILY_CREDITS=228`. Leave per run at 75 and max contacts
-at 2. 228 credits is 114 per 300 companies, the rate measured on the day
-that processed 300 companies. See the docstring on
+To aim at about 825 companies a weekday, set
+`OUTBOUND_ENRICH_DAILY_COMPANIES=825` and
+`OUTBOUND_ENRICH_DAILY_CREDITS=396`. Leave per run at 75 and max contacts
+at 2. 396 credits is 144 per 300 companies. See the docstring on
 `sales_support_agent/api/outbound_enrich_job.py`.
 
 Abby runs every 5 minutes and, after she finishes replies, calls the enrich

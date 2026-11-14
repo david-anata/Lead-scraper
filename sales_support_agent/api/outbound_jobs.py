@@ -42,7 +42,7 @@ _MARKER = "__morning_run__"             # recipe name used purely as a daily mar
 _RUN_HOUR = 7                           # before the working day, so it is ready
 _morning_state: dict = {"running": False, "last_status": "", "last_reason": ""}
 _SCAN_PER_DAY = 12                      # ~30 min of Amazon checks, then it stops
-_DAILY_COMPANY_CAP = 600                # David 2026-11-13: room for about 600 sends
+_DAILY_COMPANY_CAP = 825                # David 2026-11-13: room for 825 companies
 _PULL_TIME_BUDGET_S = 420              # leave room for the Amazon checks inside 800s
 
 
