@@ -508,7 +508,7 @@ def test_category_filler_is_held_and_retried_when_a_product_fact_exists(engine, 
             "SELECT skip_reason FROM outbound_enriched_contacts WHERE email = 'ada@food.com'"
         )).scalar()
     assert str(reason).startswith("held:opener:")
-    assert "category filler" in str(reason)
+    assert "shopper-visible" in str(reason)
 
     assert memory.save_store_profiles(engine, [{
         "domain": "food.com",

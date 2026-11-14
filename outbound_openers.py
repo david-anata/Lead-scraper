@@ -1,11 +1,12 @@
 """One opening line per company, plus a short brand angle (replaces Clay's AI column).
 
 ``opener`` fills ``{{personalization}}``. ``brand_angle`` is pushed as the
-Instantly custom variable ``brandAngle``. Both are statements grounded in a
-fact we already hold: a confirmed Amazon product, a scraped product phrase,
-a recipe signal, or a StoreLeads category. If the model is missing, errors,
-or writes something that breaks a rule, a plain deterministic line is used
-instead. When even that line would not be a real fact, the field is left empty.
+Instantly custom variable ``brandAngle``. An opener is one plain,
+shopper-visible fact: a real product, flavor, story, named retail store, or
+review theme. A category label, an unnamed "sold in retail stores" line, and
+strategy copy are not openers. If the model is missing, errors, or writes
+something that breaks a rule, a plain sentence from a real fact is used.
+When no clean fact exists, the line is left empty so the lead is skipped.
 
 Hard rules, enforced in code not just in the prompt:
   * No em or en dashes.
@@ -84,6 +85,48 @@ _TRIAL_AMAZON_CLAIM = re.compile(
     r"|\bon amazon (?:already|now|today)\b",
     re.I,
 )
+# Strategy and filler the model has shipped when it had no product to name.
+_GENERIC_COPY = re.compile(
+    r"\b(?:positioned|positioning|strategic|channels?|automation|leverage|leveraging|"
+    r"elevate|elevated|scalable)\b"
+    r"|premium consumer|consumer channels|go[- ]to[- ]market|value proposition"
+    r"|shoppers already compare|a category where"
+    r"|\b(?:drive|unlock|for) growth\b"
+    r"|\bgrowth (?:strategy|opportunity|potential|engine)\b",
+    re.I,
+)
+_GENERIC_RETAIL = re.compile(
+    r"\b(?:is |are )?sold in retail stores\b"
+    r"|\bin retail stores\b",
+    re.I,
+)
+_GENERIC_RETAIL_FACTS = frozenset({
+    "has a store locator",
+    "sold through retailers",
+    "sold in stores",
+    "sells wholesale",
+    "is sold in retail stores",
+    "sold in retail stores",
+})
+_RETAILER_HOSTS = {
+    "rei.com": "REI",
+    "dickssportinggoods.com": "Dick's Sporting Goods",
+    "target.com": "Target",
+    "walmart.com": "Walmart",
+    "wholefoodsmarket.com": "Whole Foods",
+    "nordstrom.com": "Nordstrom",
+    "sephora.com": "Sephora",
+    "ulta.com": "Ulta",
+    "gopuff.com": "Gopuff",
+    "costco.com": "Costco",
+    "bestbuy.com": "Best Buy",
+    "kroger.com": "Kroger",
+    "cvs.com": "CVS",
+    "walgreens.com": "Walgreens",
+    "academy.com": "Academy",
+    "basspro.com": "Bass Pro",
+    "cabelas.com": "Cabela's",
+}
 _OG_TITLE = re.compile(
     r"""<meta[^>]+property=["']og:title["'][^>]+content=["']([^"']+)["']"""
     r"""|<meta[^>]+content=["']([^"']+)["'][^>]+property=["']og:title["']""",
@@ -104,14 +147,18 @@ _SYSTEM = (
     "marketing lead at a consumer brand. Anata Intelligence builds a brand's Amazon "
     "strategy and runs the ad actions automatically. Write ONE sentence, not a "
     "question, of about 20 words and never more than 25 words. Ground it in one real "
-    "fact from the list: the Amazon product, a recent platform move, a recent app "
-    "install, or a recent plan upgrade. If a plain category is given, you may say "
-    "they sell that. Only mention Amazon when an 'Amazon product' fact is listed; "
+    "fact from the list: a real product, flavor, story, named store, or review theme. "
+    "Say that fact plainly. A category label is not a fact. Do not say the brand is "
+    "sold in retail stores unless a store name is in the facts. Do not write strategy, "
+    "positioning, channels, automation, or guesses about what shoppers do. "
+    "Only mention Amazon when an 'Amazon product' fact is listed; "
     "otherwise never say or imply they sell on Amazon. If the facts say this is a "
     "Trial Offer, do not claim or assume the brand already sells on Amazon. Never "
     "write 'your Amazon store', 'your listings', or 'already on Amazon'. "
     "Never print a slug with underscores. Do not claim social momentum, growth, or "
     "anything that is not in the facts. Do not start with 'I noticed' or 'We noticed'. "
+    "If no concrete product, flavor, story, store name, or review theme is listed, "
+    "write nothing. "
     "Never use the words 'curious', 'special', 'building something', or 'ideal customer "
     "profile'. No numbers. No links. No em dashes. No greeting, no sign-off."
 )
@@ -214,7 +261,21 @@ def validate(
     for phrase in BANNED_PHRASES:
         if phrase in low:
             return False, f"cliche: {phrase}"
+    generic = generic_copy_reason(t)
+    if generic:
+        return False, generic
     return True, ""
+
+
+def generic_copy_reason(text: str) -> str:
+    """Why a line is filler. Empty when it can name a real shopper-visible fact."""
+
+    raw = text or ""
+    if _GENERIC_COPY.search(raw):
+        return "generic business phrasing"
+    if _GENERIC_RETAIL.search(raw) and not re.search(r"\bsold at\b", raw, re.I):
+        return "generic retail filler"
+    return ""
 
 
 def plain_category(value: str) -> str:
@@ -409,6 +470,65 @@ def _no_digits(phrase: str) -> str:
     return text
 
 
+def _host_name(value: Any) -> str:
+    text = str(value or "").strip().lower()
+    text = re.sub(r"^https?://", "", text)
+    text = text.split("/")[0].split("?")[0].split(":")[0]
+    if text.startswith("www."):
+        text = text[4:]
+    return text
+
+
+def named_retailers(profile: dict[str, Any], *, domain: str = "") -> list[str]:
+    """Retailer names present on the record. A locator URL is not a name."""
+
+    if not isinstance(profile, dict):
+        return []
+    names: list[str] = []
+
+    def add(label: Any) -> None:
+        text = clean(str(label or "")).strip(" .")
+        if not text or re.search(r"https?://|www\.", text):
+            return
+        if len(text.split()) > 6 or len(text) > 40:
+            return
+        if text.lower() in {
+            "amazon", "ebay", "etsy", "walmart", "shopify", "online store",
+            "retail", "retailers", "store", "stores", "shop",
+        }:
+            return
+        if text not in names:
+            names.append(text)
+
+    for key in ("retailer_name", "retailers", "stockists"):
+        raw = profile.get(key)
+        if isinstance(raw, str):
+            raw = [raw]
+        elif isinstance(raw, dict):
+            raw = [raw]
+        for item in raw or []:
+            if isinstance(item, dict):
+                add(item.get("name") or item.get("title") or "")
+            else:
+                add(item)
+    own = _host_name(domain or profile.get("name") or "")
+    for key in ("retailer_page", "store_locator_page"):
+        raw = str(profile.get(key) or "").strip()
+        if not raw:
+            continue
+        if not re.search(r"https?://|www\.|\.", raw):
+            add(raw)
+            continue
+        host = _host_name(raw)
+        if not host or (own and (host == own or host.endswith("." + own))):
+            continue
+        for suffix, label in _RETAILER_HOSTS.items():
+            if host == suffix or host.endswith("." + suffix):
+                add(label)
+                break
+    return names
+
+
 def store_fact_phrases(lead: dict[str, Any]) -> list[str]:
     """Factual clauses from a StoreLeads profile. No digits, no invented claims."""
 
@@ -436,8 +556,8 @@ def store_fact_phrases(lead: dict[str, Any]) -> list[str]:
     if recipe == "amz_on" and "sells on Amazon" not in phrases and not absent and "amazon" in channels:
         phrases.append("sells on Amazon")
 
-    if str(profile.get("retailer_page") or "").strip() or str(profile.get("store_locator_page") or "").strip():
-        phrases.append("is sold in retail stores")
+    for retailer in named_retailers(profile, domain=str(lead.get("domain") or "")):
+        phrases.append(f"is sold at {retailer}")
 
     labels = _label_text((profile.get("apps") or []) + (profile.get("technologies") or []))
     compact = labels.replace(".", "")
@@ -817,12 +937,7 @@ def human_opener(obs: dict[str, Any]) -> tuple[str, list[str]]:
         why = "that is a category where Amazon demand tends to sit next to the website"
         used = [obs["city"], obs["category"]]
     elif obs["category"]:
-        line = (
-            f"Saw {brand} in {obs['category']}. "
-            "That is a category where Amazon demand tends to sit next to the website."
-        )
-        usable = _usable(line, allow_amazon=True, max_words=MAX_WORDS)
-        return (usable, [obs["category"]]) if usable else ("", [])
+        return "", []
     else:
         return "", []
     line = f"Saw {brand} {clause}, so {why}."
@@ -911,9 +1026,14 @@ def rich_sentence(brand: str, phrases: list[str], *, allow_amazon: bool, max_wor
 def collect_facts(lead: dict[str, Any]) -> LeadFacts:
     """StoreLeads category, recipe signal, confirmed Amazon product, scraped phrase."""
 
-    from outbound_pipeline import clean_brand_name
+    from outbound_pipeline import company_label
 
-    brand = clean_brand_name(lead.get("brand") or lead.get("domain") or "")
+    profile = _profile_of(lead)
+    brand = company_label(
+        lead.get("brand") or lead.get("domain") or "",
+        title=str(profile.get("title") or ""),
+        domain=lead.get("domain") or "",
+    )
     from outbound_pipeline import company_blocked_reason
 
     if company_blocked_reason(lead):
@@ -962,6 +1082,11 @@ def _anchored(text: str, anchors: list[str]) -> bool:
         piece = clean(anchor).lower()
         if len(piece) >= 3 and piece in low:
             return True
+        words = piece.split()
+        if len(words) > 2:
+            leading = " ".join(words[:2])
+            if len(leading) >= 3 and leading in low:
+                return True
     return False
 
 
@@ -969,8 +1094,20 @@ def _named(brand: str) -> str:
     return (brand or "").strip() or "This brand"
 
 
+def _generic_rich_phrase(phrase: str) -> bool:
+    low = " ".join(str(phrase or "").lower().split())
+    if low in _GENERIC_RETAIL_FACTS or low.startswith("sells on "):
+        return True
+    if "retail stores" in low and "sold at " not in low:
+        return True
+    return False
+
+
 def opener_line(facts: LeadFacts) -> str:
-    """Deterministic opener. Empty when we have no product, signal, or category."""
+    """Deterministic opener from a product, a named store, or a recipe signal.
+
+    A category label is not a sentence. An unnamed retail page is not a sentence.
+    """
 
     brand = _named(facts.brand)
     if facts.rich_opener:
@@ -980,12 +1117,17 @@ def opener_line(facts: LeadFacts) -> str:
         line = _usable(f"{brand} lists {facts.amazon_product} on Amazon.", allow_amazon=True)
         if line:
             return line
-    if facts.rich_phrases:
+    if facts.amazon_product and facts.trial_offer:
+        line = _usable(f"{brand} sells {facts.amazon_product}.", allow_amazon=False)
+        if line:
+            return line
+    phrases = [phrase for phrase in facts.rich_phrases if phrase and not _generic_rich_phrase(phrase)]
+    if phrases:
         allow_amazon = (
             not facts.trial_offer
-            and any("amazon" in phrase.lower() for phrase in facts.rich_phrases)
+            and any("amazon" in phrase.lower() for phrase in phrases)
         )
-        line = rich_sentence(brand, list(facts.rich_phrases), allow_amazon=allow_amazon)
+        line = rich_sentence(brand, phrases, allow_amazon=allow_amazon)
         if line:
             return line
     if facts.product:
@@ -994,10 +1136,6 @@ def opener_line(facts: LeadFacts) -> str:
             return line
     if facts.signal:
         line = _usable(f"{brand} {RECIPE_FACTS[facts.signal]}.", allow_amazon=False)
-        if line:
-            return line
-    if facts.category:
-        line = _usable(f"{brand} sells {facts.category}.", allow_amazon=False)
         if line:
             return line
     return ""
@@ -1059,11 +1197,12 @@ def fallback_line(
     product: str = "",
     recipe: str = "",
 ) -> str:
-    """Deterministic opener. Only a product, a recipe signal, or a plain category.
+    """Deterministic opener. Only a product or a recipe signal.
 
     ``reason`` is an internal note and is deliberately never shown to a prospect.
     ``product`` is an Amazon product the caller has already decided is confirmed.
-    The line is empty when none of those facts survive the rules.
+    A category niche is not turned into a sentence. The line is empty when no
+    product or signal survives the rules.
     """
 
     signal = (recipe or "").strip()
@@ -1095,7 +1234,7 @@ def _build_prompt(facts: LeadFacts, *, closing: str) -> str:
     if facts.signal:
         lines.append(f"Recent signal: {RECIPE_FACTS[facts.signal]}")
     if facts.category:
-        lines.append(f"What they sell: {facts.category}")
+        lines.append(f"Category label, not a product: {facts.category}")
     for phrase in facts.rich_phrases:
         lines.append(f"Fact: {phrase}")
     return "\n".join(lines) + "\n\n" + closing
@@ -1162,8 +1301,13 @@ def _from_model(
     anchors: list[str],
     max_words: int,
     trial_offer: bool = False,
+    concrete: Optional[list[str]] = None,
 ) -> tuple[str, str]:
-    """Return a clean line, or ('', reason) after one regeneration."""
+    """Return a clean line, or ('', reason) after one regeneration.
+
+    ``concrete`` is the shopper-visible things the opener must name. When it
+    is provided, a category label is not enough to keep the line.
+    """
 
     why = ""
     for _attempt in range(2):
@@ -1171,14 +1315,88 @@ def _from_model(
         ok, why = validate(
             raw, allow_amazon=allow_amazon, max_words=max_words, trial_offer=trial_offer,
         )
-        if ok and not _anchored(raw, anchors):
+        if ok and concrete is not None and not _anchored(raw, concrete):
+            ok, why = False, "does not name a concrete product"
+        elif ok and concrete is None and not _anchored(raw, anchors):
             ok, why = False, "not grounded in a known fact"
         if ok:
             return clean(raw), ""
         logger.info("[outbound-openers] rejected AI line (%s)", why)
         prompt = (prompt + f"\n\nYour last line was rejected ({why}). "
-                  "Write a different statement that follows every rule.")
+                  "Write a different statement that follows every rule and names a concrete fact.")
     return "", why or "rejected"
+
+
+def concrete_phrases(lead: dict[str, Any], facts: LeadFacts) -> list[str]:
+    """Product, flavor, story, named store, or review theme already on the lead."""
+
+    from outbound_pipeline import company_blocked_reason
+
+    if company_blocked_reason(lead):
+        return []
+    found: list[str] = []
+    categories = _category_phrases(lead)
+    broad = {item.lower() for item in CATEGORY_WORDS.values()}
+
+    def add(value: Any) -> None:
+        text = clean(str(value or "")).strip(" .")
+        words = text.split()
+        if len(words) > 8:
+            text = " ".join(words[:6])
+        if len(text) < 3:
+            return
+        lowered = text.lower()
+        if lowered in categories or lowered in broad or lowered in _GENERIC_RETAIL_FACTS:
+            return
+        if text not in found:
+            found.append(text)
+
+    if facts.amazon_product:
+        add(facts.amazon_product)
+    if facts.product:
+        add(facts.product)
+    profile = _profile_of(lead)
+    product = profile.get("most_recently_published_product")
+    if not isinstance(product, dict):
+        product = lead.get("most_recently_published_product")
+    if isinstance(product, dict):
+        add(product.get("title"))
+    add(profile.get("description") or lead.get("description"))
+    for name in named_retailers(profile, domain=str(lead.get("domain") or "")):
+        add(name)
+    for phrase in facts.rich_phrases:
+        low = phrase.lower()
+        if low.startswith("recent product:"):
+            add(phrase.split(":", 1)[1])
+        elif " sold at " in f" {low}" or low.startswith("sold at "):
+            add(phrase.split(" at ", 1)[-1])
+        elif "reviews" in low:
+            add("reviews")
+        elif _generic_rich_phrase(phrase) or low.endswith("followers") or " has shoppers" in f" {low}":
+            continue
+        elif low.startswith("offers a subscribe") or low == "sells wholesale":
+            continue
+        else:
+            add(phrase)
+    trust = profile.get("trustpilot") if isinstance(profile.get("trustpilot"), dict) else {}
+    try:
+        reviews = int((trust or {}).get("review_count") or 0)
+        average = float((trust or {}).get("avg_rating") or 0)
+    except (TypeError, ValueError):
+        reviews, average = 0, 0.0
+    if reviews > 0 and average >= 4.5:
+        add("reviews")
+    return found
+
+
+def _sendable(line: str, lead: dict[str, Any], concrete: list[str]) -> bool:
+    """True when the line names a real fact and is allowed to reach Instantly."""
+
+    if not line or not concrete or not _anchored(line, concrete):
+        return False
+    if generic_copy_reason(line) or opener_hold_reason(line, lead):
+        return False
+    return True
 
 
 def write_opener(
@@ -1191,17 +1409,14 @@ def write_opener(
     """Return (line, source) where source is "ai", "fallback", or "none".
 
     One line per company domain. A second contact at the same domain reuses it.
-    ``contact`` is ignored so the line is not rewritten per person. The line is
-    empty when we have no confirmed product, recipe signal, or category.
+    ``contact`` is ignored so the line is not rewritten per person. The line
+    names one concrete shopper-visible fact. It is empty when no such fact
+    exists, which the enrich path records as a skip and does not push.
     """
 
     if rich_personalization_enabled(lead):
         _ensure_rich(lead, llm=llm, api_key=api_key)
     domain = _domain_key(lead)
-    if domain and domain in _OPENERS_BY_DOMAIN:
-        return _OPENERS_BY_DOMAIN[domain]
-
-    facts = collect_facts(lead)
 
     def finish(line: str, source: str) -> tuple[str, str]:
         result = (line, source)
@@ -1209,34 +1424,46 @@ def write_opener(
             _OPENERS_BY_DOMAIN[domain] = result
         return result
 
-    if not facts.solid:
-        return finish("", "none")
-    if facts.rich_opener:
+    facts = collect_facts(lead)
+    concrete = concrete_phrases(lead, facts)
+    cached = _OPENERS_BY_DOMAIN.get(domain) if domain else None
+    if cached and cached[0] and _sendable(cached[0], lead, concrete):
+        return cached
+    if facts.rich_opener and _sendable(facts.rich_opener, lead, concrete):
         return finish(facts.rich_opener, "fallback")
-    model = _resolve_llm(llm, api_key, system=_SYSTEM)
+    if not facts.solid and not concrete:
+        return finish("", "none")
+    already_modeled = bool(cached) and rich_personalization_enabled(lead)
+    model = None if already_modeled else _resolve_llm(llm, api_key, system=_SYSTEM)
     if model is not None:
         prompt = _build_prompt(
             facts,
             closing=(
                 "Write one sentence of about 20 words, never more than 25. "
+                "Name one concrete product, flavor, story, store name, or review theme "
+                "from the facts. If none is listed, write nothing. "
                 "Write the opening statement now."
             ),
         )
         try:
-            line, why = _from_model(
+            line, _why = _from_model(
                 model, prompt,
                 allow_amazon=bool(facts.amazon_product) and not facts.trial_offer,
                 anchors=_anchors(facts), max_words=MAX_WORDS,
                 trial_offer=facts.trial_offer,
+                concrete=concrete,
             )
-            if line:
+            if line and _sendable(line, lead, concrete):
                 return finish(line, "ai")
-            if why == "too long":
-                return finish("", "none")
         except Exception:  # noqa: BLE001 - never block a lead on the AI
-            logger.exception("[outbound-openers] AI call failed, using fallback")
+            logger.exception("[outbound-openers] AI call failed, using a plain fact")
+    plain, _angle = shopper_lines(lead)
+    if plain and _sendable(plain, lead, concrete):
+        return finish(plain, "fallback")
     line = opener_line(facts)
-    return finish(line, "fallback" if line else "none")
+    if line and _sendable(line, lead, concrete):
+        return finish(line, "fallback")
+    return finish("", "none")
 
 
 def write_brand_angle(
@@ -1356,6 +1583,11 @@ def opener_hold_reason(opener: str, lead: Optional[dict[str, Any]] = None) -> st
     text = (opener or "").strip()
     if not text:
         return "no shopper-visible opener"
+    generic = generic_copy_reason(text)
+    if generic:
+        return f"opener is {generic}"
+    if "shoppers already compare" in text.lower() or "a category where" in text.lower():
+        return "opener is a category filler with no shopper-visible fact"
     if _COPY_URL.search(text):
         return "opener contains a url"
     if _BACKEND_COPY.search(text):
@@ -1365,7 +1597,9 @@ def opener_hold_reason(opener: str, lead: Optional[dict[str, Any]] = None) -> st
     if _SAW_CATEGORY.match(text) and "category where" in text.lower():
         return "opener is a category filler with no shopper-visible fact"
     sold = _normalized_sale(text)
-    if sold and sold in _category_phrases(lead or {}):
+    broad = {value.lower() for value in CATEGORY_WORDS.values()}
+    broad.update({"food & beverage", "food and drink", "food & drink"})
+    if sold and (sold in _category_phrases(lead or {}) or sold in broad):
         return "opener is a category filler with no shopper-visible fact"
     if len(text.split()) > MAX_WORDS:
         return "opener is longer than 25 words"
@@ -1397,6 +1631,8 @@ def angle_is_filler(angle: str) -> bool:
     text = (angle or "").strip()
     if not text:
         return False
+    if generic_copy_reason(text):
+        return True
     if _ANATA_CATEGORY.match(text) or _COPY_URL.search(text) or _BACKEND_COPY.search(text):
         return True
     return False
@@ -1416,13 +1652,14 @@ def _shopper_sentence(brand: str, fact: str) -> str:
         return _usable(f"{brand} sells {title}.", allow_amazon=False)
     if "reviews average" in low or low.startswith("reviews "):
         return _usable(f"{brand} {raw}.", allow_amazon=False)
-    if low in {"has a store locator", "sold through retailers", "sold in stores"}:
-        return _usable(f"{brand} is sold in retail stores.", allow_amazon=False)
-    if low == "sells wholesale":
-        return _usable(f"{brand} sells through wholesale.", allow_amazon=False)
+    if low.startswith("sold at ") or low.startswith("is sold at "):
+        name = raw.split(" at ", 1)[-1].strip()
+        return _usable(f"{brand} is sold at {name}.", allow_amazon=False)
+    if low in _GENERIC_RETAIL_FACTS or "retail stores" in low:
+        return ""
     if " bio:" in low or low.endswith("followers"):
         return _usable(f"{brand} {raw}.", allow_amazon=False)
-    if len(raw.split()) >= 4 and not _BACKEND_COPY.search(raw) and not _COPY_URL.search(raw):
+    if raw and not _BACKEND_COPY.search(raw) and not _COPY_URL.search(raw):
         sentence = raw if raw.endswith(".") else f"{raw}."
         if sentence.lower().startswith(brand.lower()):
             return _usable(sentence, allow_amazon=False)
@@ -1438,20 +1675,32 @@ def shopper_lines(lead: dict[str, Any]) -> tuple[str, str]:
     """
 
     from outbound_personalization import fact_sheet
+    from outbound_pipeline import company_label
 
     sheet = fact_sheet(lead)
     if sheet.blocked or not sheet.facts:
         return "", ""
-    brand = _named(str(lead.get("brand") or sheet.brand or ""))
+    profile = lead.get("store_profile") if isinstance(lead.get("store_profile"), dict) else {}
+    brand = _named(company_label(
+        lead.get("brand") or sheet.brand or "",
+        title=str(profile.get("title") or ""),
+        domain=lead.get("domain") or "",
+    ))
     opener = ""
     angle = ""
     preferred = []
     rest = []
     for fact in sheet.facts:
         low = fact.lower()
-        if low.startswith("recent product") or "reviews average" in low or low in {
-            "has a store locator", "sold through retailers", "sold in stores", "sells wholesale",
-        } or " bio:" in low or low.endswith("followers"):
+        if low in _GENERIC_RETAIL_FACTS or low.startswith("sells on ") or "retail stores" in low:
+            continue
+        if (
+            low.startswith("recent product")
+            or low.startswith("sold at ")
+            or "reviews average" in low
+            or " bio:" in low
+            or low.endswith("followers")
+        ):
             preferred.append(fact)
         else:
             rest.append(fact)

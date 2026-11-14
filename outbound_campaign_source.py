@@ -137,7 +137,11 @@ def _lead_from(store: dict[str, Any], recipe_key: str) -> Optional[dict[str, Any
     yearly = store.get("estimated_sales_yearly")
     return {
         "domain": domain,
-        "brand": pipeline.clean_brand_name(store.get("merchant_name") or store.get("name") or domain),
+        "brand": pipeline.company_label(
+            store.get("merchant_name") or store.get("name") or domain,
+            title=store.get("title") or "",
+            domain=domain,
+        ),
         "country": pipeline.headquarters_verdict(store)[0],
         "recipe": recipe_key,
         "tier": "B",

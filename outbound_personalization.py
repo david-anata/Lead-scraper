@@ -245,15 +245,15 @@ def fact_sheet(lead: dict[str, Any]) -> FactSheet:
             continue
         if any(name.lower() in item.lower() for item in channels):
             facts.append(f"sells on {name}")
-    if str(store.get("store_locator_page") or "").strip():
-        facts.append("has a store locator")
-    if str(store.get("retailer_page") or "").strip():
-        facts.append("sold through retailers")
+    from outbound_openers import named_retailers
+
+    for retailer in named_retailers(
+        store, domain=str(lead.get("domain") or store.get("name") or ""),
+    ):
+        facts.append(f"sold at {retailer}")
     feature_text = " ".join(str(item) for item in (store.get("features") or []))
     if re.search(r"wholesale", feature_text, re.I):
         facts.append("sells wholesale")
-    if re.search(r"retail|store locator", feature_text, re.I) and "has a store locator" not in facts:
-        facts.append("sold in stores")
     high, review_line = _high_review(store)
     sheet.high_rating = high
     if review_line:
@@ -319,6 +319,11 @@ def style_violation(
         return "question"
     if _HYPE.search(raw):
         return "hype"
+    from outbound_openers import generic_copy_reason
+
+    generic = generic_copy_reason(raw)
+    if generic:
+        return generic
     if _NEGATIVE.search(raw):
         return "negative lead"
     if _TECH.search(raw) or _BACKEND.search(raw):
@@ -348,24 +353,53 @@ def style_violation(
     return ""
 
 
-def _category_lines(sheet: FactSheet) -> tuple[str, str]:
-    from outbound_openers import _category_phrase
+def _concrete_anchors(sheet: FactSheet) -> list[str]:
+    """Product, story, named store, or review theme. Not a category or a channel."""
 
-    category = _category_phrase(sheet.category) or ""
-    brand = sheet.brand or "This brand"
-    if not category or _RESTRICTED.search(category):
-        return "", ""
-    opener = f"Saw {brand} in {category}, a category where shoppers already compare options."
-    angle = f"Shoppers already compare {category}."
-    if style_violation(
-        opener, role="opener", recipe=sheet.recipe, high_rating=False, trial_offer=sheet.trial_offer,
-    ):
-        return "", ""
-    if style_violation(
-        angle, role="angle", recipe=sheet.recipe, high_rating=False, trial_offer=sheet.trial_offer,
-    ):
-        return "", ""
-    return opener, angle
+    anchors: list[str] = []
+    for fact in sheet.facts:
+        low = " ".join(fact.lower().split())
+        if low.startswith("recent product:"):
+            anchors.append(fact.split(":", 1)[1].strip())
+        elif low.startswith("sold at "):
+            anchors.append(fact.split(" at ", 1)[-1].strip())
+        elif "reviews" in low:
+            anchors.append("reviews")
+        elif (
+            low.startswith("sells on ")
+            or low.endswith("followers")
+            or low in {
+                "has a store locator",
+                "sold through retailers",
+                "sold in stores",
+                "sells wholesale",
+                "has shoppers or site versions beyond the us",
+                "offers a subscribe option",
+            }
+        ):
+            continue
+        else:
+            anchors.append(fact.strip())
+    cleaned: list[str] = []
+    for anchor in anchors:
+        text = " ".join(anchor.split())
+        if len(text) >= 3 and text not in cleaned:
+            cleaned.append(text)
+    return cleaned
+
+
+def _names_concrete(text: str, anchors: list[str]) -> bool:
+    low = " ".join((text or "").lower().split())
+    for anchor in anchors:
+        piece = " ".join(anchor.lower().split())
+        if len(piece) >= 3 and piece in low:
+            return True
+        words = piece.split()
+        if len(words) > 2:
+            leading = " ".join(words[:2])
+            if len(leading) >= 3 and leading in low:
+                return True
+    return False
 
 
 def _prompt(sheet: FactSheet) -> str:
@@ -393,6 +427,9 @@ def _prompt(sheet: FactSheet) -> str:
         "The angle must not repeat the opener and must not start with Anata helps. "
         "No digits, no em dashes, no URLs, no hype, no platform, plan, app, pixel, "
         "or the words moved or upgraded. "
+        "Do not use the category label as the sentence. Do not say shoppers already "
+        "compare options. Do not write strategy, channels, or automation. Do not say "
+        "the brand is sold in retail stores unless a store name is in the facts. "
         "A subscribe option may be named. Never name a review app. "
         "Cite reviews only when the facts say the average is close to five stars. "
         "Do not invent products, stores, or follower counts.\n\n"
@@ -443,11 +480,12 @@ def generate(
     llm: Optional[Callable[[str], str]] = None,
     api_key: Optional[str] = None,
 ) -> tuple[str, str, str]:
-    """Return (opener, angle, source). Source is ai, fallback, or none.
+    """Return (opener, angle, source). Source is ai or none.
 
-    Thin, restricted, and multi-brand records get no lines. A failed model
-    line falls back to a short category sentence when the category itself is safe.
-    A line over the hard word max is regenerated once, then left empty so the lead is held.
+    Thin, restricted, and multi-brand records get no lines. A category label
+    is not a fallback. A failed or generic model line is left empty so the
+    lead is skipped unless a plain product fact is written elsewhere.
+    A line over the hard word max is regenerated once, then left empty.
     """
 
     sheet = fact_sheet(lead)
@@ -455,6 +493,13 @@ def generate(
         logger.info(
             "[outbound-personalization] %s flagged: %s",
             sheet.brand, sheet.blocked,
+        )
+        return "", "", "none"
+    concrete = _concrete_anchors(sheet)
+    if not concrete:
+        logger.info(
+            "[outbound-personalization] %s flagged: no concrete shopper-visible fact",
+            sheet.brand,
         )
         return "", "", "none"
     prompt = _prompt(sheet)
@@ -479,6 +524,8 @@ def generate(
                 angle, role="angle", recipe=sheet.recipe,
                 high_rating=sheet.high_rating, trial_offer=sheet.trial_offer,
             )
+            if opener and not _names_concrete(opener, concrete):
+                why = why or "does not name a concrete product"
             if opener and angle and not why and opener.strip() != angle.strip():
                 return opener, angle, "ai"
             prompt = (
@@ -490,8 +537,5 @@ def generate(
         logger.info("[outbound-personalization] model line rejected (%s)", why or "empty")
         if why == "too long":
             return "", "", "none"
-    opener, angle = _category_lines(sheet)
-    if opener and angle:
-        return opener, angle, "fallback"
     logger.info("[outbound-personalization] %s flagged: no safe line", sheet.brand)
     return "", "", "none"

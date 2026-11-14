@@ -32,14 +32,17 @@ def test_validate_rejects_numbers_links_cliches_and_length():
     assert not op.validate("Nice work — really")[0]
 
 
-def test_ai_line_used_when_valid():
-    line, src = op.write_opener(LEAD, CONTACT, llm=lambda p: "Huppy sells oral care.")
-    assert src == "ai" and "Huppy" in line
+def test_ai_line_used_when_it_names_a_product():
+    lead = {**LEAD, "domain": "ai-line.com", "site_product": "toothpaste tabs"}
+    line, src = op.write_opener(lead, CONTACT, llm=lambda p: "Huppy sells toothpaste tabs.")
+    assert src == "ai" and "toothpaste tabs" in line
 
 
-def test_bad_ai_line_falls_back():
-    line, src = op.write_opener(LEAD, CONTACT, llm=lambda p: "You grew 300% - wow!")
+def test_bad_ai_line_falls_back_to_the_product():
+    lead = {**LEAD, "domain": "bad-ai.com", "site_product": "toothpaste tabs"}
+    line, src = op.write_opener(lead, CONTACT, llm=lambda p: "You grew 300% - wow!")
     assert src == "fallback"
+    assert "toothpaste tabs" in line and "300" not in line
     ok, _ = op.validate(line)
     assert ok
 
@@ -47,19 +50,27 @@ def test_bad_ai_line_falls_back():
 def test_ai_exception_falls_back_without_raising():
     def boom(p):
         raise RuntimeError("down")
-    line, src = op.write_opener(LEAD, CONTACT, llm=boom)
-    assert src == "fallback" and line
+    lead = {**LEAD, "domain": "boom.com", "site_product": "toothpaste tabs"}
+    line, src = op.write_opener(lead, CONTACT, llm=boom)
+    assert src == "fallback" and "toothpaste tabs" in line
 
 
-def test_no_key_no_llm_uses_fallback(monkeypatch):
+def test_no_key_skips_a_category_and_uses_a_product(monkeypatch):
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
-    _, src = op.write_opener(LEAD, CONTACT)
-    assert src == "fallback"
+    monkeypatch.setattr(
+        "sales_support_agent.services.llm_client.llm_available", lambda **_kwargs: False,
+    )
+    line, src = op.write_opener({**LEAD, "domain": "nokey.com"}, CONTACT)
+    assert line == "" and src == "none"
+    product_line, product_src = op.write_opener(
+        {**LEAD, "domain": "nokey-product.com", "site_product": "toothpaste tabs"}, CONTACT,
+    )
+    assert product_src == "fallback" and "toothpaste tabs" in product_line
 
 
 def test_fallback_never_contains_digits_even_if_reason_does():
-    line = op.fallback_line("Huppy", "oral care", "grew 40% in a month")
-    assert "40" not in line and op.validate(line)[0]
+    line = op.fallback_line("Huppy", "oral care", "grew 40% in a month", product="toothpaste tabs")
+    assert "40" not in line and "toothpaste tabs" in line and op.validate(line)[0]
 
 
 def test_build_lead_maps_instantly_fields():
@@ -129,8 +140,8 @@ def test_push_error_hides_key(monkeypatch):
 
 
 def test_fallback_never_leaks_internal_reason():
-    line = op.fallback_line("Basin", "bath", "They fit our ideal customer profile")
-    assert "ideal customer" not in line.lower() and "Basin" in line and op.validate(line)[0]
+    line = op.fallback_line("Basin", "bath", "They fit our ideal customer profile", product="cedar soap")
+    assert "ideal customer" not in line.lower() and "cedar soap" in line.lower() and op.validate(line)[0]
 
 
 def test_template_tics_rejected():
@@ -138,21 +149,23 @@ def test_template_tics_rejected():
 
 
 def test_retry_once_then_accept():
-    lines = iter(["I noticed Huppy is building something special.", "Huppy sells oral care."])
-    line, src = op.write_opener(LEAD, CONTACT, llm=lambda p: next(lines))
-    assert src == "ai" and line == "Huppy sells oral care."
+    lines = iter(["I noticed Huppy is building something special.", "Huppy sells toothpaste tabs."])
+    line, src = op.write_opener(
+        {**LEAD, "domain": "retry-ok.com", "site_product": "toothpaste tabs"},
+        CONTACT,
+        llm=lambda p: next(lines),
+    )
+    assert src == "ai" and line == "Huppy sells toothpaste tabs."
 
 
 def test_category_slugs_become_plain_words_and_product_wins():
     slug_line = op.fallback_line("Huppy", "apparel_accessories")
-    assert "apparel_accessories" not in slug_line
-    assert "apparel and accessories" in slug_line
+    assert slug_line == ""
     assert op.plain_category("food_beverage") == "food and beverage"
     assert op.plain_category("beauty_wellness") == "beauty and wellness"
-    assert "?" not in slug_line
     product_line = op.fallback_line("Huppy", "apparel_accessories", product="toothpaste tabs")
     assert "toothpaste tabs" in product_line
-    assert "apparel_accessories" not in product_line
+    assert "apparel" not in product_line.lower()
     signal = op.fallback_line("Huppy", "", recipe="plan_upgrade")
     assert "upgraded their store plan" in signal
     assert "?" not in signal
@@ -184,7 +197,13 @@ def test_unconfirmed_amazon_product_is_not_used():
     for conf in ("", "low", "medium"):
         op._OPENERS_BY_DOMAIN.clear()
         prompts.clear()
-        line, source = op.write_opener({**LEAD, "amz_product": "toothpaste tabs", "amz_confidence": conf}, CONTACT, llm=llm)
+        line, source = op.write_opener(
+            {**LEAD, "domain": f"unconfirmed-{conf or 'blank'}.example",
+             "amz_product": "toothpaste tabs", "amz_confidence": conf,
+             "site_product": "mouthwash"},
+            CONTACT, llm=llm,
+        )
+        assert "mouthwash" in line.lower()
         assert "amazon" not in line.lower()
         assert source == "fallback"
         assert "Amazon product" not in prompts[0]
