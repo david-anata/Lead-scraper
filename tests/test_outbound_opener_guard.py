@@ -137,6 +137,27 @@ def test_validator_rejects_strategy_copy_and_skips_without_a_fact():
     assert op.validate("Gents sells hair growth serum.")[0]
 
 
+def test_page_boilerplate_is_not_treated_as_a_product():
+    assert op._shopper_sentence("Acme", "Official Website") == ""
+    assert op._shopper_sentence("Acme", "Shop Now") == ""
+    assert op._shopper_sentence("Acme", "Home") == ""
+    assert op._shopper_sentence("Acme", "recent product: Home") == ""
+    assert "page boilerplate" in op.opener_hold_reason(
+        "Acme sells official Website.", {"brand": "Acme"},
+    )
+    thin = {
+        "brand": "Acme",
+        "domain": "acme.com",
+        "categories": ["apparel"],
+        "store_profile": {"title": "Official Website"},
+    }
+    assert personalization.fact_sheet(thin).facts == []
+    line, source = op.write_opener(thin, CONTACT, llm=lambda _prompt: "Acme sells official Website.")
+    assert line == "" and source == "none"
+    assert "cedar soap" in op._shopper_sentence("Acme", "recent product: Cedar Soap").lower()
+    assert "hibiscus rose soda" in op._shopper_sentence("Acme", "Hibiscus rose soda").lower()
+
+
 def test_company_labels_drop_suffixes_and_prefer_the_store_title():
     assert pipeline.clean_brand_name("Young Living US Prod") == "Young Living"
     assert pipeline.clean_brand_name("Ziwi Us") == "Ziwi"

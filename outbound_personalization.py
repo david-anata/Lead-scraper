@@ -127,6 +127,10 @@ def _clean_blurb(text: str, brand: str) -> str:
         return ""
     if re.search(r"\d", raw):
         return ""
+    from outbound_openers import is_page_boilerplate
+
+    if is_page_boilerplate(raw, brand):
+        return ""
     return raw[:220]
 
 

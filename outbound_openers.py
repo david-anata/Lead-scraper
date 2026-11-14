@@ -108,6 +108,20 @@ _GENERIC_RETAIL_FACTS = frozenset({
     "is sold in retail stores",
     "sold in retail stores",
 })
+# Page chrome StoreLeads sometimes stores as the title. Not a product.
+_PAGE_BOILERPLATE = frozenset({
+    "home", "homepage", "home page", "front page", "main page", "index",
+    "official website", "official site", "official web site", "official shop",
+    "official store", "website", "web site", "site", "shop", "shop now",
+    "shop all", "shop home", "our store", "online store", "the store", "store",
+    "welcome", "welcome home", "coming soon", "new arrivals", "all products",
+    "products", "product", "collections", "collection", "catalog", "catalogue",
+    "menu", "cart", "my account", "account", "log in", "login", "sign in",
+    "about", "about us", "contact", "contact us", "our story", "untitled",
+    "just added", "best sellers", "bestsellers", "best seller", "sale",
+    "on sale", "new", "new in", "explore", "discover", "learn more",
+    "read more", "click here", "buy now", "add to cart", "free shipping",
+})
 _RETAILER_HOSTS = {
     "rei.com": "REI",
     "dickssportinggoods.com": "Dick's Sporting Goods",
@@ -265,6 +279,45 @@ def validate(
     if generic:
         return False, generic
     return True, ""
+
+
+def _boilerplate_words(value: str) -> list[str]:
+    pieces = re.split(r"[|–—]| - ", str(value or ""))
+    chunks: list[str] = []
+    for piece in pieces:
+        words = re.sub(r"[^a-z0-9]+", " ", piece.lower()).strip()
+        if words:
+            chunks.append(words)
+    return chunks
+
+
+def _boilerplate_chunk(words: str) -> bool:
+    if words in _PAGE_BOILERPLATE:
+        return True
+    if re.fullmatch(
+        r"(?:the |our |my |your )?(?:official )?(?:website|web site|site|store|shop|homepage|home page|home)",
+        words,
+    ):
+        return True
+    if words.startswith("welcome to ") and len(words.split()) <= 8:
+        return True
+    if re.fullmatch(r"(?:shop|visit|explore)(?: now| all| home| our store| the store)?", words):
+        return True
+    return False
+
+
+def is_page_boilerplate(value: str, brand: str = "") -> bool:
+    """True when the text is page chrome, not a product, story, or store name."""
+
+    chunks = _boilerplate_words(value)
+    if not chunks:
+        return True
+    brand_words = re.sub(r"[^a-z0-9]+", " ", (brand or "").lower()).strip()
+
+    def empty(chunk: str) -> bool:
+        return _boilerplate_chunk(chunk) or bool(brand_words and chunk == brand_words)
+
+    return all(empty(chunk) for chunk in chunks)
 
 
 def generic_copy_reason(text: str) -> str:
@@ -1348,6 +1401,8 @@ def concrete_phrases(lead: dict[str, Any], facts: LeadFacts) -> list[str]:
         lowered = text.lower()
         if lowered in categories or lowered in broad or lowered in _GENERIC_RETAIL_FACTS:
             return
+        if is_page_boilerplate(text, str(lead.get("brand") or "")):
+            return
         if text not in found:
             found.append(text)
 
@@ -1597,6 +1652,9 @@ def opener_hold_reason(opener: str, lead: Optional[dict[str, Any]] = None) -> st
     if _SAW_CATEGORY.match(text) and "category where" in text.lower():
         return "opener is a category filler with no shopper-visible fact"
     sold = _normalized_sale(text)
+    brand = str((lead or {}).get("brand") or "")
+    if sold and is_page_boilerplate(sold, brand):
+        return "opener is page boilerplate with no shopper-visible fact"
     broad = {value.lower() for value in CATEGORY_WORDS.values()}
     broad.update({"food & beverage", "food and drink", "food & drink"})
     if sold and (sold in _category_phrases(lead or {}) or sold in broad):
@@ -1643,12 +1701,14 @@ def _shopper_sentence(brand: str, fact: str) -> str:
 
     raw = " ".join((fact or "").split())
     low = raw.lower()
-    if not raw:
+    if not raw or is_page_boilerplate(raw, brand):
         return ""
     if low.startswith("sells on ") or low.startswith("has shoppers") or low.startswith("offers a subscribe"):
         return ""
     if low.startswith("recent product:"):
         title = raw.split(":", 1)[1].strip()
+        if is_page_boilerplate(title, brand):
+            return ""
         return _usable(f"{brand} sells {title}.", allow_amazon=False)
     if "reviews average" in low or low.startswith("reviews "):
         return _usable(f"{brand} {raw}.", allow_amazon=False)
