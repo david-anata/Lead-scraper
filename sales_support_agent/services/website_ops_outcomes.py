@@ -24,6 +24,50 @@ def _verified_actions(report: Mapping[str, Any]) -> list[dict[str, Any]]:
     ]
 
 
+def in_progress_without_production_delta(outcome: Mapping[str, Any]) -> bool:
+    """True when qualified work is underway and production has not changed."""
+
+    if str(outcome.get("status", "") or "").strip() != ACTIVE_OUTCOME:
+        return False
+    try:
+        delta = int(outcome.get("production_delta_count", 0) or 0)
+    except (TypeError, ValueError):
+        return False
+    return delta == 0
+
+
+def persisted_run_status(
+    *,
+    mode: str,
+    outcome: Mapping[str, Any],
+    ok: bool,
+) -> str:
+    """Map a pipeline outcome onto the durable run status.
+
+    An in-progress run with no verified production delta is a non-failure.
+    The next cron pulse resumes it. Execution that finished without verified
+    production evidence stays ``failed_outcome``.
+    """
+
+    if in_progress_without_production_delta(outcome):
+        return "work_in_progress"
+    outcome_status = str(outcome.get("status", "") or "").strip()
+    try:
+        production_delta_count = int(outcome.get("production_delta_count", 0) or 0)
+    except (TypeError, ValueError):
+        production_delta_count = 0
+    qualified_quiet_day = outcome_status == NO_OPPORTUNITY_OUTCOME and bool(
+        outcome.get("full_candidate_review")
+    )
+    daily_target_missed = mode == "daily" and not (
+        (outcome_status == VERIFIED_OUTCOME and production_delta_count > 0)
+        or qualified_quiet_day
+    )
+    if (not ok) or outcome_status == FAILED_OUTCOME or daily_target_missed:
+        return "failed_outcome"
+    return "succeeded"
+
+
 def classify_run_outcome(report: Mapping[str, Any]) -> dict[str, Any]:
     """Classify the achieved outcome, never merely the completed process."""
 

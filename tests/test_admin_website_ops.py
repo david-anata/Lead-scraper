@@ -145,95 +145,106 @@ class AdminWebsiteOpsTests(unittest.TestCase):
         self.assertEqual(reopened, [])
         update.assert_not_called()
 
-    def test_daily_pulse_retries_zero_delta_until_production_is_verified(self) -> None:
-        settings = SimpleNamespace()
-        active = SimpleNamespace(
-            ok=True,
-            message="work remains",
-            report={
-                "run_outcome": {
-                    "status": "work_in_progress",
-                    "production_delta_count": 0,
-                }
-            },
-        )
-        verified = SimpleNamespace(
-            ok=True,
-            message="published",
-            report={
-                "run_outcome": {
-                    "status": "production_verified",
-                    "production_delta_count": 1,
-                }
-            },
-        )
-        with (
-            mock.patch(
-                "sales_support_agent.api.website_ops_jobs_router.get_website_ops_run_state",
-                return_value={},
-            ),
-            mock.patch(
-                "sales_support_agent.api.website_ops_jobs_router.write_website_ops_run_state"
-            ) as write_state,
-            mock.patch(
+    def test_daily_pulse_resumes_in_progress_work_on_the_next_invocation(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            settings = SimpleNamespace(website_ops_root=Path(tmpdir))
+            active = SimpleNamespace(
+                ok=True,
+                message="work remains",
+                report={
+                    "run_outcome": {
+                        "status": "work_in_progress",
+                        "summary": "Qualified work is actively queued.",
+                        "actual_output": "329 active qualified item(s); no production delta yet.",
+                        "production_delta_count": 0,
+                    }
+                },
+            )
+            verified = SimpleNamespace(
+                ok=True,
+                message="published",
+                report={
+                    "run_outcome": {
+                        "status": "production_verified",
+                        "summary": "1 production change was verified.",
+                        "production_delta_count": 1,
+                    }
+                },
+            )
+            with mock.patch(
                 "sales_support_agent.api.website_ops_jobs_router.run_website_ops",
                 side_effect=[active, verified],
-            ) as run,
-        ):
-            result = _run_due_modes(
-                settings,
-                ["daily"],
-                trigger="test",
-                force=True,
-                business_date=date(2026, 8, 1),
-            )
-
-        self.assertEqual(run.call_count, 2)
-        self.assertEqual(result["daily"]["status"], "succeeded")
-        self.assertEqual(result["daily"]["attempts"], 2)
-        persisted_updates = [call.args[2] for call in write_state.call_args_list]
-        self.assertEqual(persisted_updates[0]["run_date"], "2026-08-01")
-        self.assertEqual(persisted_updates[-1]["last_successful_date"], "2026-08-01")
-
-    def test_daily_pulse_fails_truthfully_after_zero_delta_retries_exhaust(self) -> None:
-        settings = SimpleNamespace()
-        active = SimpleNamespace(
-            ok=True,
-            message="work remains",
-            report={
-                "run_outcome": {
-                    "status": "work_in_progress",
-                    "production_delta_count": 0,
-                }
-            },
-        )
-        with (
-            mock.patch(
-                "sales_support_agent.api.website_ops_jobs_router.get_website_ops_run_state",
-                return_value={},
-            ),
-            mock.patch(
-                "sales_support_agent.api.website_ops_jobs_router.write_website_ops_run_state"
-            ),
-            mock.patch(
+            ) as run, mock.patch(
                 "sales_support_agent.api.website_ops_jobs_router.send_website_ops_failure_email"
-            ) as failure_email,
-            mock.patch(
+            ) as failure_email:
+                first = _run_due_modes(
+                    settings,
+                    ["daily"],
+                    trigger="render_cron",
+                    pulse_slot="2026-08-01:08",
+                    business_date=date(2026, 8, 1),
+                )
+                second = _run_due_modes(
+                    settings,
+                    ["daily"],
+                    trigger="render_cron",
+                    pulse_slot="2026-08-01:09",
+                    business_date=date(2026, 8, 1),
+                )
+
+            self.assertEqual(run.call_count, 2)
+            self.assertEqual(first["daily"]["status"], "work_in_progress")
+            self.assertEqual(first["daily"]["attempts"], 1)
+            self.assertEqual(second["daily"]["status"], "succeeded")
+            self.assertEqual(second["daily"]["attempts"], 1)
+            failure_email.assert_not_called()
+            stored = get_website_ops_run_state(settings, "daily")
+            self.assertEqual(stored["status"], "succeeded")
+            self.assertEqual(stored["last_successful_date"], "2026-08-01")
+            self.assertEqual(stored["attempt_count"], "2")
+
+    def test_in_progress_without_delta_does_not_retry_or_fail_inside_one_invocation(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            settings = SimpleNamespace(website_ops_root=Path(tmpdir))
+            active = SimpleNamespace(
+                ok=True,
+                message="work remains",
+                report={
+                    "run_outcome": {
+                        "status": "work_in_progress",
+                        "summary": "Qualified work is actively queued.",
+                        "actual_output": "329 active qualified item(s); no production delta yet.",
+                        "production_delta_count": 0,
+                    }
+                },
+            )
+            with mock.patch.dict(
+                os.environ, {"WEBSITE_OPS_RUN_MAX_ATTEMPTS": "3"}, clear=False
+            ), mock.patch(
                 "sales_support_agent.api.website_ops_jobs_router.run_website_ops",
                 return_value=active,
-            ) as run,
-        ):
-            result = _run_due_modes(
-                settings,
-                ["daily"],
-                trigger="test",
-                force=True,
-            )
+            ) as run, mock.patch(
+                "sales_support_agent.api.website_ops_jobs_router.send_website_ops_failure_email"
+            ) as failure_email:
+                result = _run_due_modes(
+                    settings,
+                    ["daily"],
+                    trigger="render_cron",
+                    force=True,
+                    pulse_slot="2026-08-01:08",
+                    business_date=date(2026, 8, 1),
+                )
 
-        self.assertEqual(run.call_count, 3)
-        self.assertEqual(result["daily"]["status"], "failed_outcome")
-        self.assertEqual(result["daily"]["attempts"], 3)
-        failure_email.assert_called_once()
+            self.assertEqual(run.call_count, 1)
+            self.assertEqual(result["daily"]["status"], "work_in_progress")
+            self.assertEqual(result["daily"]["attempts"], 1)
+            failure_email.assert_not_called()
+            stored = get_website_ops_run_state(settings, "daily")
+            self.assertEqual(stored["status"], "work_in_progress")
+            self.assertEqual(stored["outcome_status"], "work_in_progress")
+            self.assertEqual(stored["production_delta_count"], "0")
+            self.assertEqual(stored["recovery_status"], "resume_next_pulse")
+            self.assertNotEqual(stored["status"], "failed_outcome")
 
     def test_generated_article_identity_parser_reads_registry_contract(self) -> None:
         source = '''

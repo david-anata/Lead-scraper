@@ -177,6 +177,16 @@ class WebsiteOpsStorageMiddleware(BaseHTTPMiddleware):
         "/admin/api/website-ops",
         "/api/jobs/website-ops",
     )
+    _RUN_PATH = "/api/jobs/website-ops/run"
+    _MUTATING_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
+
+    def _normalized_path(self, request: Any) -> str:
+        return request.url.path.rstrip("/") or "/"
+
+    def _persists_run_state(self, request: Any) -> bool:
+        """Cron GET /run writes state. Persist it the same way as a form write."""
+
+        return self._normalized_path(request) == self._RUN_PATH
 
     async def dispatch(self, request: Any, call_next: Any) -> Any:
         if not database_mirror_enabled() or not request.url.path.startswith(
@@ -189,9 +199,22 @@ class WebsiteOpsStorageMiddleware(BaseHTTPMiddleware):
             request.app.state.settings,
         )
         engine = request.app.state.session_factory.kw["bind"]
+        mutating = request.method in self._MUTATING_METHODS
+        cron_run = self._persists_run_state(request)
         acquired = _CACHE_SYNC_LOCK.acquire(blocking=False)
         if not acquired:
-            if request.method in {"POST", "PUT", "PATCH", "DELETE"}:
+            if cron_run and request.method == "GET":
+                return JSONResponse(
+                    {
+                        "status": "skipped",
+                        "message": (
+                            "Website Ops is completing another pulse. "
+                            "This invocation left the queue unchanged."
+                        ),
+                    },
+                    status_code=200,
+                )
+            if mutating:
                 return JSONResponse(
                     {"detail": "Website Ops is completing a scheduled pulse. Retry shortly."},
                     status_code=409,
@@ -199,9 +222,19 @@ class WebsiteOpsStorageMiddleware(BaseHTTPMiddleware):
                 )
             return await call_next(request)
         try:
-            response = await call_next(request)
-            if request.method in {"POST", "PUT", "PATCH", "DELETE"}:
-                snapshot_website_ops_root(engine, Path(settings.website_ops_root))
+            try:
+                response = await call_next(request)
+            finally:
+                # Snapshot after the route, including when it raises, so a cron
+                # GET that wrote run state reaches Postgres. Read-only GETs,
+                # including /health and an outside-window skip, do not.
+                state_changed = bool(
+                    getattr(request.state, "website_ops_state_changed", False)
+                )
+                if mutating or (cron_run and state_changed):
+                    snapshot_website_ops_root(
+                        engine, Path(settings.website_ops_root)
+                    )
             return response
         finally:
             _CACHE_SYNC_LOCK.release()

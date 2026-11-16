@@ -98,6 +98,9 @@ from sales_support_agent.services.fulfillment_deck.wms_client import wms_runtime
 from sales_support_agent.services.gmail_drafts import create_bulk_draft_payloads
 from sales_support_agent.services.instantly_webhooks import InstantlyWebhookService
 from sales_support_agent.services.sync import ClickUpSyncService
+from sales_support_agent.services.website_ops_outcomes import (
+    in_progress_without_production_delta,
+)
 from sales_support_agent.services.website_ops import (
     execute_approved_website_ops_actions,
     get_feedback_record,
@@ -1246,6 +1249,11 @@ def admin_website_ops(request: Request, run_status: str = "") -> Response:
     if run_status:
         if authoritative_status == "succeeded":
             flash_message = str(authoritative_state.get("outcome_message", "") or "Today’s plan produced a verified outcome.")
+        elif authoritative_status == "work-in-progress":
+            flash_message = str(
+                authoritative_state.get("outcome_message", "")
+                or "Today’s plan is still running. No production change is verified yet. The next scheduled pulse resumes it."
+            )
         elif authoritative_status in {"failed", "failed-outcome"}:
             stage = str(authoritative_state.get("failure_stage") or authoritative_state.get("last_stage") or "the final outcome check")
             retry = str(authoritative_state.get("next_retry_at") or "the next scheduled workday run")
@@ -1488,22 +1496,38 @@ def admin_website_ops_run(request: Request, mode: str = Form(default="daily")) -
     outcome = dict((getattr(result, "report", None) or {}).get("run_outcome") or {})
     outcome_status = str(outcome.get("status", "") or "")
     production_delta_count = int(outcome.get("production_delta_count", 0) or 0)
-    succeeded = bool(getattr(result, "ok", False)) and (
+    in_progress = in_progress_without_production_delta(outcome)
+    succeeded = (not in_progress) and bool(getattr(result, "ok", False)) and (
         normalized_mode != "daily"
         or (outcome_status == "production_verified" and production_delta_count > 0)
         or outcome_status == "no_qualified_opportunity"
     )
+    if in_progress:
+        stored_status = "work_in_progress"
+        recovery_status = "resume_next_pulse"
+    elif succeeded:
+        stored_status = "succeeded"
+        recovery_status = "not_needed"
+    else:
+        stored_status = "failed_outcome"
+        recovery_status = "outcome_failed"
+    run_updates = {
+        "status": stored_status,
+        "run_date": business_date,
+        "last_completed_at": finished_at.isoformat(),
+        "last_error": "" if stored_status != "failed_outcome" else str(outcome.get("summary") or result.message),
+        "attempt_count": "1",
+        "recovery_status": recovery_status,
+    }
+    if succeeded:
+        run_updates["last_successful_date"] = business_date
+    elif not in_progress:
+        run_updates["last_successful_date"] = ""
     write_website_ops_run_state(
         request.app.state.settings,
         normalized_mode,
         {
-            "status": "succeeded" if succeeded else "failed_outcome",
-            "run_date": business_date,
-            "last_completed_at": finished_at.isoformat(),
-            "last_successful_date": business_date if succeeded else "",
-            "last_error": "" if succeeded else str(outcome.get("summary") or result.message),
-            "attempt_count": "1",
-            "recovery_status": "not_needed" if succeeded else "outcome_failed",
+            **run_updates,
             "outcome_status": outcome_status,
             "outcome_message": str(outcome.get("summary", "") or ""),
             "expected_output": str(outcome.get("expected_output", "") or ""),
@@ -1514,7 +1538,12 @@ def admin_website_ops_run(request: Request, mode: str = Form(default="daily")) -
             "next_operation": str(outcome.get("next_operation", "") or ""),
         },
     )
-    redirect_status = "completed" if succeeded else "failed_outcome"
+    if in_progress:
+        redirect_status = "in_progress"
+    elif succeeded:
+        redirect_status = "completed"
+    else:
+        redirect_status = "failed_outcome"
     return RedirectResponse(url=f"/admin/website-ops?run_status={redirect_status}", status_code=302)
 
 
