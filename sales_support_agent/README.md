@@ -350,6 +350,8 @@ Website Ops:
 - `WEBSITE_OPS_DEPLOY_VERIFY_TIMEOUT_SECONDS` — production verification window
 - `WEBSITE_OPS_DEPLOY_VERIFY_POLL_SECONDS` — production verification interval
 
+The hourly Vercel cron `GET /api/jobs/website-ops/run` runs one pipeline pass per invocation so the request finishes inside the 800 second function limit. Any mode that does not fit, including Monday's weekly and monthly passes, is queued and the next pulse inside the 8 AM–3 PM America/Denver window resumes it. Run state is mirrored to Postgres for that GET as well as for POST. An in-progress pass with no verified production change is stored as `work_in_progress`, and health's `state_updated_at` moves forward. `WEBSITE_OPS_INVOCATION_BUDGET_SECONDS` can lower the per-invocation budget (default 600, capped at 700). It does not need to be set.
+
 Metadata autopush is deliberately narrower than reporting. It accepts only
 high-confidence title, description, or canonical actions with a recorded reason
 and evidence, maps the production URL to a static Next.js route, commits through

@@ -6,9 +6,10 @@ import os
 import secrets
 import logging
 import hashlib
+import time
 from datetime import date, datetime, timedelta
 from threading import Event
-from typing import Any
+from typing import Any, Callable
 from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, FastAPI, HTTPException, Request
@@ -18,12 +19,14 @@ from sales_support_agent.services.website_ops import (
     get_website_ops_run_state,
     load_feedback_records,
     load_website_ops_run_state,
+    mirror_website_ops_cache,
     run_website_ops,
     send_website_ops_failure_email,
     website_ops_operating_state,
     website_ops_run_is_due,
     write_website_ops_run_state,
 )
+from sales_support_agent.services.website_ops_outcomes import persisted_run_status
 from sales_support_agent.services.website_ops_autonomy import (
     analytics_configuration_status,
 )
@@ -45,6 +48,59 @@ router = APIRouter(prefix="/api/jobs/website-ops", tags=["website-ops-jobs"])
 logger = logging.getLogger(__name__)
 WEBSITE_OPS_PULSE_HOURS = (8, 9, 10, 11, 12, 13, 14, 15)
 WEBSITE_OPS_RUNNING_STALE_AFTER = timedelta(minutes=45)
+# Vercel kills the function at maxDuration (800s). One pipeline pass per
+# invocation leaves time to persist state and return. Further passes wait
+# for the next cron pulse.
+WEBSITE_OPS_MAX_DURATION_SECONDS = 800
+WEBSITE_OPS_INVOCATION_BUDGET_SECONDS = 600
+
+
+class WebsiteOpsInvocationBudget:
+    """Bound one cron invocation so it returns before Vercel kills it.
+
+    The daily pipeline is a queue of passes. Each invocation runs one pass.
+    A second attempt, or weekly and monthly stacked on the same request, is
+    what crosses the 800s maxDuration. Leftover modes are queued and the next
+    pulse resumes them.
+    """
+
+    def __init__(
+        self,
+        *,
+        pipeline_slots: int = 1,
+        max_seconds: float | None = None,
+        clock: Callable[[], float] = time.monotonic,
+    ) -> None:
+        if max_seconds is None:
+            max_seconds = _configured_invocation_budget_seconds()
+        self.pipeline_slots = max(1, pipeline_slots)
+        self.max_seconds = max_seconds
+        self.clock = clock
+        self.started = clock()
+        self.used = 0
+
+    def claim_pipeline(self) -> bool:
+        """Reserve the single pass for this invocation, or refuse it."""
+
+        if self.used >= self.pipeline_slots:
+            return False
+        if self.clock() - self.started >= self.max_seconds:
+            return False
+        self.used += 1
+        return True
+
+
+def _configured_invocation_budget_seconds() -> float:
+    raw = os.getenv("WEBSITE_OPS_INVOCATION_BUDGET_SECONDS", "").strip()
+    if not raw:
+        return float(WEBSITE_OPS_INVOCATION_BUDGET_SECONDS)
+    try:
+        seconds = float(raw)
+    except ValueError:
+        return float(WEBSITE_OPS_INVOCATION_BUDGET_SECONDS)
+    # Stay under maxDuration so the snapshot and the HTTP response still fit.
+    ceiling = float(WEBSITE_OPS_MAX_DURATION_SECONDS - 100)
+    return min(max(seconds, 1.0), ceiling)
 
 
 def _pulse_slot(local_now: datetime) -> str:
@@ -52,7 +108,11 @@ def _pulse_slot(local_now: datetime) -> str:
 
 
 def _daily_run_is_fresh(state: dict[str, Any], local_now: datetime) -> bool:
-    """Require a durable, non-stalled current-day run after the first pulse."""
+    """Require a durable, non-stalled current-day run after the first pulse.
+
+    In-progress work and a budget deferral are fresh non-failures: the cron
+    persisted state, and the next pulse resumes the queue.
+    """
 
     if local_now.hour < WEBSITE_OPS_PULSE_HOURS[0]:
         return True
@@ -60,7 +120,7 @@ def _daily_run_is_fresh(state: dict[str, Any], local_now: datetime) -> bool:
     if str(daily.get("run_date", "")) != local_now.date().isoformat():
         return False
     status = str(daily.get("status", ""))
-    if status == "succeeded":
+    if status in {"succeeded", "work_in_progress", "queued"}:
         return True
     if status != "running":
         return False
@@ -256,6 +316,81 @@ def _scheduled_modes(local_now: datetime) -> list[str]:
     return modes
 
 
+def _ordered_modes(settings: Any, modes: list[str]) -> list[str]:
+    """Run the oldest unfinished pass first so later modes are not starved.
+
+    A mode that has not started in this period sorts ahead of one that already
+    consumed an invocation. Monday's weekly and monthly passes therefore take
+    the next pulse instead of waiting behind another daily attempt.
+    """
+
+    ranked: list[tuple[str, int, str]] = []
+    for index, mode in enumerate(modes):
+        state = get_website_ops_run_state(settings, mode)
+        ranked.append((str(state.get("last_started_at", "") or ""), index, mode))
+    ranked.sort()
+    return [mode for _, _, mode in ranked]
+
+
+def _attempt_count(current_state: dict[str, Any], business_date: date) -> str:
+    if str(current_state.get("run_date", "") or "") != business_date.isoformat():
+        return "1"
+    try:
+        previous = int(current_state.get("attempt_count") or "0")
+    except (TypeError, ValueError):
+        previous = 0
+    return str(max(0, previous) + 1)
+
+
+def _save_run_state(settings: Any, mode: str, updates: dict[str, Any]) -> dict[str, str]:
+    """Write run state and mirror it before the invocation can be killed."""
+
+    saved = write_website_ops_run_state(settings, mode, updates)
+    mirror_website_ops_cache(settings)
+    return saved
+
+
+def _defer_mode(
+    settings: Any,
+    mode: str,
+    *,
+    trigger: str,
+    pulse_slot: str,
+    business_date: date,
+) -> None:
+    _save_run_state(
+        settings,
+        mode,
+        {
+            "mode": mode,
+            "status": "queued",
+            "run_date": business_date.isoformat(),
+            "trigger": trigger,
+            "recovery_status": "deferred_for_budget",
+            "last_error": "",
+            "last_pulse_slot": pulse_slot if mode == "daily" else "",
+            "next_operation": "Resume on the next Website Ops cron invocation.",
+        },
+    )
+
+
+def _outcome_updates(outcome: dict[str, Any]) -> dict[str, str]:
+    try:
+        production_delta_count = int(outcome.get("production_delta_count", 0) or 0)
+    except (TypeError, ValueError):
+        production_delta_count = 0
+    return {
+        "outcome_status": str(outcome.get("status", "") or "").strip(),
+        "outcome_message": str(outcome.get("summary", "") or ""),
+        "expected_output": str(outcome.get("expected_output", "") or ""),
+        "actual_output": str(outcome.get("actual_output", "") or ""),
+        "production_delta_count": str(production_delta_count),
+        "last_stage": str(outcome.get("last_stage", "") or ""),
+        "next_operation": str(outcome.get("next_operation", "") or ""),
+        "failure_stage": str(outcome.get("failure_stage", "") or ""),
+    }
+
+
 def _run_due_modes(
     settings: Any,
     modes: list[str],
@@ -264,12 +399,19 @@ def _run_due_modes(
     force: bool = False,
     pulse_slot: str = "",
     business_date: date | None = None,
+    budget: WebsiteOpsInvocationBudget | None = None,
 ) -> dict[str, dict]:
+    """Run one pipeline pass, then queue anything still due.
+
+    Retries happen on later cron pulses. They do not loop inside this request.
+    """
+
     results: dict[str, dict] = {}
     run_business_date = business_date or datetime.now(
         ZoneInfo("America/Denver")
     ).date()
-    for mode in modes:
+    invocation_budget = budget or WebsiteOpsInvocationBudget()
+    for mode in _ordered_modes(settings, modes):
         current_state = get_website_ops_run_state(settings, mode)
         repeated_daily_pulse = (
             mode == "daily"
@@ -281,10 +423,42 @@ def _run_due_modes(
             and not repeated_daily_pulse
             and not website_ops_run_is_due(settings, mode, today=run_business_date)
         ):
-            results[mode] = {"status": "skipped", "message": "Already completed for this period."}
+            results[mode] = {
+                "status": "skipped",
+                "message": "Already completed for this period.",
+            }
+            continue
+        if not invocation_budget.claim_pipeline():
+            # A repeated daily pulse that already verified production keeps
+            # that outcome. Only work that is still due is queued.
+            if website_ops_run_is_due(settings, mode, today=run_business_date):
+                _defer_mode(
+                    settings,
+                    mode,
+                    trigger=trigger,
+                    pulse_slot=pulse_slot,
+                    business_date=run_business_date,
+                )
+            elif mode == "daily" and pulse_slot:
+                _save_run_state(
+                    settings,
+                    mode,
+                    {"last_pulse_slot": pulse_slot},
+                )
+            logger.info(
+                "Website Ops %s deferred so this invocation stays under maxDuration.",
+                mode,
+            )
+            results[mode] = {
+                "status": "queued",
+                "message": (
+                    "Deferred to the next invocation to stay under maxDuration."
+                ),
+            }
             continue
         now = datetime.now(ZoneInfo("UTC"))
-        write_website_ops_run_state(
+        attempt = _attempt_count(current_state, run_business_date)
+        _save_run_state(
             settings,
             mode,
             {
@@ -295,109 +469,68 @@ def _run_due_modes(
                 "last_started_at": now.isoformat(),
                 "last_error": "",
                 "last_pulse_slot": pulse_slot if mode == "daily" else "",
+                "attempt_count": attempt,
+                "recovery_status": "primary",
             },
         )
-        max_attempts = max(
-            1,
-            min(int(os.getenv("WEBSITE_OPS_RUN_MAX_ATTEMPTS", "3") or "3"), 5),
-        )
-        result = None
-        final_error: Exception | None = None
-        last_attempt = 0
-        for attempt in range(1, max_attempts + 1):
-            last_attempt = attempt
-            write_website_ops_run_state(
-                settings,
-                mode,
-                {
-                    "attempt_count": str(attempt),
-                    "recovery_status": "retrying" if attempt > 1 else "primary",
-                },
-            )
-            try:
-                result = run_website_ops(settings, mode=mode)
-                final_error = None
-                attempt_outcome = dict(
-                    (getattr(result, "report", None) or {}).get("run_outcome") or {}
-                )
-                attempt_status = str(attempt_outcome.get("status", "") or "").strip()
-                attempt_delta = int(
-                    attempt_outcome.get("production_delta_count", 0) or 0
-                )
-                retryable_zero_delta = (
-                    mode == "daily"
-                    and attempt_status in {"work_in_progress", "failed_outcome"}
-                    and attempt_delta == 0
-                    and attempt < max_attempts
-                )
-                if retryable_zero_delta:
-                    logger.warning(
-                        "Website Ops daily attempt %s/%s produced no verified delta; retrying.",
-                        attempt,
-                        max_attempts,
-                    )
-                    continue
-                break
-            except Exception as exc:  # noqa: BLE001
-                final_error = exc
-                logger.exception(
-                    "Website Ops %s attempt %s/%s failed.",
-                    mode,
-                    attempt,
-                    max_attempts,
-                )
-        if final_error is not None or result is None:
-            message = str(final_error or "Website Ops run did not return a result.")
-            write_website_ops_run_state(
+        try:
+            result = run_website_ops(settings, mode=mode)
+        except Exception as exc:  # noqa: BLE001
+            message = str(exc)
+            logger.exception("Website Ops %s pass failed.", mode)
+            completed_at = datetime.now(ZoneInfo("UTC"))
+            _save_run_state(
                 settings,
                 mode,
                 {
                     "status": "failed",
-                    "last_completed_at": datetime.now(ZoneInfo("UTC")).isoformat(),
+                    "last_completed_at": completed_at.isoformat(),
                     "last_error": message,
-                    "recovery_status": "exhausted",
+                    "recovery_status": "failed",
                 },
             )
             send_website_ops_failure_email(settings, mode=mode, error=message)
-            results[mode] = {
-                "status": "failed",
-                "message": message,
-                "attempts": max_attempts,
-            }
+            results[mode] = {"status": "failed", "message": message, "attempts": 1}
             continue
         completed_at = datetime.now(ZoneInfo("UTC"))
         outcome = dict((getattr(result, "report", None) or {}).get("run_outcome") or {})
-        outcome_status = str(outcome.get("status", "") or "").strip()
-        production_delta_count = int(outcome.get("production_delta_count", 0) or 0)
-        outcome_updates = {
-            "outcome_status": outcome_status,
-            "outcome_message": str(outcome.get("summary", "") or ""),
-            "expected_output": str(outcome.get("expected_output", "") or ""),
-            "actual_output": str(outcome.get("actual_output", "") or ""),
-            "production_delta_count": str(production_delta_count),
-            "last_stage": str(outcome.get("last_stage", "") or ""),
-            "next_operation": str(outcome.get("next_operation", "") or ""),
-            "failure_stage": str(outcome.get("failure_stage", "") or ""),
-        }
-        qualified_quiet_day = (
-            outcome_status == "no_qualified_opportunity"
-            and bool(outcome.get("full_candidate_review"))
+        outcome_fields = _outcome_updates(outcome)
+        stored_status = persisted_run_status(
+            mode=mode,
+            outcome=outcome,
+            ok=bool(getattr(result, "ok", True)),
         )
-        daily_target_missed = mode == "daily" and not (
-            (outcome_status == "production_verified" and production_delta_count > 0)
-            or qualified_quiet_day
-        )
-        if (
-            not bool(getattr(result, "ok", True))
-            or outcome_status == "failed_outcome"
-            or daily_target_missed
-        ):
-            message = result.message or "Website Ops completed without the required outcome."
-            write_website_ops_run_state(
+        if stored_status == "work_in_progress":
+            logger.info(
+                "Website Ops %s is in progress with no production delta. "
+                "The next cron pulse will resume it.",
+                mode,
+            )
+            _save_run_state(
                 settings,
                 mode,
                 {
-                    **outcome_updates,
+                    **outcome_fields,
+                    "status": "work_in_progress",
+                    "last_completed_at": completed_at.isoformat(),
+                    "last_error": "",
+                    "recovery_status": "resume_next_pulse",
+                },
+            )
+            results[mode] = {
+                "status": "work_in_progress",
+                "message": result.message,
+                "outcome": outcome,
+                "attempts": 1,
+            }
+            continue
+        if stored_status == "failed_outcome":
+            message = result.message or "Website Ops completed without the required outcome."
+            _save_run_state(
+                settings,
+                mode,
+                {
+                    **outcome_fields,
                     "status": "failed_outcome",
                     "last_completed_at": completed_at.isoformat(),
                     "last_error": message,
@@ -409,26 +542,26 @@ def _run_due_modes(
                 "status": "failed_outcome",
                 "message": message,
                 "outcome": outcome,
-                "attempts": last_attempt,
+                "attempts": 1,
             }
             continue
-        write_website_ops_run_state(
+        _save_run_state(
             settings,
             mode,
             {
-                **outcome_updates,
+                **outcome_fields,
                 "status": "succeeded",
                 "last_completed_at": completed_at.isoformat(),
                 "last_successful_date": run_business_date.isoformat(),
                 "last_error": "",
-                "recovery_status": "recovered" if last_attempt > 1 else "not_needed",
+                "recovery_status": "not_needed",
             },
         )
         results[mode] = {
             "status": "succeeded",
             "message": result.message,
             "outcome": outcome,
-            "attempts": last_attempt,
+            "attempts": 1,
         }
     return results
 
@@ -732,3 +865,7 @@ async def run_scheduled_website_ops(request: Request) -> dict:
                 details={"error": str(exc)},
             )
         raise
+    finally:
+        # The storage middleware persists cron GETs only after this flag is set,
+        # so an outside-window skip does not rewrite the database mirror.
+        request.state.website_ops_state_changed = True

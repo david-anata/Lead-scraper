@@ -75,7 +75,15 @@ class WebsiteOpsActionResult:
 
 
 RUN_MODES = ("daily", "weekly", "monthly")
-RUN_STATUSES = {"idle", "queued", "running", "succeeded", "failed", "failed_outcome"}
+RUN_STATUSES = {
+    "idle",
+    "queued",
+    "running",
+    "succeeded",
+    "failed",
+    "failed_outcome",
+    "work_in_progress",
+}
 _LIVE_SITEMAP_CACHE: tuple[float, tuple[str, ...]] = (0.0, ())
 MVP_MODE_ACTIVE = True
 MVP_ALLOWED_ACTION_TYPES = {
@@ -201,6 +209,7 @@ def _default_mode_run_state(mode: str) -> dict[str, str]:
         "last_stage": "",
         "next_operation": "",
         "failure_stage": "",
+        "last_pulse_slot": "",
     }
 
 
@@ -260,6 +269,13 @@ def website_ops_run_is_due(settings: Settings, mode: str = "daily", *, today: da
     current_date = today or datetime.now(ZoneInfo("America/Denver")).date()
     current_day = current_date.isoformat()
     state = get_website_ops_run_state(settings, normalized_mode)
+    # A pulse that was queued only to stay under maxDuration is still due.
+    # Other queued/running rows are an in-flight pass and must not start again.
+    if (
+        state.get("status") == "queued"
+        and state.get("recovery_status") == "deferred_for_budget"
+    ):
+        return True
     if state.get("status") in {"queued", "running"} and state.get("run_date") == current_day:
         return False
     try:
@@ -1651,6 +1667,12 @@ def execute_approved_website_ops_actions(settings: Settings) -> WebsiteOpsAction
     )
 
 
+def mirror_website_ops_cache(settings: Settings) -> bool:
+    """Persist the local Website Ops cache, including cron GET runs."""
+
+    return _checkpoint_website_ops_cache(settings)
+
+
 def _checkpoint_website_ops_cache(settings: Settings) -> bool:
     """Mirror approved work before an external write can restart the service."""
 
@@ -2214,6 +2236,8 @@ def _run_state_notice(state: Mapping[str, Any]) -> tuple[str, str]:
     last_successful_date = str(state.get("last_successful_date", "") or "").strip()
     last_error = str(state.get("last_error", "") or "").strip()
     today = datetime.now(ZoneInfo("America/Denver")).date().isoformat()
+    if status == "work-in-progress" and run_date == today:
+        return ("neutral", "Daily sweep in progress")
     if status in {"queued", "running"} and run_date == today:
         return ("neutral", "Daily sweep running")
     if status in {"failed", "failed-outcome"} and run_date == today:
@@ -3089,7 +3113,22 @@ def render_dashboard_page(settings: Settings, *, flash_message: str = "", user: 
         int(active_candidate_states.get(name, 0) or 0)
         for name in ("validated", "queued", "executing", "verifying")
     )
-    if run_status in {"queued", "running"}:
+    if run_status == "work-in-progress":
+        state_label, state_tone = "Running", "neutral"
+        state_copy = (
+            "Qualified work is still running. The next scheduled pulse resumes it. "
+            "No production change is verified yet."
+        )
+    elif (
+        run_status == "queued"
+        and str(run_state.get("recovery_status", "") or "") == "deferred_for_budget"
+    ):
+        state_label, state_tone = "Queued", "neutral"
+        state_copy = (
+            "This pulse was queued so the run stays inside the hosting time limit. "
+            "The next scheduled pulse resumes it."
+        )
+    elif run_status in {"queued", "running"}:
         state_label, state_tone = "Working", "neutral"
         state_copy = "Today’s plan is running. The page will refresh when the next verified result is available."
     elif run_status in {"failed", "failed-outcome"} or report_status in {"failed", "failed-outcome", "needs-attention"}:
