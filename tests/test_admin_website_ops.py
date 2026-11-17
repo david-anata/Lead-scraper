@@ -1111,6 +1111,40 @@ example
             self.assertEqual(duplicate.json()["status"], "duplicate")
             self.assertEqual(len(load_feedback_records(app.state.settings)), 1)
 
+    def test_verified_seo_release_log_prefers_its_scoped_key(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir, mock.patch.dict(
+            os.environ,
+            {"SEO_RELEASE_LOG_KEY": "release-log-key"},
+        ):
+            app = FastAPI()
+            app.state.settings = SimpleNamespace(
+                internal_api_key="test-internal-key",
+                website_ops_root=Path(tmpdir),
+            )
+            app.include_router(website_ops_jobs_router)
+            client = TestClient(app)
+            payload = {
+                "site": "anatabuilding.com",
+                "release_key": "building-pr-47",
+                "pr_url": "https://github.com/david-anata/anata-building/pull/47",
+                "deployment_id": "dpl_building_example",
+                "live_urls": ["https://anatabuilding.com/example"],
+                "summary": "Published and verified the Building example page.",
+            }
+            rejected = client.post(
+                "/api/jobs/website-ops/release-log",
+                headers={"X-Internal-Api-Key": "test-internal-key"},
+                json=payload,
+            )
+            self.assertEqual(rejected.status_code, 401)
+            accepted = client.post(
+                "/api/jobs/website-ops/release-log",
+                headers={"X-Internal-Api-Key": "release-log-key"},
+                json=payload,
+            )
+            self.assertEqual(accepted.status_code, 200)
+            self.assertEqual(accepted.json()["status"], "recorded")
+
     def test_forced_daily_run_recovers_a_stale_manual_lease(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             settings = self._settings(Path(tmpdir))
