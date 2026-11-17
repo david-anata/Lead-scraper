@@ -1069,6 +1069,48 @@ example
             finally:
                 db.engine = previous_engine
 
+    def test_verified_seo_release_log_is_authenticated_and_idempotent(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            app = FastAPI()
+            app.state.settings = SimpleNamespace(
+                internal_api_key="test-internal-key",
+                website_ops_root=Path(tmpdir),
+            )
+            app.include_router(website_ops_jobs_router)
+            client = TestClient(app)
+            payload = {
+                "site": "anatainc.com",
+                "release_key": "anatainc-pr-160",
+                "pr_url": "https://github.com/david-anata/anata-website/pull/160",
+                "deployment_id": "dpl_example",
+                "live_urls": ["https://anatainc.com/blog/example"],
+                "task_ids": ["868mvrdrx"],
+                "summary": "Published and verified the example article.",
+            }
+            unauthorized = client.post("/api/jobs/website-ops/release-log", json=payload)
+            self.assertEqual(unauthorized.status_code, 401)
+
+            created = client.post(
+                "/api/jobs/website-ops/release-log",
+                headers={"X-Internal-Api-Key": "test-internal-key"},
+                json=payload,
+            )
+            self.assertEqual(created.status_code, 200)
+            self.assertEqual(created.json()["status"], "recorded")
+            records = load_feedback_records(app.state.settings)
+            self.assertEqual(len(records), 1)
+            self.assertEqual(records[0]["status"], "done")
+            self.assertIn("dpl_example", records[0]["details"])
+
+            duplicate = client.post(
+                "/api/jobs/website-ops/release-log",
+                headers={"X-Internal-Api-Key": "test-internal-key"},
+                json=payload,
+            )
+            self.assertEqual(duplicate.status_code, 200)
+            self.assertEqual(duplicate.json()["status"], "duplicate")
+            self.assertEqual(len(load_feedback_records(app.state.settings)), 1)
+
     def test_forced_daily_run_recovers_a_stale_manual_lease(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             settings = self._settings(Path(tmpdir))
