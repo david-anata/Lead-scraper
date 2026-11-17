@@ -813,6 +813,59 @@ def _relationship_review_is_current(relationship: BuildingRelationship) -> bool:
     return bool(owner) and due_on >= datetime.now(MOUNTAIN).date()
 
 
+INQUIRY_DETAIL_LABELS: dict[str, str] = {
+    "bestTimeToCall": "Best time to call",
+    "interest": "Interest",
+    "eventType": "Event type",
+    "groupSize": "Group size",
+    "spaceType": "Space type",
+    "teamSize": "Team size",
+    "notes": "What they asked for",
+    "operator_notes": "Operator notes",
+    "intent": "Intent",
+}
+
+INQUIRY_DETAIL_PRIVATE_KEYS = frozenset(
+    {
+        "landingPage",
+        "referrer",
+        "firstLandingPage",
+        "firstReferrer",
+        "firstCapturedAt",
+        "assisted_intake",
+    }
+)
+
+
+def _inquiry_request_details(payload_json: dict | None) -> list[dict[str, str]]:
+    """Return submitted lead details that are useful in the response queue."""
+
+    details: list[dict[str, str]] = []
+    for key, raw in (payload_json or {}).items():
+        if key.startswith("_") or key in INQUIRY_DETAIL_PRIVATE_KEYS:
+            continue
+        if key.startswith("utm") or key.startswith("firstUtm"):
+            continue
+        value = str(raw if raw is not None else "").strip()
+        if not value or (key == "intent" and value.lower() == "inquiry"):
+            continue
+        details.append(
+            {
+                "label": INQUIRY_DETAIL_LABELS.get(
+                    key, key.replace("_", " ").capitalize()
+                ),
+                "value": value,
+            }
+        )
+    order = list(INQUIRY_DETAIL_LABELS.values())
+    details.sort(
+        key=lambda item: order.index(item["label"])
+        if item["label"] in order
+        else len(order)
+    )
+    return details
+
+
 def _resolve_segment(
     session,
     segment: BuildingSegment,
@@ -5361,10 +5414,13 @@ def building_control_room(
                     "id": item.id,
                     "name": item.name,
                     "email": item.email,
+                    "phone": item.phone,
+                    "request_details": _inquiry_request_details(item.payload_json),
                     "kind": item.kind,
                     "preferred_date": (
                         item.preferred_date.isoformat() if item.preferred_date else ""
                     ),
+                    "created_at": _mountain(item.created_at).strftime("%b %d, %Y"),
                     "status": item.status,
                     "source": item.source,
                     "source_reference": item.source_reference,
@@ -5412,7 +5468,6 @@ def building_control_room(
                     "customer_receipt": dict(
                         (item.payload_json or {}).get("_customer_receipt") or {}
                     ),
-                    "phone": item.phone,
                     "details": {
                         key: value
                         for key, value in dict(item.payload_json or {}).items()

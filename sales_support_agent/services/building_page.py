@@ -774,11 +774,46 @@ def render_building_page(
             '</div></details>'
         )
 
+    def inquiry_contact_cell(item: dict[str, Any]) -> str:
+        """Render the contact methods needed to respond without opening a lead."""
+
+        email = str(item.get("email") or "").strip()
+        phone = str(item.get("phone") or "").strip()
+        dialable = re.sub(r"[^0-9+]", "", phone)
+        lines = [
+            f'<a href="/admin/building/inquiries/{_esc(item.get("id"))}"><strong>{_esc(item.get("name"))}</strong></a>'
+        ]
+        if phone and dialable:
+            lines.append(
+                f'<a class="contact-line" href="tel:{_esc(dialable)}">{_esc(phone)}</a>'
+            )
+        elif phone:
+            lines.append(f'<span class="contact-line">{_esc(phone)}</span>')
+        else:
+            lines.append('<span class="sub">No phone provided</span>')
+        if email:
+            lines.append(
+                f'<a class="contact-line contact-line--muted" href="mailto:{_esc(email)}">{_esc(email)}</a>'
+            )
+        return "".join(lines)
+
+    def inquiry_request_cell(item: dict[str, Any]) -> str:
+        """Render the request facts separately from contact identity."""
+
+        details = list(item.get("request_details") or [])
+        body = "".join(
+            f'<div class="request-line"><span class="request-label">{_esc(detail.get("label"))}</span>'
+            f'<span class="request-value">{_esc(detail.get("value"))}</span></div>'
+            for detail in details
+        ) or '<span class="sub">No additional detail submitted.</span>'
+        return f'{_badge(str(item.get("kind") or ""))}<div class="request-detail">{body}</div>'
+
     inquiry_rows = "".join(
         f"""
         <tr>
-          <td><a href="/admin/building/inquiries/{_esc(item.get('id'))}"><strong>{_esc(item.get("name"))}</strong></a><span class="sub">{_esc(item.get("email"))}</span></td>
-          <td>{_esc(item.get("kind"))}</td>
+          <td>{inquiry_contact_cell(item)}</td>
+          <td>{inquiry_request_cell(item)}</td>
+          <td>{_esc(item.get("created_at") or "—")}</td>
           <td>{_esc(item.get("preferred_date") or "—")}</td>
           <td>{_badge(str((item.get("lifecycle") or {}).get("stage") or "new"))}{_badge("overdue") if item.get("response_overdue") else ""}<span class="sub">{_esc(item.get("assigned_owner") or "Unassigned")}</span></td>
           <td>{_esc(item.get("source"))}</td>
@@ -786,7 +821,7 @@ def render_building_page(
         </tr>
         """
         for item in inquiries
-    ) or '<tr><td colspan="6"><div class="empty"><strong>No building inquiries yet.</strong><br>New website and staff-entered leads will appear here in Agent.</div></td></tr>'
+    ) or '<tr><td colspan="7"><div class="empty"><strong>No building inquiries yet.</strong><br>New website and staff-entered leads will appear here in Agent.</div></td></tr>'
 
     inquiry_metrics = dict(analytics.get("inquiries") or {})
     workspace_funnel = dict(analytics.get("workspace_funnel") or {})
@@ -1740,6 +1775,8 @@ def render_building_page(
     /* Conditional fields start visible so the form still works without JavaScript. */
     .field[hidden]{{display:none;}}
     label{{font-size:12px;font-weight:700;color:rgba(43,54,68,.72);}} input,select,textarea{{box-sizing:border-box;width:100%;min-height:42px;border:1px solid rgba(43,54,68,.22);border-radius:8px;background:#fff;padding:10px 11px;color:var(--ink);font:inherit;}} textarea{{min-height:92px;resize:vertical;}} input:focus,select:focus,textarea:focus{{outline:3px solid rgba(133,187,218,.34);border-color:#397a9d;}}
+    .contact-line{{display:block;margin-top:4px;color:#2f6d8d;font-size:13px;font-weight:700;text-decoration:none;}} .contact-line:hover,.contact-line:focus-visible{{text-decoration:underline;}} .contact-line--muted{{font-weight:600;font-size:12px;color:rgba(43,54,68,.66);}}
+    .request-detail{{display:grid;gap:3px;margin-top:7px;max-width:340px;}} .request-line{{display:grid;grid-template-columns:minmax(0,.62fr) minmax(0,1fr);gap:8px;font-size:12px;line-height:1.45;}} .request-label{{color:rgba(43,54,68,.58);}} .request-value{{color:var(--ink);overflow-wrap:anywhere;}}
     .check{{display:flex;align-items:center;gap:9px;font-size:13px;}} .check input{{width:18px;min-height:18px;}} .check-stack{{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px 14px;padding:11px;border:1px solid rgba(43,54,68,.14);border-radius:8px;}} .form-actions{{grid-column:1/-1;display:flex;align-items:center;justify-content:space-between;gap:14px;border-top:1px solid var(--border);padding-top:16px;}} .form-note{{font-size:12px;color:rgba(43,54,68,.62);line-height:1.45;}} .primary,.secondary{{min-height:42px;border:0;border-radius:8px;background:var(--ink);color:#fff;padding:0 17px;font-weight:700;cursor:pointer;}} .primary:hover{{background:#17222d;}} .secondary{{border:1px solid var(--border);background:#fff;color:var(--ink);}} .secondary--small{{min-height:34px;padding:0 11px;font-size:12px;white-space:nowrap;}} .action-stack{{display:grid;gap:7px;min-width:210px;}} .inline-send{{display:flex;gap:6px;align-items:center;}} .inline-send input{{min-height:34px;padding:7px 8px;font-size:12px;}}
     .lead-filters{{display:grid;grid-template-columns:minmax(220px,1.5fr) repeat(3,minmax(130px,.7fr)) auto auto;gap:10px;align-items:end;padding:14px 18px;border-top:1px solid var(--border);background:rgba(240,247,250,.55);}} .lead-filters label{{display:grid;gap:5px;font-size:12px;font-weight:700;}} .lead-filters .sub{{grid-column:1/-1;}}
     .row-actions{{min-width:220px;}} .row-actions summary{{cursor:pointer;font-weight:700;color:#397a9d;}} .row-actions form{{display:grid;gap:7px;margin-top:10px;padding:10px;border:1px solid var(--border);border-radius:9px;background:#f8f8f6;}} .row-actions label{{display:grid;gap:4px;}} .row-actions input,.row-actions select,.row-actions textarea{{min-height:34px;padding:7px 8px;font-size:12px;}}
@@ -1796,7 +1833,7 @@ def render_building_page(
     .media-space{{border:1px solid var(--border);border-radius:10px;overflow:hidden;background:#fff;}} .media-space>summary{{cursor:pointer;list-style:none;}} .media-space>summary::-webkit-details-marker{{display:none;}} .media-space__action{{color:#397a9d;font-size:12px;font-weight:800;}} .media-space[open] .media-space__action{{color:rgba(43,54,68,.58);}} .media-space[open]>summary{{border-bottom:1px solid var(--border);}}
     .adjustment-evidence{{display:grid;grid-template-columns:repeat(2,minmax(130px,1fr));gap:6px;min-width:360px;}} .adjustment-evidence button{{justify-self:start;}}
     @media(max-width:900px){{.metrics{{grid-template-columns:1fr 1fr}}.metric:nth-child(2){{border-right:0}}.metric:nth-child(-n+2){{border-bottom:1px solid var(--border)}}.daily-guide{{grid-template-columns:1fr}}.daily-guide__item{{border-right:0;border-bottom:1px solid var(--border)}}.daily-guide__item:last-child{{border-bottom:0}}.grid,.setup-workspace__content{{grid-template-columns:1fr}}.panel--wide{{grid-column:auto}}}}
-    @media(max-width:700px){{.decision-card__summary{{grid-template-columns:42px minmax(0,1fr)}}.decision-card__state{{grid-column:2;justify-self:start;text-align:left;max-width:none}}.decision-card__evidence{{grid-template-columns:1fr}}.decision-card__evidence>div+div{{border-left:0;border-top:1px solid var(--border)}}}}
+    @media(max-width:700px){{.decision-card__summary{{grid-template-columns:42px minmax(0,1fr)}}.decision-card__state{{grid-column:2;justify-self:start;text-align:left;max-width:none}}.decision-card__evidence{{grid-template-columns:1fr}}.decision-card__evidence>div+div{{border-left:0;border-top:1px solid var(--border)}}.request-line{{grid-template-columns:1fr;gap:0}}.request-label{{font-size:11px}}}}
     @media(max-width:600px){{.page-head,.panel-head{{align-items:start;flex-direction:column}}.panel-head{{gap:9px;padding:18px}}.metric{{padding:14px 15px}}.metric strong{{font-size:22px}}.shell{{padding:24px 16px 60px}}.workspace-nav{{margin-inline:-4px}}.form-grid,.decision-form,.interview-grid{{grid-template-columns:1fr!important}}.interview-workspace{{min-width:min(300px,80vw)}}.field--wide{{grid-column:auto}}.form-actions{{grid-column:auto;align-items:stretch;flex-direction:column}}.checklist-add{{grid-template-columns:1fr;align-items:stretch}}.lead-filters{{grid-template-columns:1fr}}.lead-filters .secondary{{width:100%}}}}
   </style>
 </head>
@@ -2160,7 +2197,7 @@ def render_building_page(
         </form>
         </details>
       </section>
-      <section class="panel panel--wide building-view view-sales" id="incoming-inquiries"><div class="panel-head"><div><h2>Lead queue</h2><p>Website inquiries and staff-added leads are managed together here. Open a customer to see the complete original submission and one next action.</p></div><span class="count">{len(inquiries)} shown</span></div>
+      <section class="panel panel--wide building-view view-sales" id="incoming-inquiries"><div class="panel-head"><div><h2>Lead queue</h2><p>Website inquiries and staff-added leads are managed together here. The queue keeps contact methods, submitted request details, the date added, and the requested date visible before an operator opens a lead.</p></div><span class="count">{len(inquiries)} shown</span></div>
         <form class="lead-filters" method="get" action="/admin/building/sales">
           <label>Search<input type="search" name="q" value="{_esc(inquiry_filters.get('q'))}" placeholder="Name, email, phone, date, or event"></label>
           <label>Lifecycle<select name="lead_status"><option value="open"{' selected' if inquiry_filters.get('status') == 'open' else ''}>Open leads</option><option value="new"{' selected' if inquiry_filters.get('status') == 'new' else ''}>New</option><option value="responded"{' selected' if inquiry_filters.get('status') == 'responded' else ''}>Responded</option><option value="qualified"{' selected' if inquiry_filters.get('status') == 'qualified' else ''}>Qualified</option><option value="closed_won"{' selected' if inquiry_filters.get('status') == 'closed_won' else ''}>Closed won</option><option value="closed_lost"{' selected' if inquiry_filters.get('status') == 'closed_lost' else ''}>Closed lost</option><option value="all"{' selected' if inquiry_filters.get('status') == 'all' else ''}>All stages</option></select></label>
@@ -2169,7 +2206,7 @@ def render_building_page(
           <button class="secondary" type="submit">Apply</button><a href="/admin/building/sales">Reset</a>
           <span class="sub">{_esc(inquiry_filters.get('test_count', 0))} recognized test records are hidden from the default prospect queue.</span>
         </form>
-        <div class="table-wrap"><table><thead><tr><th>Contact</th><th>Journey</th><th>Preferred date</th><th>Status and action</th><th>Source</th></tr></thead><tbody>{inquiry_rows}</tbody></table></div></section>
+        <div class="table-wrap"><table><thead><tr><th>Contact</th><th>Request</th><th>Added</th><th>Requested date</th><th>Status</th><th>Source</th><th>Actions</th></tr></thead><tbody>{inquiry_rows}</tbody></table></div></section>
       <section class="panel panel--wide building-view view-bookings" id="bookings-and-holds"><div class="panel-head"><div><h2>Bookings and holds</h2><p>Commercial state, proposal or quote, agreement evidence, and deposit readiness stay distinct.</p><p><a href="/admin/building/contracts">Open contracts →</a></p></div><span class="count">{active_reservations} active</span></div><div class="table-wrap"><table><thead><tr><th>Customer</th><th>Space</th><th>Starts</th><th>Workflow</th><th>Proposal / quote</th><th>Agreement</th><th>Deposit</th><th>Actions</th></tr></thead><tbody>{reservation_rows}</tbody></table></div></section>
       <section class="panel panel--wide building-view view-sales view-operations" id="building-tours"><div class="panel-head"><div><h2>Upcoming and recent tours</h2><p>Tour schedule, host, completion outcome, and next step. Tours are visits—not inventory holds.</p></div><span class="count">{len(tours)} tours</span></div><div class="table-wrap"><table><thead><tr><th>Workspace</th><th>Time</th><th>Status</th><th>Host</th><th>Tour action</th></tr></thead><tbody>{tour_rows}</tbody></table></div></section>
       <section class="panel panel--wide building-view view-operations">

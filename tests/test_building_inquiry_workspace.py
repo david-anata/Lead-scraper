@@ -108,6 +108,7 @@ class BuildingInquiryWorkspaceTests(unittest.TestCase):
                 source_reference="event-inquiry",
                 name="Jordan Rivera",
                 email="jordan@example.com",
+                phone="801-555-0142",
                 preferred_date=date.today() + timedelta(days=30),
                 assigned_owner="building@anatainc.com",
                 response_due_at=now - timedelta(hours=1),
@@ -170,6 +171,12 @@ class BuildingInquiryWorkspaceTests(unittest.TestCase):
         self.assertNotIn("Quick staff inquiry", default.text)
         self.assertNotIn("Start a booking workflow", default.text)
         self.assertIn("Jordan Rivera", default.text)
+        self.assertIn('href="tel:8015550142"', default.text)
+        self.assertIn('href="mailto:jordan@example.com"', default.text)
+        self.assertIn("Company celebration", default.text)
+        self.assertIn("What they asked for", default.text)
+        self.assertIn("Requested date", default.text)
+        self.assertIn("Added", default.text)
         self.assertNotIn("Production QA Test", default.text)
         self.assertIn('href="/admin/building/inquiries/jordan-inquiry"', default.text)
         self.assertIn("recognized test records are hidden", default.text)
