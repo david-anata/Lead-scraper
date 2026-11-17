@@ -251,6 +251,18 @@ def _require_internal_key(request: Request) -> None:
         raise HTTPException(status_code=401, detail="Invalid internal API key.")
 
 
+def _require_release_log_key(request: Request) -> None:
+    """Allow release logging to use a narrowly scoped credential."""
+
+    expected = os.getenv("SEO_RELEASE_LOG_KEY", "").strip()
+    if not expected:
+        _require_internal_key(request)
+        return
+    supplied = request.headers.get("X-Internal-Api-Key", "").strip()
+    if not secrets.compare_digest(supplied, expected):
+        raise HTTPException(status_code=401, detail="Invalid SEO release-log key.")
+
+
 def _release_log_host(value: object) -> str:
     """Return a supported production host from a site or production URL."""
 
@@ -790,7 +802,7 @@ async def run_scheduled_website_ops(request: Request) -> dict:
 async def record_verified_seo_release(request: Request) -> dict:
     """Persist a verified SEO release without requiring an admin browser session."""
 
-    _require_internal_key(request)
+    _require_release_log_key(request)
     try:
         payload = await request.json()
     except ValueError as exc:
