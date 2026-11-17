@@ -46,6 +46,7 @@ def _register_models() -> None:
     import sales_support_agent.models.entities  # noqa: F401
     import sales_support_agent.models.hr  # noqa: F401  — HR / payroll tables
     import sales_support_agent.models.content  # noqa: F401
+    import sales_support_agent.models.voice  # noqa: F401  — voice receptionist
 
 
 def _normalize_db_url(url: str) -> str:
@@ -174,6 +175,19 @@ def init_database(session_factory: sessionmaker[Session]) -> None:
     _ensure_outbound_enrich_tables(engine)
     _ensure_outbound_campaign_tables(engine)
     _ensure_sales_call_tables(engine)
+    _ensure_voice_tables(engine)
+
+
+def _ensure_voice_tables(engine: Any) -> None:
+    """Create the additive voice receptionist tables (call log, consent, DNC)."""
+
+    tables = [
+        Base.metadata.tables[name]
+        for name in ("voice_calls", "voice_consents", "voice_dnc")
+        if name in Base.metadata.tables
+    ]
+    if tables:
+        Base.metadata.create_all(bind=engine, tables=tables, checkfirst=True)
 
 
 def _ensure_sales_call_tables(engine: Any) -> None:
