@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import secrets
 import logging
@@ -9,6 +10,7 @@ import hashlib
 from datetime import date, datetime, timedelta
 from threading import Event
 from typing import Any
+from urllib.parse import urlparse
 from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, FastAPI, HTTPException, Request
@@ -19,6 +21,7 @@ from sales_support_agent.services.website_ops import (
     load_feedback_records,
     load_website_ops_run_state,
     run_website_ops,
+    save_feedback_record,
     send_website_ops_failure_email,
     website_ops_operating_state,
     website_ops_run_is_due,
@@ -45,6 +48,7 @@ router = APIRouter(prefix="/api/jobs/website-ops", tags=["website-ops-jobs"])
 logger = logging.getLogger(__name__)
 WEBSITE_OPS_PULSE_HOURS = (8, 9, 10, 11, 12, 13, 14, 15)
 WEBSITE_OPS_RUNNING_STALE_AFTER = timedelta(minutes=45)
+_RELEASE_LOG_HOSTS = {"anatainc.com", "anatabuilding.com"}
 
 
 def _pulse_slot(local_now: datetime) -> str:
@@ -245,6 +249,54 @@ def _require_internal_key(request: Request) -> None:
     supplied = request.headers.get("X-Internal-Api-Key", "").strip()
     if not expected or not secrets.compare_digest(supplied, expected):
         raise HTTPException(status_code=401, detail="Invalid internal API key.")
+
+
+def _release_log_host(value: object) -> str:
+    """Return a supported production host from a site or production URL."""
+
+    raw = str(value or "").strip().lower()
+    if not raw:
+        return ""
+    parsed = urlparse(raw if "://" in raw else f"https://{raw}")
+    host = (parsed.hostname or "").lower().removeprefix("www.")
+    return host if host in _RELEASE_LOG_HOSTS else ""
+
+
+def _release_log_urls(value: object, *, site_host: str) -> list[str]:
+    if not isinstance(value, list):
+        raise HTTPException(status_code=400, detail="live_urls must be a JSON array.")
+    urls: list[str] = []
+    for item in value:
+        url = str(item or "").strip()
+        parsed = urlparse(url)
+        host = (parsed.hostname or "").lower().removeprefix("www.")
+        if parsed.scheme != "https" or host != site_host or not parsed.path:
+            raise HTTPException(
+                status_code=400,
+                detail="Every live URL must be an HTTPS URL on the declared site.",
+            )
+        if url not in urls:
+            urls.append(url)
+    if not urls:
+        raise HTTPException(status_code=400, detail="At least one live URL is required.")
+    if len(urls) > 24:
+        raise HTTPException(status_code=400, detail="A release log can contain at most 24 live URLs.")
+    return urls
+
+
+def _release_log_values(value: object, *, field: str, limit: int) -> list[str]:
+    if value is None:
+        return []
+    if not isinstance(value, list):
+        raise HTTPException(status_code=400, detail=f"{field} must be a JSON array.")
+    values = list(
+        dict.fromkeys(
+            str(item or "").strip() for item in value if str(item or "").strip()
+        )
+    )
+    if len(values) > limit or any(len(item) > 300 for item in values):
+        raise HTTPException(status_code=400, detail=f"{field} has an invalid value.")
+    return values
 
 
 def _scheduled_modes(local_now: datetime) -> list[str]:
@@ -732,3 +784,87 @@ async def run_scheduled_website_ops(request: Request) -> dict:
                 details={"error": str(exc)},
             )
         raise
+
+
+@router.post("/release-log")
+async def record_verified_seo_release(request: Request) -> dict:
+    """Persist a verified SEO release without requiring an admin browser session."""
+
+    _require_internal_key(request)
+    try:
+        payload = await request.json()
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="A JSON release payload is required.") from exc
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="A JSON object is required.")
+
+    site_host = _release_log_host(payload.get("site"))
+    if not site_host:
+        raise HTTPException(
+            status_code=400,
+            detail="site must be anatainc.com or anatabuilding.com.",
+        )
+    release_key = str(payload.get("release_key", "")).strip()
+    if not release_key or len(release_key) > 300:
+        raise HTTPException(status_code=400, detail="A release_key of 1-300 characters is required.")
+    pr_url = str(payload.get("pr_url", "")).strip()
+    parsed_pr = urlparse(pr_url)
+    if (
+        parsed_pr.scheme != "https"
+        or parsed_pr.hostname != "github.com"
+        or not parsed_pr.path.startswith("/david-anata/")
+        or "/pull/" not in parsed_pr.path
+    ):
+        raise HTTPException(status_code=400, detail="pr_url must be a david-anata GitHub pull request URL.")
+
+    live_urls = _release_log_urls(payload.get("live_urls"), site_host=site_host)
+    task_ids = _release_log_values(payload.get("task_ids"), field="task_ids", limit=100)
+    deployment_id = str(payload.get("deployment_id", "")).strip()
+    summary = str(payload.get("summary", "")).strip()
+    if len(deployment_id) > 300 or not summary or len(summary) > 6000:
+        raise HTTPException(status_code=400, detail="deployment_id or summary is invalid.")
+
+    automation_key = f"seo-release:{release_key}"
+    for existing in load_feedback_records(request.app.state.settings):
+        if str(existing.get("automation_key", "")) == automation_key:
+            return {
+                "status": "duplicate",
+                "feedback_id": str(existing.get("feedback_id", "")),
+                "release_key": release_key,
+            }
+
+    record = save_feedback_record(
+        request.app.state.settings,
+        {
+            "category": "SEO",
+            "priority": "Low",
+            "page_url": live_urls[0],
+            "page_title": f"Verified SEO release — {site_host}",
+            "summary": f"Verified SEO release — {site_host}",
+            "details": json.dumps(
+                {
+                    "site": site_host,
+                    "pr_url": pr_url,
+                    "deployment_id": deployment_id,
+                    "live_urls": live_urls,
+                    "task_ids": task_ids,
+                    "summary": summary,
+                },
+                indent=2,
+                sort_keys=True,
+            ),
+            "desired_outcome": "Production release verified and recorded.",
+            "recommended_fix": "Monitor the released target queries in the next weekly measurement.",
+            "reporter_name": "Codex Scheduled SEO",
+            "status": "done",
+            "automation_key": automation_key,
+            "auto_generated": True,
+            "source_insight": "Scheduled SEO release",
+        },
+    )
+    logger.info("Recorded verified SEO release site=%s release_key=%s", site_host, release_key)
+    return {
+        "status": "recorded",
+        "feedback_id": str(record.get("feedback_id", "")),
+        "release_key": release_key,
+    }
