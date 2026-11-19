@@ -204,7 +204,14 @@ def fact_sheet(lead: dict[str, Any]) -> FactSheet:
     """Curated shopper-visible facts. Tech and traffic stats are left out."""
 
     store = _record(lead)
-    brand = str(store.get("merchant_name") or lead.get("brand") or store.get("name") or "").strip()
+    from outbound_pipeline import company_label
+
+    raw_brand = str(store.get("merchant_name") or lead.get("brand") or store.get("name") or "").strip()
+    brand = company_label(
+        raw_brand,
+        title=str(store.get("title") or ""),
+        domain=str(lead.get("domain") or store.get("name") or ""),
+    ) or raw_brand
     category = str(store.get("categories") or lead.get("categories") or lead.get("niche") or "")
     recipe = str(lead.get("recipe") or "").strip()
     from outbound_openers import trial_offer_lead
@@ -233,14 +240,24 @@ def fact_sheet(lead: dict[str, Any]) -> FactSheet:
         return sheet
 
     facts: list[str] = []
+    from outbound_openers import source_matches_store
+
+    domain = str(lead.get("domain") or store.get("name") or "")
+    description_url = str(store.get("description_url") or lead.get("description_url") or "")
+    description_ok = not description_url or source_matches_store(description_url, domain)
     for key in ("description", "title"):
+        if key == "description" and not description_ok:
+            continue
         blurb = _clean_blurb(str(store.get(key) or ""), brand)
         if blurb:
             facts.append(blurb)
             break
     product = store.get("most_recently_published_product")
     if isinstance(product, dict):
-        title = _clean_blurb(str(product.get("title") or ""), brand)
+        product_url = str(product.get("url") or "")
+        title = ""
+        if not product_url or source_matches_store(product_url, domain):
+            title = _clean_blurb(str(product.get("title") or ""), brand)
         if title:
             facts.append(f"recent product: {title}")
     channels = _channel_names(store)
@@ -262,18 +279,9 @@ def fact_sheet(lead: dict[str, Any]) -> FactSheet:
     sheet.high_rating = high
     if review_line:
         facts.append(review_line)
-    social_bits: list[str] = []
-    for item in store.get("contact_info") or []:
-        if not isinstance(item, dict):
-            continue
-        kind = str(item.get("type") or "").strip()
-        bio = _clean_blurb(str(item.get("description") or ""), brand)
-        reach = _words_for_count(item.get("followers"))
-        if bio:
-            social_bits.append(f"{kind} bio: {bio}" if kind else bio)
-        elif reach and kind:
-            social_bits.append(f"{reach} {kind} followers")
-    facts.extend(social_bits[:3])
+    # Social and platform profile pages are not the store. Their bios and
+    # follower counts are not facts. YouTube's default "Share your videos..."
+    # description is the case this keeps out.
     abroad = []
     for item in list(store.get("ships_to_countries") or []) + list(store.get("locs") or []):
         label = str(item or "").strip()
@@ -323,8 +331,11 @@ def style_violation(
         return "question"
     if _HYPE.search(raw):
         return "hype"
-    from outbound_openers import generic_copy_reason
+    from outbound_openers import copy_block_reason, generic_copy_reason
 
+    blocked = copy_block_reason(raw)
+    if blocked:
+        return blocked
     generic = generic_copy_reason(raw)
     if generic:
         return generic

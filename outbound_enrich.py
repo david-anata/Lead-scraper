@@ -485,6 +485,17 @@ def run_enrichment(
             continue
         leads_by_domain.setdefault(d, lead)
 
+    try:
+        from sales_support_agent.services.outbound_memory import save_store_profiles
+
+        save_store_profiles(engine, [
+            {"domain": domain, "store_profile": lead.get("store_profile")}
+            for domain, lead in leads_by_domain.items()
+            if isinstance(lead.get("store_profile"), dict)
+        ])
+    except Exception:  # noqa: BLE001
+        logger.debug("[outbound-enrich] store profiles were not saved for opener checks")
+
     for domain, lead in list(leads_by_domain.items()):
         if report.companies_tried >= max_companies:
             break
@@ -565,7 +576,9 @@ def run_enrichment(
                     profile = {}
                 if not profile and isinstance(lead.get("store_profile"), dict):
                     profile = lead["store_profile"]
-                opener_lead = {**lead, "store_profile": profile}
+                opener_lead = {
+                    **lead, "domain": domain, "store_profile": profile, "email": c.email,
+                }
                 if profile and _openers.rich_personalization_enabled():
                     opener_lead["rich_personalization"] = True
                 line, src = write(opener_lead, {"title": c.title})
@@ -711,7 +724,7 @@ def release_held_openers(engine) -> int:
     for email, domain, brand, category, recipe, tier in rows:
         domain_key = str(domain or "").strip().lower()
         lead = {
-            "domain": domain_key, "brand": brand, "categories": category,
+            "domain": domain_key, "email": email, "brand": brand, "categories": category,
             "recipe": recipe, "tier": tier,
             "store_profile": profiles.get(domain_key) or {},
         }
@@ -933,12 +946,17 @@ def push_pending(engine, campaign_id: str, *, dry_run: bool = True, limit: int =
     held_copy = 0
     queued = 0
     for person in allowed:
+        domain_key = str(person.get("domain") or "").strip().lower()
+        profile = profiles.get(domain_key) or {}
         copy_lead = {
             "brand": person.get("brand"),
+            "domain": domain_key,
+            "email": person.get("email"),
             "categories": person.get("category"),
             "recipe": person.get("recipe"),
             "campaign_id": person.get("campaign_id"),
             "campaign_name": person.get("campaign_name"),
+            "store_profile": profile,
         }
         copy_reason = _openers.opener_hold_reason(
             str(person.get("opener") or ""), copy_lead,

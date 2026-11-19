@@ -1115,12 +1115,16 @@ def _social_contacts(value: Any) -> list[dict[str, Any]]:
         kind = str(item.get("type") or "").strip().lower()
         if kind not in {"tiktok", "youtube", "instagram", "pinterest", "twitter"}:
             continue
+        url = str(item.get("url") or item.get("value") or "").strip()
+        if url and "://" not in url and "." in url:
+            url = "https://" + url
         kept.append({
             "type": kind,
             "followers": item.get("followers"),
             "followers_30d": item.get("followers_30d"),
             "followers_90d": item.get("followers_90d"),
             "description": " ".join(str(item.get("description") or "").split())[:240],
+            "url": url[:300],
         })
     return kept[:8]
 
@@ -1159,6 +1163,7 @@ def store_profile(store: dict[str, Any]) -> dict[str, Any]:
         "most_recently_published_product": {
             "title": str(product.get("title") or product.get("name") or "").strip(),
             "published_at": str(product.get("published_at") or "").strip(),
+            "url": str(product.get("url") or product.get("link") or "").strip(),
         },
         "description": description,
         "retailer_page": str(store.get("retailer_page") or "").strip(),
@@ -1201,13 +1206,22 @@ _TRAILING_REGION = re.compile(
     r"(?:[\s\-_/,]+(?:u\.s\.a\.?|u\.s\.?|usa|us|uk|eu|prod|production))+$",
     re.I,
 )
+_PROGRAM_SUFFIX = re.compile(
+    r"(?:,|\s)+\b(?:loyalty|rewards?|affiliate|membership|referral|points|vip)\s+programs?\b\.?$",
+    re.I,
+)
+_PROGRAM_BEFORE_LABEL = re.compile(
+    r"\s+\b(?:loyalty|rewards?|affiliate|membership|referral|points|vip)\s+programs?\b(?=\s+[A-Za-z]{2,5}$)",
+    re.I,
+)
 
 
 def clean_brand_name(value: Any) -> str:
     """A company name safe to put in an opener or an Instantly field.
 
-    Legal suffixes, store words, a trailing region or prod tag, a trailing TLD,
-    and a tagline after a separator come off. ALL CAPS and all-lowercase names
+    Legal suffixes, store words, a program label such as Loyalty Program, a
+    trailing initials tag, a trailing region or prod tag, a trailing TLD, and
+    a tagline after a separator come off. ALL CAPS and all-lowercase names
     are title-cased.
     Mixed case such as REV Gum or MyBevi is left as written.
     """
@@ -1219,11 +1233,19 @@ def clean_brand_name(value: Any) -> str:
     changed = True
     while changed and text:
         changed = False
-        for pattern in (_LEGAL_SUFFIX, _STORE_WORDS, _TRAILING_STORE, _BRAND_TLD, _TRAILING_REGION):
+        for pattern in (
+            _LEGAL_SUFFIX, _STORE_WORDS, _TRAILING_STORE, _PROGRAM_SUFFIX,
+            _PROGRAM_BEFORE_LABEL, _BRAND_TLD, _TRAILING_REGION,
+        ):
             nxt = pattern.sub("", text).strip(" ,.")
             if nxt and nxt != text:
                 text = nxt
                 changed = True
+    parts = text.split()
+    if len(parts) >= 3 and re.fullmatch(r"[A-Z]{2,5}", parts[-1]):
+        initials = "".join(word[0] for word in parts[:-1] if word[:1].isalpha())
+        if parts[-1] == initials:
+            text = " ".join(parts[:-1])
     if text.isupper() or text.islower():
         text = " ".join(
             (part[:1].upper() + part[1:].lower()) if part else ""
