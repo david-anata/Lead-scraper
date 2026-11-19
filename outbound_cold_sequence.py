@@ -54,10 +54,14 @@ def known_cold_sequences() -> list[tuple[str, list[dict[str, Any]]]]:
 
     import outbound_reengage as reengage
     import outbound_sales_org as sales
+    import outbound_signal_copy as signal
 
     live = {"campaign_schedule": {"schedules": []}, "email_list": []}
     reengage_steps = reengage.campaign_body(live)["sequences"][0]["steps"]
-    return [
+    sequences = [
         ("reengage", reengage_steps),
         ("sales_org", list(sales.STEPS)),
     ]
+    for key, _campaign_id in signal.CAMPAIGNS:
+        sequences.append((key, signal.steps_for(key)))
+    return sequences
