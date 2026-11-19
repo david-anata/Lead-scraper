@@ -1,7 +1,8 @@
 """Turn a cold-email ask into a small yes, and pause the calendar subsequence.
 
 The four signal campaigns are replaced with the sequences in
-``outbound_signal_copy``. Trial Offer and abby_reengage are not edited.
+``outbound_signal_copy``. abby_reengage keeps its current steps and gains
+the CAN-SPAM footer. Trial Offer is not edited.
 Any other campaign still has a call, a calendar, or a "reply with X" line
 replaced, and a URL line removed. Nothing here runs until ``apply_yes_cta``
 is called.
@@ -31,11 +32,11 @@ LIVE_CAMPAIGNS: tuple[tuple[str, str], ...] = (
     ("abby_reengage", "907d32fd-d6db-4ce6-8edc-485b78cce120"),
 )
 BOOKING_SUBSEQUENCE_ID = "0c2f113f-ebed-4890-92df-c241d925dcdf"
-# These two sequences keep the copy they already have.
+# Trial Offer keeps the copy it already has.
 SKIP_COPY_CAMPAIGN_IDS = frozenset({
     "e5f5046b-07e4-41ad-a395-79cf8766ccd0",
-    "907d32fd-d6db-4ce6-8edc-485b78cce120",
 })
+REENGAGE_CAMPAIGN_ID = "907d32fd-d6db-4ce6-8edc-485b78cce120"
 
 FIRST_ASK = "I found something that could help your Amazon growth. Can I send it to you?"
 FOLLOW_ASK = "Mind if I put something together for you?"
@@ -258,6 +259,31 @@ def _body_changes(before_steps: list[dict[str, Any]], after_steps: list[dict[str
     return changes
 
 
+def _step_one_body(payload: dict[str, Any]) -> str:
+    """The first variant of step 1, as Instantly returned it."""
+
+    sequences = [item for item in (payload.get("sequences") or []) if isinstance(item, dict)]
+    steps = sequences[0].get("steps") if sequences else []
+    if not steps or not isinstance(steps[0], dict):
+        return ""
+    variants = [item for item in (steps[0].get("variants") or []) if isinstance(item, dict)]
+    if variants:
+        return str(variants[0].get("body") or "")
+    return str(steps[0].get("body") or "")
+
+
+def _read_back_step_one(client: Any, campaign_id: str) -> str:
+    """Read step 1 after the patch. Empty when Instantly does not return it."""
+
+    try:
+        status, payload = client.get_campaign(campaign_id)
+    except Exception:  # noqa: BLE001
+        return ""
+    if status != 200 or not isinstance(payload, dict):
+        return ""
+    return _step_one_body(payload)
+
+
 def _sequences_with_steps(campaign: dict[str, Any], steps: list[dict[str, Any]]) -> list[dict[str, Any]]:
     sequences = [dict(item) for item in (campaign.get("sequences") or []) if isinstance(item, dict)]
     if not sequences:
@@ -268,7 +294,7 @@ def _sequences_with_steps(campaign: dict[str, Any], steps: list[dict[str, Any]])
 
 def apply_yes_cta(client: Any, *, campaigns: Optional[tuple[tuple[str, str], ...]] = None,
                   subsequence_id: str = BOOKING_SUBSEQUENCE_ID) -> dict[str, Any]:
-    """Replace signal-campaign steps, leave Trial Offer and reengage alone, and pause the calendar subsequence.
+    """Replace signal-campaign steps, add the reengage footer, leave Trial Offer alone, and pause the calendar subsequence.
 
     ``client`` needs ``get_campaign``, ``patch_campaign``, ``get_subsequence``,
     and ``pause_subsequence``. A signal campaign whose steps already match the
@@ -276,6 +302,7 @@ def apply_yes_cta(client: Any, *, campaigns: Optional[tuple[tuple[str, str], ...
     left in place, so it cannot send a calendar email after a yes.
     """
 
+    from outbound_cold_sequence import steps_with_footer
     from outbound_signal_copy import steps_for_campaign_id
 
     report: dict[str, Any] = {"campaigns": [], "subsequence": {}, "errors": []}
@@ -301,6 +328,8 @@ def apply_yes_cta(client: Any, *, campaigns: Optional[tuple[tuple[str, str], ...
             continue
         steps = ((payload.get("sequences") or [{}])[0].get("steps") or []) if payload.get("sequences") else []
         replacement = steps_for_campaign_id(campaign_id)
+        if replacement is None and campaign_id == REENGAGE_CAMPAIGN_ID:
+            replacement = steps_with_footer(steps)
         if replacement is not None:
             same = _normalized_steps(steps) == _normalized_steps(replacement)
             changes = [] if same else _body_changes(steps, replacement)
@@ -323,13 +352,16 @@ def apply_yes_cta(client: Any, *, campaigns: Optional[tuple[tuple[str, str], ...
                 patched = patch_status == 200
                 if not patched and not any(item.get("campaign") == name for item in report["errors"]):
                     report["errors"].append({"campaign": name, "error": f"patch {patch_status}"})
-            report["campaigns"].append({
+            entry = {
                 "name": name,
                 "campaign_id": campaign_id,
                 "changed": len(changes),
                 "patched": patched,
                 "steps": changes,
-            })
+            }
+            if patched:
+                entry["read_back"] = _read_back_step_one(client, campaign_id)
+            report["campaigns"].append(entry)
             continue
         try:
             new_steps, changes = rewrite_steps(steps)
@@ -426,7 +458,7 @@ def apply_with_instantly(api_key: str, post: Optional[Callable[..., Any]] = None
     return apply_yes_cta(_Client())
 
 
-APPLY_KEY = "yes-cta-v4"
+APPLY_KEY = "yes-cta-v5"
 _APPLY_TABLE = "abby_copy_applies"
 
 

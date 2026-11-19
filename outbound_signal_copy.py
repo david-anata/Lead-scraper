@@ -18,6 +18,8 @@ import re
 from html import unescape
 from typing import Any, Optional
 
+from outbound_cold_sequence import OPT_OUT_LINE, POSTAL_ADDRESS
+
 # campaign key, Instantly campaign id. Names in Instantly still say "v2".
 CAMPAIGNS: tuple[tuple[str, str], ...] = (
     ("amz_on", "8e0df427-1f18-43ac-b0c6-e8ea787123d7"),
@@ -168,7 +170,7 @@ def _wrap(middle: str, *, opener: bool) -> str:
     parts = ["Hi {{firstName | there}},", ""]
     if opener:
         parts.extend(["{{personalization}}", ""])
-    parts.extend([middle.strip(), "", ASK, "", SIGNATURE])
+    parts.extend([middle.strip(), "", ASK, "", SIGNATURE, "", OPT_OUT_LINE, POSTAL_ADDRESS])
     return "\n".join(parts)
 
 
@@ -262,10 +264,12 @@ def visible_text(value: str) -> str:
     return _fill(unescape(_TAG_RE.sub(" ", value or "")), opener_words=0)
 
 
-def word_count(text: str, *, opener_words: int) -> int:
-    """Words after fallbacks render. ``opener_words`` stands in for personalization."""
+def word_count(text: str, *, opener_words: int, include_footer: bool = False) -> int:
+    """Words after fallbacks render. The CAN-SPAM footer is not part of the limit."""
 
     rendered = _fill(unescape(_TAG_RE.sub(" ", text or "")), opener_words=opener_words)
+    if not include_footer:
+        rendered = rendered.replace(OPT_OUT_LINE, " ").replace(POSTAL_ADDRESS, " ")
     return len(rendered.split())
 
 
@@ -301,8 +305,10 @@ def validate_steps(steps: list[dict[str, Any]], *, campaign: str = "") -> list[s
             if _BANNED_RE.search(visible_text(raw)):
                 problems.append(f"{where}: contains a disallowed ask")
             shown = visible_text(body)
-            questions = shown.count("?")
-            if questions != 1 or ASK not in shown:
+            if OPT_OUT_LINE not in body or POSTAL_ADDRESS not in body:
+                problems.append(f"{where}: missing the CAN-SPAM footer")
+            message = shown.replace(OPT_OUT_LINE, " ")
+            if message.count("?") != 1 or ASK not in message:
                 problems.append(f"{where}: the only ask must be '{ASK}'")
             if index == 0:
                 if not subject.strip():

@@ -12,6 +12,59 @@ from typing import Any
 
 _URL_RE = re.compile(r"https?://\S+|www\.\S+", re.I)
 
+# CAN-SPAM: a plain opt-out and a postal address. No link.
+OPT_OUT_LINE = "Not a fit? Just let me know and I won't follow up."
+POSTAL_ADDRESS = "anata Inc, 1657 N. State St., Lehi, UT 84043"
+
+
+def has_footer(body: str) -> bool:
+    """True when both footer lines are already in the step."""
+
+    text = body or ""
+    return OPT_OUT_LINE in text and POSTAL_ADDRESS in text
+
+
+def append_footer(body: str) -> str:
+    """Put the opt-out and the postal address under the signature."""
+
+    if has_footer(body):
+        return body or ""
+    raw = body or ""
+    if "<" in raw:
+        return (
+            f"{raw}<div><br /></div>"
+            f"<div>{OPT_OUT_LINE}</div>"
+            f"<div>{POSTAL_ADDRESS}</div>"
+        )
+    stripped = raw.rstrip()
+    spacer = "\n\n" if stripped else ""
+    return f"{stripped}{spacer}{OPT_OUT_LINE}\n{POSTAL_ADDRESS}"
+
+
+def steps_with_footer(steps: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Same steps, with the footer on every variant body. Delays and subjects stay."""
+
+    updated: list[dict[str, Any]] = []
+    for step in steps or []:
+        if not isinstance(step, dict):
+            updated.append(step)
+            continue
+        copy = dict(step)
+        variants = []
+        for variant in copy.get("variants") or []:
+            if not isinstance(variant, dict):
+                variants.append(variant)
+                continue
+            variant_copy = dict(variant)
+            variant_copy["body"] = append_footer(str(variant_copy.get("body") or ""))
+            variants.append(variant_copy)
+        if variants:
+            copy["variants"] = variants
+        elif "body" in copy:
+            copy["body"] = append_footer(str(copy.get("body") or ""))
+        updated.append(copy)
+    return updated
+
 
 def cold_urls(text: str) -> list[str]:
     """URL-like tokens in one subject or body. Email addresses are not URLs."""
