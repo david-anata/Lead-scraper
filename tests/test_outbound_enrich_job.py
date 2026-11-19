@@ -39,7 +39,22 @@ def env(monkeypatch):
 
 
 def leads(n, recipe="amz_on"):
-    return [{"domain": f"d{i}.com", "brand": f"D{i}", "categories": "/Apparel", "recipe": recipe} for i in range(n)]
+    rows = []
+    for i in range(n):
+        domain = f"d{i}.com"
+        brand = f"D{i}"
+        rows.append({
+            "domain": domain,
+            "brand": brand,
+            "categories": "/Apparel",
+            "recipe": recipe,
+            "site_product": "toothpaste tabs",
+            "store_profile": {
+                "description": "Toothpaste tabs",
+                "most_recently_published_product": {"title": "Toothpaste Tabs"},
+            },
+        })
+    return rows
 
 
 def finder(domain, *, api_key, max_contacts=2, **kw):
@@ -48,7 +63,7 @@ def finder(domain, *, api_key, max_contacts=2, **kw):
 
 
 def write(lead, contact=None):
-    return f"{lead['brand']} stood out. Is Amazon a real channel for you yet?", "ai"
+    return f"{lead['brand']} sells toothpaste tabs.", "ai"
 
 
 def ok_push(payload, cid, dry_run=False, **k):
@@ -96,7 +111,14 @@ def test_missing_default_still_pushes_a_mapped_recipe(engine, monkeypatch):
     posts = []
     out = job.run_enrich_job(
         now=WEEKDAY, engine=engine,
-        leads=[{"domain": "plus.com", "brand": "Plus", "categories": "/Apparel", "recipe": "plan_upgrade"}],
+        leads=[{
+            "domain": "plus.com", "brand": "Plus", "categories": "/Apparel",
+            "recipe": "plan_upgrade", "site_product": "toothpaste tabs",
+            "store_profile": {
+                "description": "Toothpaste tabs",
+                "most_recently_published_product": {"title": "Toothpaste Tabs"},
+            },
+        }],
         find=finder, write=write, push=record, post_slack=posts.append,
         in_instantly=lambda d: False,
     )
@@ -115,7 +137,14 @@ def test_stale_trial_default_does_not_receive_filler_leads(engine, monkeypatch, 
     with caplog.at_level("ERROR"):
         out, posts = run(
             engine,
-            lead_rows=[{"domain": f"d{i}.com", "brand": f"D{i}", "categories": "/Apparel", "recipe": "icp_baseline"} for i in range(10)],
+            lead_rows=[{
+                "domain": f"d{i}.com", "brand": f"D{i}", "categories": "/Apparel",
+                "recipe": "icp_baseline", "site_product": "toothpaste tabs",
+                "store_profile": {
+                    "description": "Toothpaste tabs",
+                    "most_recently_published_product": {"title": "Toothpaste Tabs"},
+                },
+            } for i in range(10)],
             push=lambda *a, **k: called.append(a[1] if len(a) > 1 else k.get("campaign_id")),
         )
     assert out["ran"] and out["pushed"] == 0 and out["campaign_missing"] is False
@@ -396,7 +425,14 @@ def _store_recipe(engine, recipe, count, day):
         "social_surge": "social",
     }[recipe]
     rows = [
-        {"domain": f"{slug}{index}.com", "brand": slug, "recipe": recipe, "categories": "Apparel"}
+        {
+            "domain": f"{slug}{index}.com", "brand": slug, "recipe": recipe,
+            "categories": "Apparel", "site_product": "toothpaste tabs",
+            "store_profile": {
+                "description": "Toothpaste tabs",
+                "most_recently_published_product": {"title": "Toothpaste Tabs"},
+            },
+        }
         for index in range(count)
     ]
     memory.record_leads(engine, rows)

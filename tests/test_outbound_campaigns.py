@@ -21,6 +21,18 @@ import outbound_campaigns as campaigns
 import outbound_enrich as oe
 import outbound_instantly_push as push
 
+def _save_product(engine, domain: str, title: str) -> None:
+    from sales_support_agent.services.outbound_memory import save_store_profiles
+
+    save_store_profiles(engine, [{
+        "domain": domain,
+        "store_profile": {
+            "description": title,
+            "most_recently_published_product": {"title": title},
+        },
+    }])
+
+
 DENVER = ZoneInfo("America/Denver")
 NOW = datetime(2026, 10, 26, 12, tzinfo=timezone.utc)  # a Monday
 
@@ -141,11 +153,13 @@ def test_push_pending_uses_the_table_and_holds_cut_recipes(engine):
             "UPDATE outbound_campaigns SET status = 'cut' WHERE recipe_key = 'plan_upgrade'"
         ))
     oe.ensure_tables(engine)
+    _save_product(engine, "on.com", "running shoes")
+    _save_product(engine, "plan.com", "glass bottle")
     oe._record_person(
         engine,
         SimpleNamespace(email="a@on.com", domain="on.com", first_name="A", last_name="B",
                         title="Founder", linkedin_url="", email_status=""),
-        "On sells on Amazon.", "test",
+        "On sells running shoes.", "test",
         {"brand": "On", "categories": "", "recipe": "amz_on", "tier": "B"},
     )
     oe._record_person(
@@ -172,6 +186,7 @@ def test_push_pending_falls_back_when_the_table_is_empty(engine):
     with engine.begin() as conn:
         conn.execute(text("DELETE FROM outbound_campaigns"))
     oe.ensure_tables(engine)
+    _save_product(engine, "plan.com", "glass bottle")
     oe._record_person(
         engine,
         SimpleNamespace(email="a@plan.com", domain="plan.com", first_name="A", last_name="B",
@@ -195,11 +210,12 @@ def test_push_pending_falls_back_when_the_table_cannot_be_read(engine, monkeypat
 
     monkeypatch.setattr(campaigns, "load_routing", explode)
     oe.ensure_tables(engine)
+    _save_product(engine, "off.com", "running shoes")
     oe._record_person(
         engine,
         SimpleNamespace(email="a@off.com", domain="off.com", first_name="A", last_name="B",
                         title="Founder", linkedin_url="", email_status=""),
-        "Not on Amazon.", "test",
+        "Off sells running shoes.", "test",
         {"brand": "Off", "categories": "", "recipe": "amz_off", "tier": "B"},
     )
     sent = {}

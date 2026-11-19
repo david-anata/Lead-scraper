@@ -21,6 +21,9 @@ Hard rules, enforced in code not just in the prompt:
   * One sentence. The opener aims for about 20 words and never passes 25.
     The brand angle aims for about 15 words and never passes 20.
     A line over that hard max is regenerated once, then the lead is held.
+  * A model refusal, a platform default description, a social bio, or a
+    sale title is not a fact. The line must name a product verified on the
+    brand's own store domain, or the lead is held.
 """
 
 from __future__ import annotations
@@ -122,6 +125,72 @@ _PAGE_BOILERPLATE = frozenset({
     "on sale", "new", "new in", "explore", "discover", "learn more",
     "read more", "click here", "buy now", "add to cart", "free shipping",
 })
+# The model sometimes answers the instruction instead of writing the line.
+_REFUSAL = re.compile(
+    r"\bi have no\b"
+    r"|\bi cannot\b"
+    r"|\bi can't\b"
+    r"|\bi can not\b"
+    r"|\bi do not have\b"
+    r"|\bi don't have\b"
+    r"|\bwriting nothing\b"
+    r"|\bwrite nothing\b"
+    r"|\bnothing to write\b"
+    r"|\bno concrete product\b"
+    r"|\bas an ai\b"
+    r"|\bi(?:'m| am) an ai\b"
+    r"|\blanguage model\b"
+    r"|concrete product,\s*flavor,\s*story"
+    r"|store name,\s*or review theme"
+    r"|flavor,\s*story,\s*store name",
+    re.I,
+)
+# Default meta descriptions and the "youtube bio:" phrasing they produced.
+_PLATFORM_COPY = re.compile(
+    r"share your videos with friends"
+    r"|friends,\s+family,\s+and the world"
+    r"|make your day"
+    r"|link in bio"
+    r"|make your link do more"
+    r"|powered by (?:shopify|wix|squarespace)"
+    r"|this (?:shop|store) (?:is|will be) powered by"
+    r"|built (?:on|with) (?:wix|squarespace|shopify)"
+    r"|website (?:builder|starts with squarespace)"
+    r"|create an account or log in"
+    r"|log in(?:to)? (?:facebook|instagram|tiktok)"
+    r"|connect with friends"
+    r"|sign up for facebook"
+    r"|opening soon"
+    r"|currently unavailable"
+    r"|\b(?:youtube|instagram|facebook|tiktok|twitter|pinterest|linktree)\s+bio\b"
+    r"|\bbio\s*:",
+    re.I,
+)
+# A title that is a promotion, not a product a shopper reorders.
+_PROMO_TITLE = re.compile(
+    r"\bblack friday\b"
+    r"|\bcyber monday\b"
+    r"|\bgift cards?\b"
+    r"|\bbundle deals?\b"
+    r"|\b(?:\d+\s*)?%\s*off\b"
+    r"|\bsales?\b"
+    r"|\bspecials?\b"
+    r"|\bclearance\b"
+    r"|\bbogo\b"
+    r"|\bpromo(?:tion| code)?\b",
+    re.I,
+)
+# Pages that are not the brand's own store. A fact taken from one of these
+# is someone else's meta description.
+_PLATFORM_HOSTS = frozenset({
+    "youtube.com", "youtu.be", "facebook.com", "fb.com", "fb.me",
+    "instagram.com", "tiktok.com", "linktr.ee", "linktree.com",
+    "twitter.com", "x.com", "pinterest.com", "linkedin.com",
+    "shopify.com", "myshopify.com", "shopifypreview.com",
+    "wix.com", "wixsite.com", "squarespace.com", "sqsp.com",
+    "etsy.com", "amazon.com", "amzn.to", "threads.net", "snapchat.com",
+    "google.com", "facebook.net",
+})
 _RETAILER_HOSTS = {
     "rei.com": "REI",
     "dickssportinggoods.com": "Dick's Sporting Goods",
@@ -171,8 +240,7 @@ _SYSTEM = (
     "write 'your Amazon store', 'your listings', or 'already on Amazon'. "
     "Never print a slug with underscores. Do not claim social momentum, growth, or "
     "anything that is not in the facts. Do not start with 'I noticed' or 'We noticed'. "
-    "If no concrete product, flavor, story, store name, or review theme is listed, "
-    "write nothing. "
+    "If none of those is listed, reply with an empty string and nothing else. "
     "Never use the words 'curious', 'special', 'building something', or 'ideal customer "
     "profile'. No numbers. No links. No em dashes. No greeting, no sign-off."
 )
@@ -278,6 +346,9 @@ def validate(
     generic = generic_copy_reason(t)
     if generic:
         return False, generic
+    blocked = copy_block_reason(t)
+    if blocked:
+        return False, blocked
     return True, ""
 
 
@@ -306,9 +377,78 @@ def _boilerplate_chunk(words: str) -> bool:
     return False
 
 
+def is_platform_copy(value: str) -> bool:
+    """True for a platform default description or a "youtube bio:" line."""
+
+    return bool(_PLATFORM_COPY.search(value or ""))
+
+
+def is_promo_title(value: str) -> bool:
+    """True when the text is a sale or promo title, not a product."""
+
+    return bool(_PROMO_TITLE.search(value or ""))
+
+
+def copy_block_reason(text: str) -> str:
+    """Why this line must not be sent. Empty when the words themselves are allowed.
+
+    Grounding in a store product is checked separately. This only catches
+    refusal text, platform boilerplate, and promo titles.
+    """
+
+    raw = text or ""
+    if _REFUSAL.search(raw):
+        return "model refusal text"
+    if is_platform_copy(raw):
+        return "platform boilerplate"
+    if is_promo_title(raw):
+        return "promotion, not a product"
+    return ""
+
+
+def _registrable(value: str) -> str:
+    from outbound_contacts import company_domain
+
+    return company_domain(str(value or ""))
+
+
+# The brand's own storefront on a website builder. A different tenant on the
+# same builder is not this store. Social hosts are never a storefront.
+_OWN_STOREFRONT_SUFFIXES = (".myshopify.com", ".shopifypreview.com", ".wixsite.com")
+
+
+def source_matches_store(url: str, store_domain: str) -> bool:
+    """True when a fact URL is on the brand's own store domain.
+
+    An empty URL has no foreign source. YouTube, Instagram, and the other
+    platform apexes never match. The brand's own Shopify subdomain can.
+    """
+
+    raw = _host_name(url)
+    if not raw:
+        return True
+    social_hosts = _PLATFORM_HOSTS - {"myshopify.com", "shopifypreview.com", "wixsite.com"}
+    if raw in _PLATFORM_HOSTS or any(raw.endswith("." + host) for host in social_hosts):
+        return False
+    store = _registrable(store_domain)
+    host = _registrable(url) or raw
+    if store and host == store:
+        return True
+    if not store:
+        return False
+    store_label = store.split(".")[0].replace("-", "")
+    for suffix in _OWN_STOREFRONT_SUFFIXES:
+        if raw.endswith(suffix):
+            label = raw[: -len(suffix)].split(".")[-1].replace("-", "")
+            return bool(label and label == store_label)
+    return False
+
+
 def is_page_boilerplate(value: str, brand: str = "") -> bool:
     """True when the text is page chrome, not a product, story, or store name."""
 
+    if is_platform_copy(value) or is_promo_title(value):
+        return True
     chunks = _boilerplate_words(value)
     if not chunks:
         return True
@@ -355,6 +495,8 @@ def _fact_phrase(value: Any) -> str:
 
     raw = clean(str(value or "")).strip(" .")
     if not raw or _AMAZON_WORD.search(raw):
+        return ""
+    if is_platform_copy(raw) or is_promo_title(raw):
         return ""
     if len(raw.split()) > 8 or len(raw) > 60:
         return ""
@@ -1403,6 +1545,8 @@ def concrete_phrases(lead: dict[str, Any], facts: LeadFacts) -> list[str]:
             return
         if is_page_boilerplate(text, str(lead.get("brand") or "")):
             return
+        if is_platform_copy(text) or is_promo_title(text) or " bio:" in lowered:
+            return
         if text not in found:
             found.append(text)
 
@@ -1628,14 +1772,126 @@ def _normalized_sale(opener: str) -> str:
     return " ".join(match.group(2).lower().replace("&", "and").split())
 
 
+def _store_domain(lead: Optional[dict[str, Any]]) -> str:
+    if not isinstance(lead, dict):
+        return ""
+    profile = _profile_of(lead)
+    return str(lead.get("domain") or profile.get("name") or "")
+
+
+def fact_domain_reason(lead: Optional[dict[str, Any]]) -> str:
+    """Hold when a fact URL or the contact's company domain is not the store.
+
+    Social and website-builder hosts never count as the store. A contact at
+    rjsinger.com is not a Belagio Enterprises store fact.
+    """
+
+    if not isinstance(lead, dict):
+        return ""
+    store = _store_domain(lead)
+    profile = _profile_of(lead)
+    product = profile.get("most_recently_published_product")
+    if not isinstance(product, dict):
+        raw_product = lead.get("most_recently_published_product")
+        product = raw_product if isinstance(raw_product, dict) else {}
+    url = str(product.get("url") or "")
+    if url and not source_matches_store(url, store):
+        return "fact source domain does not match the store"
+    for key in ("description_url", "source_url", "fact_url"):
+        raw = str(lead.get(key) or profile.get(key) or "")
+        if raw and not source_matches_store(raw, store):
+            return "fact source domain does not match the store"
+    email = str(lead.get("email") or lead.get("contact_email") or "")
+    if "@" in email and store and not source_matches_store(email.split("@", 1)[1], store):
+        return "fact source domain does not match the store"
+    return ""
+
+
+def store_verified_facts(lead: Optional[dict[str, Any]]) -> list[str]:
+    """Product, story, or named-store facts that came from the brand's own domain.
+
+    A social bio, a platform default, a promo title, and a page on another
+    domain are not included. An empty list means the opener cannot be sent.
+    """
+
+    if not isinstance(lead, dict):
+        return []
+    from outbound_pipeline import company_blocked_reason
+
+    if company_blocked_reason(lead):
+        return []
+    profile = _profile_of(lead)
+    brand = str(lead.get("brand") or profile.get("merchant_name") or "")
+    domain = _store_domain(lead)
+    categories = _category_phrases(lead)
+    broad = {item.lower() for item in CATEGORY_WORDS.values()}
+    found: list[str] = []
+
+    def add(value: Any, *, url: str = "") -> None:
+        text = clean(str(value or "")).strip(" .")
+        if len(text) < 3:
+            return
+        if url and not source_matches_store(url, domain):
+            return
+        if is_page_boilerplate(text, brand) or is_platform_copy(text) or is_promo_title(text):
+            return
+        if " bio:" in text.lower():
+            return
+        lowered = " ".join(text.lower().split())
+        if lowered in categories or lowered in broad or lowered in _GENERIC_RETAIL_FACTS:
+            return
+        if text not in found:
+            found.append(text)
+
+    product = profile.get("most_recently_published_product")
+    if not isinstance(product, dict):
+        raw_product = lead.get("most_recently_published_product")
+        product = raw_product if isinstance(raw_product, dict) else {}
+    if isinstance(product, dict):
+        add(product.get("title"), url=str(product.get("url") or ""))
+    add(lead.get("site_product"))
+    add(lead.get("scraped_product"))
+    add(_scraped_product(lead))
+    if amazon_confirmed(lead):
+        add(_AMAZON_WORD.sub(" ", str(lead.get("amz_product") or "")))
+    add(profile.get("description") or lead.get("description"))
+    for name in named_retailers(profile, domain=domain):
+        add(name)
+    return found
+
+
+def opener_names_fact(opener: str, facts: list[str]) -> bool:
+    """True when the line contains a verified fact, not merely the brand name."""
+
+    low = " ".join((opener or "").lower().split())
+    for fact in facts:
+        piece = " ".join(fact.lower().split())
+        if len(piece) >= 3 and piece in low:
+            return True
+        words = [word for word in piece.split() if word not in {"the", "a", "an", "for", "and", "with", "of"}]
+        if len(words) > 2:
+            head = " ".join(words[:2])
+            if len(head) >= 8 and head in low:
+                return True
+    return False
+
+
 def opener_hold_reason(opener: str, lead: Optional[dict[str, Any]] = None) -> str:
     """Why this opener must not be sent. Empty when it can go to Instantly.
 
-    A category sentence, a URL, or a backend detail is not a shopper-visible
-    fact. The contact stays unpushed and a later run can replace the line.
+    A category sentence, a URL, a backend detail, a model refusal, a platform
+    default, or a promo title is not a shopper-visible fact. The line must
+    also name a product fact verified on the store's own domain. Anything
+    else is held and a later run can replace it.
     """
 
     text = (opener or "").strip()
+    blocked = copy_block_reason(text) if text else ""
+    if blocked:
+        return f"opener is {blocked}"
+    domain_reason = fact_domain_reason(lead)
+    if domain_reason:
+        return domain_reason
     if not text:
         return "no shopper-visible opener"
     generic = generic_copy_reason(text)
@@ -1663,6 +1919,9 @@ def opener_hold_reason(opener: str, lead: Optional[dict[str, Any]] = None) -> st
         return "opener is longer than 25 words"
     if trial_offer_lead(lead) and trial_amazon_claim(text):
         return "trial offer opener assumes the brand already sells on Amazon"
+    facts = store_verified_facts(lead)
+    if not facts or not opener_names_fact(text, facts):
+        return "opener is not grounded in a store-verified product fact"
     return ""
 
 
@@ -1689,7 +1948,7 @@ def angle_is_filler(angle: str) -> bool:
     text = (angle or "").strip()
     if not text:
         return False
-    if generic_copy_reason(text):
+    if generic_copy_reason(text) or copy_block_reason(text):
         return True
     if _ANATA_CATEGORY.match(text) or _COPY_URL.search(text) or _BACKEND_COPY.search(text):
         return True
@@ -1701,7 +1960,9 @@ def _shopper_sentence(brand: str, fact: str) -> str:
 
     raw = " ".join((fact or "").split())
     low = raw.lower()
-    if not raw or is_page_boilerplate(raw, brand):
+    if not raw or is_page_boilerplate(raw, brand) or is_platform_copy(raw) or is_promo_title(raw):
+        return ""
+    if " bio:" in low:
         return ""
     if low.startswith("sells on ") or low.startswith("has shoppers") or low.startswith("offers a subscribe"):
         return ""
@@ -1717,8 +1978,8 @@ def _shopper_sentence(brand: str, fact: str) -> str:
         return _usable(f"{brand} is sold at {name}.", allow_amazon=False)
     if low in _GENERIC_RETAIL_FACTS or "retail stores" in low:
         return ""
-    if " bio:" in low or low.endswith("followers"):
-        return _usable(f"{brand} {raw}.", allow_amazon=False)
+    if low.endswith("followers"):
+        return ""
     if raw and not _BACKEND_COPY.search(raw) and not _COPY_URL.search(raw):
         sentence = raw if raw.endswith(".") else f"{raw}."
         if sentence.lower().startswith(brand.lower()):
@@ -1728,10 +1989,11 @@ def _shopper_sentence(brand: str, fact: str) -> str:
 
 
 def shopper_lines(lead: dict[str, Any]) -> tuple[str, str]:
-    """(opener, angle) using only products, story, reviews, retail, or social.
+    """(opener, angle) using only a product, story, review theme, or named store.
 
-    Category labels, platforms, plans, apps, pixels, and URLs are not used.
-    Both strings are empty when the record has no shopper-visible fact.
+    Category labels, platforms, plans, apps, pixels, social bios, and URLs
+    are not used. Both strings are empty when the record has no
+    shopper-visible fact from the brand's own store.
     """
 
     from outbound_personalization import fact_sheet
@@ -1754,12 +2016,12 @@ def shopper_lines(lead: dict[str, Any]) -> tuple[str, str]:
         low = fact.lower()
         if low in _GENERIC_RETAIL_FACTS or low.startswith("sells on ") or "retail stores" in low:
             continue
+        if " bio:" in low or low.endswith("followers") or is_platform_copy(fact) or is_promo_title(fact):
+            continue
         if (
             low.startswith("recent product")
             or low.startswith("sold at ")
             or "reviews average" in low
-            or " bio:" in low
-            or low.endswith("followers")
         ):
             preferred.append(fact)
         else:

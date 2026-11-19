@@ -277,8 +277,12 @@ def test_category_filler_urls_and_backend_are_not_sendable():
     )
     assert op.opener_hold_reason(
         "Kalm sells Green Chile Salsa.",
-        {"brand": "Kalm", "categories": "Food & Drink"},
+        {"brand": "Kalm", "categories": "Food & Drink", "site_product": "Green Chile Salsa"},
     ) == ""
+    assert "store-verified" in op.opener_hold_reason(
+        "Kalm sells Green Chile Salsa.",
+        {"brand": "Kalm", "categories": "Food & Drink"},
+    )
     assert op.angle_is_filler("Anata helps food & drink brands grow.")
     opener, angle = op.shopper_lines({
         "brand": "Kalm",

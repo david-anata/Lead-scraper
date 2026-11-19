@@ -95,7 +95,7 @@ def test_over_long_opener_is_regenerated_once_then_held():
     )
     assert op.opener_hold_reason(
         _words(25, "Huppy", "sells", "toothpaste", "tabs"),
-        {"brand": "Huppy", "categories": "Food"},
+        {"brand": "Huppy", "categories": "Food", "site_product": "toothpaste tabs"},
     ) == ""
 
 

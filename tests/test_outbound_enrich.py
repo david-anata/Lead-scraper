@@ -15,8 +15,17 @@ def engine():
 
 
 def lead(domain, brand=None):
-    return {"domain": domain, "brand": brand or domain.split(".")[0].title(), "niche": "oral care",
-            "recipe": "amz_on", "tier": "A", "categories": ["Health"]}
+    brand = brand or domain.split(".")[0].title()
+    return {
+        "domain": domain, "brand": brand, "niche": "oral care",
+        "recipe": "amz_on", "tier": "A", "categories": ["Health"],
+        "site_product": "toothpaste tabs",
+        "store_profile": {
+            "merchant_name": brand,
+            "description": "Toothpaste tabs",
+            "most_recently_published_product": {"title": "Toothpaste Tabs"},
+        },
+    }
 
 
 def finder(emails_by_domain, credits=3):
@@ -33,7 +42,7 @@ def finder(emails_by_domain, credits=3):
 
 
 def opener(l, c=None):
-    return f"{l['brand']} caught my eye. Is Amazon on your radar?", "ai"
+    return f"{l['brand']} sells toothpaste tabs.", "ai"
 
 
 def test_no_key_does_nothing(engine):
@@ -48,7 +57,7 @@ def test_enriches_stores_and_reports(engine):
     assert r.contacts_found == 2 and r.credits_used == 4
     assert r.find_rate == 0.5 and r.credits_per_contact == 2.0
     assert r.dry_run and r.pushed == 0
-    assert len(r.samples) == 2 and "Amazon" in r.samples[0]["opener"]
+    assert len(r.samples) == 2 and "toothpaste tabs" in r.samples[0]["opener"]
 
 
 def test_second_run_never_re_spends_on_same_domain(engine):
@@ -116,7 +125,7 @@ def test_pushed_lead_carries_brand_and_opener(engine):
     oe.run_enrichment(engine, [lead("a.com", "Acme")], api_key="k", find=f, write=opener,
                       campaign_id="new-campaign", dry_run=False, push=ok)
     assert seen["lead"]["company_name"] == "Acme"
-    assert "Acme caught my eye" in seen["lead"]["personalization"]
+    assert "Acme sells toothpaste tabs." in seen["lead"]["personalization"]
     assert seen["lead"]["email"] == "x@a.com"
 
 
@@ -324,6 +333,10 @@ def test_held_filler_with_a_plan_signal_routes_to_plan_upgrade(engine, monkeypat
         "brand": "Plus",
         "recipe": "icp_baseline",
         "signals": ["Upgraded their store plan recently"],
+        "store_profile": {
+            "description": "glass bottle",
+            "most_recently_published_product": {"title": "glass bottle"},
+        },
     }])
     oe._record_person(
         engine,
@@ -387,6 +400,16 @@ def test_enrich_domain_list_dry_run_does_not_search_or_store(engine):
 
 
 def test_enrich_domain_list_tags_redo_partner_and_the_regular_push_skips_it(engine):
+    from sales_support_agent.services.outbound_memory import save_store_profiles
+
+    save_store_profiles(engine, [{
+        "domain": domain,
+        "store_profile": {
+            "description": "Toothpaste tabs",
+            "most_recently_published_product": {"title": "Toothpaste Tabs"},
+        },
+    } for domain in ("redo.com", "plus.com")])
+
     def find(domain, *, api_key, max_contacts=2, **kw):
         return oc.FindResult(domain=domain, credits_used=1, contacts=[
             oc.Contact(domain=domain, first_name="A", last_name="B", email=f"a@{domain}", title="Founder")])
@@ -495,6 +518,8 @@ def test_category_filler_is_held_and_retried_when_a_product_fact_exists(engine, 
     food = lead("food.com", "Kalm")
     food["categories"] = "Food & Drink"
     food["niche"] = "food and drink"
+    food.pop("site_product", None)
+    food.pop("store_profile", None)
     result = oe.run_enrichment(
         engine, [food], api_key="k", find=finder({"food.com": ["ada@food.com"]}),
         dry_run=False, push=capture,

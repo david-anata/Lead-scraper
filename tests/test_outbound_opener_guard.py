@@ -242,3 +242,178 @@ def test_skipped_lead_stays_unpushed_with_a_reason():
     assert row[0] in ("", None)
     assert str(row[1]).startswith("held:opener:")
     assert "shopper-visible" in str(row[1])
+
+
+REFUSAL = (
+    "I have no concrete product, flavor, story, store name, or review theme "
+    "listed for Bella Rosa Coffee Company, so I'm writing nothing."
+)
+YOUTUBE_BIO = "Share your videos with friends, family, and the world."
+YOUTUBE_LINE = (
+    "Belagio Enterprises youtube bio: Share your videos with friends, family, and the world."
+)
+PROMO_TITLE = "Black Friday Sale Special - Studio Full Retail Kit"
+PROMO_LINE = "sells Black Friday Sale Special - Studio Full Retail Kit"
+
+
+def test_model_refusal_is_held_and_never_sent():
+    ok, why = op.validate(REFUSAL)
+    assert not ok and why == "model refusal text"
+    assert personalization.style_violation(REFUSAL) == "model refusal text"
+    thin = {
+        "brand": "Bella Rosa Coffee Company",
+        "domain": "bellarosacoffeecompany.com",
+        "recipe": "replatform",
+    }
+    reason = op.opener_hold_reason(REFUSAL, thin)
+    assert reason.startswith("opener is model refusal text")
+    assert f"{op.OPENER_HOLD_PREFIX} {reason}".startswith("held:opener:")
+    line, source = op.write_opener(thin, CONTACT, llm=lambda _prompt: REFUSAL)
+    assert line == "" and source == "none"
+    assert "empty string" in op._SYSTEM
+    assert "write nothing" not in op._SYSTEM.lower()
+
+    coffee = {
+        **thin,
+        "description": "Single origin coffee",
+        "store_profile": {"description": "Single origin coffee"},
+    }
+    kept, kept_source = op.write_opener(coffee, CONTACT, llm=lambda _prompt: REFUSAL)
+    assert kept_source == "fallback"
+    assert "single origin coffee" in kept.lower()
+    assert "writing nothing" not in kept.lower()
+    assert "i have no" not in kept.lower()
+    for echo in ("as an AI", "I cannot", "I have no", "no concrete product", "writing nothing"):
+        assert op.copy_block_reason(echo) == "model refusal text"
+
+
+def test_platform_bios_are_not_facts_and_a_foreign_domain_is_held():
+    for line in (
+        YOUTUBE_LINE,
+        f"Healing Noni youtube bio: {YOUTUBE_BIO}",
+        f"Arcos USA youtube bio: {YOUTUBE_BIO}",
+        f"Healing Noni instagram bio: Create an account or log in to Instagram",
+        "This shop will be powered by Shopify",
+        "This website was built on Wix. Create yours today.",
+        "Build a website. Sell your stuff. Powered by Squarespace.",
+        "TikTok - Make Your Day",
+        "Linktree: the only link in bio tool",
+    ):
+        assert op.copy_block_reason(line) == "platform boilerplate"
+        assert "platform boilerplate" in op.opener_hold_reason(line, {"brand": "Healing Noni"})
+
+    belagio = {
+        "brand": "Belagio Enterprises",
+        "domain": "belagioenterprises.com",
+        "recipe": "plan_upgrade",
+        "email": "fmelamed@rjsinger.com",
+        "description": YOUTUBE_BIO,
+        "store_profile": {
+            "description": YOUTUBE_BIO,
+            "contact_info": [{
+                "type": "youtube",
+                "description": YOUTUBE_BIO,
+                "url": "https://www.youtube.com/@rjsinger",
+                "followers": 12,
+            }],
+        },
+    }
+    sheet = personalization.fact_sheet(belagio)
+    assert sheet.facts == []
+    assert all("bio:" not in fact.lower() for fact in sheet.facts)
+    assert op.shopper_lines(belagio) == ("", "")
+    line, source = op.write_opener(
+        belagio, {"email": "fmelamed@rjsinger.com"}, llm=lambda _prompt: YOUTUBE_LINE,
+    )
+    assert line == "" and source == "none"
+    assert "youtube bio" not in line.lower()
+    assert op.opener_hold_reason(YOUTUBE_LINE, belagio).startswith("opener is platform boilerplate")
+
+    owned = {
+        "brand": "Belagio Enterprises",
+        "domain": "belagioenterprises.com",
+        "email": "fmelamed@rjsinger.com",
+        "description": "Espresso beans",
+        "store_profile": {
+            "description": "Espresso beans",
+            "most_recently_published_product": {
+                "title": "Espresso beans",
+                "url": "https://rjsinger.com/products/espresso-beans",
+            },
+        },
+    }
+    assert op.fact_domain_reason(owned) == "fact source domain does not match the store"
+    assert op.opener_hold_reason("Belagio Enterprises sells espresso beans.", owned) == (
+        "fact source domain does not match the store"
+    )
+    owned_facts = " ".join(personalization.fact_sheet(owned).facts).lower()
+    assert "recent product" not in owned_facts
+    healing = {
+        "brand": "Healing Noni",
+        "domain": "healingnoni.com",
+        "recipe": "replatform",
+        "email": "mharvey@healingnoni.com",
+        "store_profile": {"description": YOUTUBE_BIO},
+    }
+    assert personalization.fact_sheet(healing).facts == []
+    assert op.shopper_lines(healing) == ("", "")
+    assert op.source_matches_store("https://brand.myshopify.com/products/soap", "brand.com")
+    assert not op.source_matches_store("https://www.youtube.com/@brand", "brand.com")
+    assert not op.source_matches_store("https://other.myshopify.com/products/soap", "brand.com")
+    assert not op.source_matches_store("https://myshopify.com", "brand.com")
+
+
+def test_promo_titles_and_program_suffixes_are_not_a_company_or_a_product():
+    assert pipeline.clean_brand_name("Tattoo Lovers Care Loyalty Program TLC") == "Tattoo Lovers Care"
+    assert pipeline.clean_brand_name("Tattoo Lovers Care Rewards Program") == "Tattoo Lovers Care"
+    assert pipeline.company_label(
+        "Tattoo Lovers Care Loyalty Program TLC", domain="tattooloverscare.com",
+    ) == "Tattoo Lovers Care"
+    assert pipeline.clean_brand_name("REV Gum") == "REV Gum"
+    assert op.is_promo_title(PROMO_TITLE)
+    assert op.is_promo_title("Holiday Bundle Deal")
+    assert op.is_promo_title("Gift Card")
+    assert op.is_promo_title("20% off")
+    assert not op.is_promo_title("Studio aftercare balm")
+
+    promo = {
+        "brand": "Tattoo Lovers Care Loyalty Program TLC",
+        "domain": "tattooloverscare.com",
+        "store_profile": {
+            "title": "Tattoo Lovers Care",
+            "most_recently_published_product": {
+                "title": PROMO_TITLE,
+                "url": "https://tattooloverscare.com/products/black-friday-kit",
+            },
+        },
+    }
+    assert personalization.fact_sheet(promo).facts == []
+    line, source = op.write_opener(promo, CONTACT, llm=lambda _prompt: f"Tattoo Lovers Care {PROMO_LINE}.")
+    assert line == "" and source == "none"
+    assert "promotion" in op.opener_hold_reason(PROMO_LINE, promo)
+    assert "promotion" in op.opener_hold_reason(
+        "Tattoo Lovers Care Loyalty Program TLC sells Black Friday Sale Special - Studio Full Retail Kit.",
+        promo,
+    )
+    pushed = push.build_lead(
+        {"email": "ada@tattooloverscare.com", "first_name": "Ada"},
+        {"brand": "Tattoo Lovers Care Loyalty Program TLC", "domain": "tattooloverscare.com"},
+        "Tattoo Lovers Care sells aftercare balm.",
+    )
+    assert pushed["company_name"] == "Tattoo Lovers Care"
+
+
+def test_ungrounded_opener_is_held_even_when_the_sentence_looks_specific():
+    assert "store-verified" in op.opener_hold_reason(
+        "Bella Rosa Coffee Company sells a house roast.",
+        {"brand": "Bella Rosa Coffee Company", "domain": "bellarosacoffeecompany.com"},
+    )
+    grounded = {
+        "brand": "Bella Rosa Coffee Company",
+        "domain": "bellarosacoffeecompany.com",
+        "email": "ray@bellarosacoffeecompany.com",
+        "site_product": "house roast",
+    }
+    assert op.opener_hold_reason(
+        "Bella Rosa Coffee Company sells house roast.", grounded,
+    ) == ""
