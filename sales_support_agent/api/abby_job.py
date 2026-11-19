@@ -129,7 +129,7 @@ def _maybe_analytics_backfill() -> dict[str, Any] | None:
 
 
 def _maybe_apply_yes_cta() -> dict[str, Any]:
-    """One live rewrite of the cold asks. Later ticks leave Instantly alone."""
+    """Apply the current cold copy once. Later ticks leave Instantly alone."""
 
     try:
         from outbound_yes_cta import maybe_apply_yes_cta
@@ -282,15 +282,21 @@ def list_deck_sends(
 
 @router.api_route("/apply-yes-cta", methods=["POST"])
 def apply_yes_cta(request: Request) -> dict[str, Any]:
-    """Rewrite live cold asks and pause the calendar subsequence.
+    """Apply the current cold copy once, the same path the five-minute job uses.
 
-    Not on the cron. Call it once after this code is deployed. The response
-    lists every step that changed. The Instantly key is not returned.
+    A second call does not patch Instantly again. The Instantly key is not
+    returned. The full before/after report stays on ``abby_copy_applies``.
     """
 
     _require_scheduler_auth(request)
-    import outbound_instantly_push as instantly_push
-    from outbound_yes_cta import apply_with_instantly
+    from outbound_yes_cta import APPLY_KEY, maybe_apply_yes_cta
+    from sales_support_agent.models.database import get_engine
 
-    report = apply_with_instantly(instantly_push.api_key())
-    return {"status": "ok" if not report.get("errors") else "error", **report}
+    result = maybe_apply_yes_cta(get_engine())
+    return {
+        "status": "ok" if result.get("ok") else "error",
+        "skipped": bool(result.get("skipped")),
+        "apply_key": APPLY_KEY,
+        "apply_status": result.get("status") or "",
+        "reason": result.get("reason") or result.get("error") or "",
+    }
