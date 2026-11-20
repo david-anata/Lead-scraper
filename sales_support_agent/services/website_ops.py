@@ -7,12 +7,13 @@ import hashlib
 import json
 import os
 import re
+import time
 import urllib.request
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Callable, Mapping
 from urllib.parse import urlparse
 from zoneinfo import ZoneInfo
 from zoneinfo import ZoneInfo
@@ -56,6 +57,7 @@ from sales_support_agent.services.website_ops_screaming_frog import (
 from sales_support_agent.services.website_ops_github import (
     CONTENT_ACTION_TYPES,
     METADATA_ACTION_TYPES,
+    PipelineBudgetExceeded,
     execute_github_article_action,
     execute_github_metadata_action,
     github_metadata_is_configured,
@@ -75,7 +77,15 @@ class WebsiteOpsActionResult:
 
 
 RUN_MODES = ("daily", "weekly", "monthly")
-RUN_STATUSES = {"idle", "queued", "running", "succeeded", "failed", "failed_outcome"}
+RUN_STATUSES = {
+    "idle",
+    "queued",
+    "running",
+    "succeeded",
+    "failed",
+    "failed_outcome",
+    "work_in_progress",
+}
 _LIVE_SITEMAP_CACHE: tuple[float, tuple[str, ...]] = (0.0, ())
 MVP_MODE_ACTIVE = True
 MVP_ALLOWED_ACTION_TYPES = {
@@ -1422,12 +1432,21 @@ def _execute_feedback_action(
     record: Mapping[str, Any],
     *,
     config: website_ops.WebsiteOpsConfig,
+    budget_deadline: float | None = None,
 ) -> dict[str, Any]:
     action_type = str(record.get("action_type", "")).strip()
     if action_type in CONTENT_ACTION_TYPES and github_metadata_is_configured():
-        return execute_github_article_action(record, config=config)
+        return execute_github_article_action(
+            record,
+            config=config,
+            budget_deadline=budget_deadline,
+        )
     if action_type in METADATA_ACTION_TYPES and github_metadata_is_configured():
-        return execute_github_metadata_action(record, config=config)
+        return execute_github_metadata_action(
+            record,
+            config=config,
+            budget_deadline=budget_deadline,
+        )
     return website_ops.execute_feedback_action(record, config=config)
 
 
@@ -1580,6 +1599,7 @@ def _execute_record(
     *,
     require_auto_executable: bool = True,
     raise_on_error: bool = False,
+    budget_deadline: float | None = None,
 ) -> dict[str, Any] | None:
     if record.get("status") != "approved" or not record.get("action_type"):
         return None
@@ -1588,7 +1608,14 @@ def _execute_record(
     if require_auto_executable and not _record_is_auto_executable(record):
         return None
     try:
-        result = _execute_feedback_action(settings, record, config=config)
+        result = _execute_feedback_action(
+            settings,
+            record,
+            config=config,
+            budget_deadline=budget_deadline,
+        )
+    except PipelineBudgetExceeded:
+        raise
     except website_ops.ExecutionError as exc:
         _release_failed_article_claim(settings, record)
         website_ops.update_feedback_entry(
@@ -1670,214 +1697,466 @@ def _checkpoint_website_ops_cache(settings: Settings) -> bool:
     return True
 
 
-def run_website_ops(settings: Settings, *, mode: str = "daily") -> WebsiteOpsActionResult:
-    config = _config(settings)
-    has_baseline = bool(_report_entries(settings))
-    reconcile_missing_generated_articles(settings)
-    feedback_entries = load_feedback_records(settings)
-    visible_feedback_entries = _mvp_filter_feedback_records(feedback_entries)
-    executed_actions: list[dict[str, Any]] = []
-    if settings.website_ops_execute_approved and has_baseline:
-        resumable_candidates = [
-            {
-                **dict(record),
-                "action_type": str(
-                    record.get("action_type", "")
-                    or record.get("suggested_action_type", "")
-                ),
-            }
-            for record in visible_feedback_entries
-            if str(record.get("status", "")).strip().lower()
-            in {"new", "approved", "error"}
-            and _record_is_auto_executable(record)
-        ]
-        bounded_resumable, _ = select_bounded_actions(resumable_candidates)
-        current_records = {
-            str(record.get("feedback_id", "")): record
-            for record in visible_feedback_entries
-        }
-        approval_checkpoint_needed = False
-        for candidate in bounded_resumable:
-            feedback_id = str(candidate.get("feedback_id", "")).strip()
-            record = current_records.get(feedback_id)
-            if not record:
-                continue
-            if str(record.get("status", "")).strip().lower() in {"new", "error"}:
-                record = website_ops.update_feedback_entry(
-                    record,
-                    {
-                        "status": "approved",
-                        "action_type": str(
-                            record.get("suggested_action_type", "")
-                        ).strip(),
-                        "action_value": str(
-                            record.get("suggested_action_value", "")
-                        ).strip(),
-                        "execution_error": "",
-                        "reviewed_at": datetime.now(timezone.utc).isoformat(),
-                        "review_notes": (
-                            "Auto-approved by Website Ops recovery: durable "
-                            "high-confidence action resumed before fresh analysis."
-                        ),
-                    },
-                )
-                current_records[feedback_id] = record
-                approval_checkpoint_needed = True
-        if approval_checkpoint_needed:
-            _checkpoint_website_ops_cache(settings)
-        for candidate in bounded_resumable:
-            feedback_id = str(candidate.get("feedback_id", "")).strip()
-            record = current_records.get(feedback_id)
-            if not record:
-                continue
-            result = _execute_record(
-                settings,
-                config,
-                record,
-                raise_on_error=False,
-            )
-            if result:
-                executed_actions.append(result)
-        feedback_entries = load_feedback_records(settings)
-        visible_feedback_entries = _mvp_filter_feedback_records(feedback_entries)
+WEBSITE_OPS_PIPELINE_STAGES = (
+    "resume_approved",
+    "report",
+    "execute",
+    "finalize",
+)
 
+
+def _pipeline_cursor_path(settings: Settings, mode: str) -> Path:
+    safe_mode = mode if mode in RUN_MODES else "daily"
+    return _state_dir(settings) / f"website_ops_{safe_mode}_pipeline.json"
+
+
+def _fresh_pipeline_cursor(run_date: str) -> dict[str, Any]:
+    return {
+        "run_date": run_date,
+        "next_stage": "resume_approved",
+        "executed_actions": [],
+        "has_baseline": None,
+        "monitored_urls": [],
+        "observations": [],
+        "report": None,
+    }
+
+
+def _load_pipeline_cursor(settings: Settings, mode: str, run_date: str) -> dict[str, Any]:
+    """Load today's unfinished cursor.
+
+    A completed marker, a different business date, or a missing file starts a
+    new pass. The marker stays in storage because the Postgres mirror upserts
+    files and does not delete removed ones.
+    """
+
+    path = _pipeline_cursor_path(settings, mode)
+    if not path.exists():
+        return _fresh_pipeline_cursor(run_date)
+    try:
+        loaded = json.loads(path.read_text())
+    except json.JSONDecodeError:
+        return _fresh_pipeline_cursor(run_date)
+    if not isinstance(loaded, dict) or str(loaded.get("run_date", "")) != run_date:
+        return _fresh_pipeline_cursor(run_date)
+    if str(loaded.get("next_stage", "")) in {"", "complete"}:
+        return _fresh_pipeline_cursor(run_date)
+    loaded.setdefault("executed_actions", [])
+    loaded.setdefault("has_baseline", None)
+    loaded.setdefault("monitored_urls", [])
+    loaded.setdefault("observations", [])
+    loaded.setdefault("report", None)
+    return loaded
+
+
+def _save_pipeline_cursor(
+    settings: Settings,
+    mode: str,
+    cursor: Mapping[str, Any],
+    *,
+    checkpoint: bool = True,
+) -> None:
+    path = _pipeline_cursor_path(settings, mode)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(dict(cursor), indent=2, sort_keys=True, default=str))
+    if checkpoint:
+        _checkpoint_website_ops_cache(settings)
+
+
+def _clear_pipeline_cursor(settings: Settings, mode: str, run_date: str) -> None:
+    """Mark today's pipeline finished without deleting the mirrored file."""
+
+    finished = _fresh_pipeline_cursor(run_date)
+    finished["next_stage"] = "complete"
+    # The request middleware or embedded cache transaction snapshots this file
+    # on the way out. Skipping the checkpoint here keeps the pre-execution
+    # approval snapshot as the only mid-run mirror for a single-pass run.
+    _save_pipeline_cursor(settings, mode, finished, checkpoint=False)
+
+
+def _pipeline_budget_expired(deadline: float | None, clock: Callable[[], float]) -> bool:
+    if deadline is None:
+        return False
+    return float(clock()) >= float(deadline)
+
+
+def _paused_pipeline_result(next_stage: str) -> WebsiteOpsActionResult:
+    """Return a non-failure outcome that the next cron invocation can resume."""
+
+    stage_label = next_stage.replace("_", " ")
+    outcome = {
+        "status": "work_in_progress",
+        "summary": (
+            "Qualified work is in progress. This invocation stopped before the "
+            f"runtime limit and will resume at {stage_label}."
+        ),
+        "expected_output": "Advance qualified work toward a verified production improvement.",
+        "actual_output": "Pipeline paused before the runtime limit; no production delta yet.",
+        "production_delta_count": 0,
+        "last_stage": next_stage,
+        "failure_stage": "",
+        "next_operation": f"Resume the {stage_label} step on the next scheduled run.",
+        "resume_required": True,
+    }
+    return WebsiteOpsActionResult(
+        ok=True,
+        message=str(outcome["summary"]),
+        report={"run_outcome": outcome, "resume_required": True},
+    )
+
+
+def run_website_ops(
+    settings: Settings,
+    *,
+    mode: str = "daily",
+    deadline: float | None = None,
+    clock: Callable[[], float] | None = None,
+    business_date: date | None = None,
+) -> WebsiteOpsActionResult:
+    """Run Website Ops, optionally yielding before ``deadline``.
+
+    A deadline makes the daily pipeline resumable. Each invocation finishes the
+    current stage, or stops before the next expensive step, and stores a cursor.
+    The following scheduled run continues at that stage instead of repeating the
+    whole pipeline. Calls without a deadline still run every stage once.
+    """
+
+    clock = clock or time.monotonic
+    resumable = deadline is not None
+    run_day = business_date or datetime.now(ZoneInfo("America/Denver")).date()
+    run_date = run_day.isoformat()
+    cursor = (
+        _load_pipeline_cursor(settings, mode, run_date)
+        if resumable
+        else {
+            "run_date": run_date,
+            "next_stage": "resume_approved",
+            "executed_actions": [],
+            "has_baseline": None,
+            "monitored_urls": [],
+            "observations": [],
+            "report": None,
+        }
+    )
+    next_stage = str(cursor.get("next_stage") or "resume_approved")
+    if next_stage not in WEBSITE_OPS_PIPELINE_STAGES:
+        next_stage = "resume_approved"
+    if next_stage in {"execute", "finalize"} and not isinstance(cursor.get("report"), Mapping):
+        next_stage = "report"
+
+    config = _config(settings)
+    has_baseline = cursor.get("has_baseline")
+    if not isinstance(has_baseline, bool):
+        has_baseline = bool(_report_entries(settings))
+    executed_actions = [
+        dict(item)
+        for item in (cursor.get("executed_actions") or [])
+        if isinstance(item, Mapping)
+    ]
+    monitored_urls = tuple(
+        str(item) for item in (cursor.get("monitored_urls") or []) if str(item or "").strip()
+    )
+    observations = [
+        dict(item)
+        for item in (cursor.get("observations") or [])
+        if isinstance(item, Mapping)
+    ]
+    enriched_report = (
+        dict(cursor.get("report") or {})
+        if isinstance(cursor.get("report"), Mapping)
+        else {}
+    )
     report_title = {
         "daily": "Anata Website Ops Daily Report",
         "weekly": "Anata Website Ops Weekly Report",
         "monthly": "Anata Website Ops Monthly Report",
     }[mode]
     output_dir = settings.website_ops_root / "reports" / mode
-    monitored_urls = discover_website_ops_urls(settings)
-    pipeline = website_ops.run_daily_report_pipeline(
-        list(monitored_urls),
-        config=config,
-        output_dir=output_dir,
-        feedback_entries=visible_feedback_entries,
-        title=report_title,
-        report_type=f"website_ops_{mode}",
-        scope=f"agent-admin {mode} sweep",
-        notes=[
-            f"Run mode: {mode}.",
-            f"Monitored URLs: {len(monitored_urls)}.",
-            "Scope source: production sitemap with marketing-site host restrictions.",
-            f"Feedback loaded: {len(feedback_entries)}.",
-            f"Changes applied: {len(executed_actions)}.",
-        ],
-        report_date=datetime.now(ZoneInfo("America/Denver")).date().isoformat(),
-        executed_actions=executed_actions,
-    )
-    enriched_report = dict(pipeline["report"])
-    # Persist a truthful sitemap-backed inventory before slower analytics,
-    # article generation, or external publishing can fail. Later enrichment
-    # replaces this checkpoint with the fully joined intent projection.
-    checkpoint_indexing_inventory = load_indexing_inventory(settings.website_ops_root)
-    checkpoint_crawl_inventory = load_crawl_inventory(settings.website_ops_root)
-    checkpoint_query_intelligence = dict(
-        enriched_report.get("query_intelligence") or {}
-    )
-    enriched_report["production_inventory"] = build_production_inventory(
-        sitemap_urls=monitored_urls,
-        crawl_inventory=checkpoint_crawl_inventory,
-        indexing_inventory=checkpoint_indexing_inventory,
-        intent_coverage=dict(
-            checkpoint_query_intelligence.get("intent_coverage") or {}
-        ),
-    )
-    website_ops.write_daily_report_artifacts(
-        enriched_report,
-        output_dir=output_dir,
-        config=config,
-    )
-    enriched_report.update(
-        build_autonomy_overlay(
-            settings=settings,
-            report=enriched_report,
-            observations=list(pipeline.get("observations") or []),
-            feedback_entries=visible_feedback_entries,
-            run_mode=mode,
+
+    def persist_cursor(**updates: Any) -> None:
+        if not resumable:
+            return
+        cursor.update(updates)
+        _save_pipeline_cursor(settings, mode, cursor)
+
+    def pause(stage: str) -> WebsiteOpsActionResult:
+        persist_cursor(
+            next_stage=stage,
+            executed_actions=executed_actions,
+            has_baseline=has_baseline,
+            monitored_urls=list(monitored_urls),
+            observations=observations,
+            report=enriched_report or None,
         )
-    )
-    enriched_report = _mvp_filter_report_payload(enriched_report)
-    enriched_report["automation_mode"] = (
-        "validated_autopush" if has_baseline else "baseline_report_only"
-    )
-    enriched_report["action_queue"] = _sync_action_queue_feedback(
-        settings,
-        list(enriched_report.get("action_queue") or []),
-        visible_feedback_entries,
-        report_slug=_slugify_text(report_title),
-    )
-    bounded_actions, deferred_actions = select_bounded_actions(
-        list(enriched_report.get("action_queue") or [])
-    )
-    enriched_report["action_queue"] = bounded_actions + deferred_actions
-    bounded_feedback_ids = {
-        str(item.get("feedback_id", "")).strip()
-        for item in bounded_actions
-        if str(item.get("feedback_id", "")).strip()
-    }
-    if settings.website_ops_execute_approved and has_baseline:
-        current_records = {str(item.get("feedback_id", "")): item for item in _mvp_filter_feedback_records(load_feedback_records(settings))}
-        approval_checkpoint_needed = False
-        # Persist approval for the entire bounded batch before the first
-        # external write. A deploy can restart Agent while Vercel is
-        # validating an earlier article; later articles must remain durable
-        # approved work that the recovery pulse can resume immediately.
-        for item in enriched_report["action_queue"]:
-            feedback_id = str(item.get("feedback_id", "")).strip()
-            record = current_records.get(feedback_id)
-            if not record:
-                continue
-            if feedback_id not in bounded_feedback_ids:
-                continue
-            if record.get("status") in {"new", "error"} and _record_is_auto_executable(record):
-                record = website_ops.update_feedback_entry(
-                    record,
-                    {
-                        "status": "approved",
-                        "action_type": str(record.get("suggested_action_type", "")).strip(),
-                        "action_value": str(record.get("suggested_action_value", "")).strip(),
-                        "reviewed_at": datetime.now(timezone.utc).isoformat(),
-                        "review_notes": "Auto-approved by Website Ops: high-confidence deterministic action.",
-                    },
-                )
-                current_records[feedback_id] = record
-                approval_checkpoint_needed = True
-        if approval_checkpoint_needed:
-            _checkpoint_website_ops_cache(settings)
-        for item in enriched_report["action_queue"]:
-            feedback_id = str(item.get("feedback_id", "")).strip()
-            if feedback_id not in bounded_feedback_ids:
-                continue
-            record = current_records.get(feedback_id)
-            if not record:
-                continue
-            if record.get("status") == "approved" and _record_is_auto_executable(record):
-                result = _execute_record(
-                    settings,
-                    config,
-                    record,
-                    raise_on_error=True,
-                )
+        return _paused_pipeline_result(stage)
+
+    if next_stage == "resume_approved":
+        reconcile_missing_generated_articles(settings)
+        feedback_entries = load_feedback_records(settings)
+        visible_feedback_entries = _mvp_filter_feedback_records(feedback_entries)
+        if settings.website_ops_execute_approved and has_baseline:
+            resumable_candidates = [
+                {
+                    **dict(record),
+                    "action_type": str(
+                        record.get("action_type", "")
+                        or record.get("suggested_action_type", "")
+                    ),
+                }
+                for record in visible_feedback_entries
+                if str(record.get("status", "")).strip().lower()
+                in {"new", "approved", "error"}
+                and _record_is_auto_executable(record)
+            ]
+            bounded_resumable, _ = select_bounded_actions(resumable_candidates)
+            current_records = {
+                str(record.get("feedback_id", "")): record
+                for record in visible_feedback_entries
+            }
+            if bounded_resumable and _pipeline_budget_expired(deadline, clock):
+                return pause("resume_approved")
+            approval_checkpoint_needed = False
+            for candidate in bounded_resumable:
+                feedback_id = str(candidate.get("feedback_id", "")).strip()
+                record = current_records.get(feedback_id)
+                if not record:
+                    continue
+                if str(record.get("status", "")).strip().lower() in {"new", "error"}:
+                    record = website_ops.update_feedback_entry(
+                        record,
+                        {
+                            "status": "approved",
+                            "action_type": str(
+                                record.get("suggested_action_type", "")
+                            ).strip(),
+                            "action_value": str(
+                                record.get("suggested_action_value", "")
+                            ).strip(),
+                            "execution_error": "",
+                            "reviewed_at": datetime.now(timezone.utc).isoformat(),
+                            "review_notes": (
+                                "Auto-approved by Website Ops recovery: durable "
+                                "high-confidence action resumed before fresh analysis."
+                            ),
+                        },
+                    )
+                    current_records[feedback_id] = record
+                    approval_checkpoint_needed = True
+            if approval_checkpoint_needed:
+                _checkpoint_website_ops_cache(settings)
+            for candidate in bounded_resumable:
+                feedback_id = str(candidate.get("feedback_id", "")).strip()
+                record = current_records.get(feedback_id)
+                if not record:
+                    continue
+                if str(record.get("status", "")).strip().lower() != "approved":
+                    continue
+                if not _record_is_auto_executable(record):
+                    continue
+                if _pipeline_budget_expired(deadline, clock):
+                    return pause("resume_approved")
+                try:
+                    result = _execute_record(
+                        settings,
+                        config,
+                        record,
+                        raise_on_error=False,
+                        budget_deadline=deadline,
+                    )
+                except PipelineBudgetExceeded:
+                    return pause("resume_approved")
                 if result:
                     executed_actions.append(result)
-        if executed_actions:
-            feedback_entries = load_feedback_records(settings)
-            visible_feedback_entries = _mvp_filter_feedback_records(feedback_entries)
-            enriched_report["executed_actions"] = list(enriched_report.get("executed_actions") or []) + executed_actions
-            enriched_report["changes_applied"] = int(enriched_report.get("changes_applied", 0) or 0) + len(executed_actions)
-            enriched_report["auto_executed_today"] = len(executed_actions)
-            enriched_report["action_queue"] = _sync_action_queue_feedback(
-                settings,
-                list(enriched_report.get("action_queue") or []),
-                visible_feedback_entries,
-                report_slug=_slugify_text(report_title),
+        next_stage = "report"
+        persist_cursor(
+            next_stage=next_stage,
+            executed_actions=executed_actions,
+            has_baseline=has_baseline,
+            monitored_urls=list(monitored_urls),
+            observations=observations,
+            report=enriched_report or None,
+        )
+
+    if next_stage == "report":
+        if _pipeline_budget_expired(deadline, clock):
+            return pause("report")
+        feedback_entries = load_feedback_records(settings)
+        visible_feedback_entries = _mvp_filter_feedback_records(feedback_entries)
+        monitored_urls = discover_website_ops_urls(settings)
+        pipeline = website_ops.run_daily_report_pipeline(
+            list(monitored_urls),
+            config=config,
+            output_dir=output_dir,
+            feedback_entries=visible_feedback_entries,
+            title=report_title,
+            report_type=f"website_ops_{mode}",
+            scope=f"agent-admin {mode} sweep",
+            notes=[
+                f"Run mode: {mode}.",
+                f"Monitored URLs: {len(monitored_urls)}.",
+                "Scope source: production sitemap with marketing-site host restrictions.",
+                f"Feedback loaded: {len(feedback_entries)}.",
+                f"Changes applied: {len(executed_actions)}.",
+            ],
+            report_date=run_date,
+            executed_actions=executed_actions,
+        )
+        observations = [
+            dict(item)
+            for item in (pipeline.get("observations") or [])
+            if isinstance(item, Mapping)
+        ]
+        enriched_report = dict(pipeline["report"])
+        # Persist a truthful sitemap-backed inventory before slower analytics,
+        # article generation, or external publishing can fail. Later enrichment
+        # replaces this checkpoint with the fully joined intent projection.
+        checkpoint_indexing_inventory = load_indexing_inventory(settings.website_ops_root)
+        checkpoint_crawl_inventory = load_crawl_inventory(settings.website_ops_root)
+        checkpoint_query_intelligence = dict(
+            enriched_report.get("query_intelligence") or {}
+        )
+        enriched_report["production_inventory"] = build_production_inventory(
+            sitemap_urls=monitored_urls,
+            crawl_inventory=checkpoint_crawl_inventory,
+            indexing_inventory=checkpoint_indexing_inventory,
+            intent_coverage=dict(
+                checkpoint_query_intelligence.get("intent_coverage") or {}
+            ),
+        )
+        website_ops.write_daily_report_artifacts(
+            enriched_report,
+            output_dir=output_dir,
+            config=config,
+        )
+        enriched_report.update(
+            build_autonomy_overlay(
+                settings=settings,
+                report=enriched_report,
+                observations=observations,
+                feedback_entries=visible_feedback_entries,
+                run_mode=mode,
             )
+        )
+        enriched_report = _mvp_filter_report_payload(enriched_report)
+        enriched_report["automation_mode"] = (
+            "validated_autopush" if has_baseline else "baseline_report_only"
+        )
+        enriched_report["action_queue"] = _sync_action_queue_feedback(
+            settings,
+            list(enriched_report.get("action_queue") or []),
+            visible_feedback_entries,
+            report_slug=_slugify_text(report_title),
+        )
+        bounded_actions, deferred_actions = select_bounded_actions(
+            list(enriched_report.get("action_queue") or [])
+        )
+        enriched_report["action_queue"] = bounded_actions + deferred_actions
+        next_stage = "execute"
+        persist_cursor(
+            next_stage=next_stage,
+            executed_actions=executed_actions,
+            has_baseline=has_baseline,
+            monitored_urls=list(monitored_urls),
+            observations=observations,
+            report=enriched_report,
+        )
+
+    if next_stage == "execute":
+        bounded_actions, deferred_actions = select_bounded_actions(
+            list(enriched_report.get("action_queue") or [])
+        )
+        enriched_report["action_queue"] = bounded_actions + deferred_actions
+        bounded_feedback_ids = {
+            str(item.get("feedback_id", "")).strip()
+            for item in bounded_actions
+            if str(item.get("feedback_id", "")).strip()
+        }
+        if settings.website_ops_execute_approved and has_baseline:
+            if bounded_feedback_ids and _pipeline_budget_expired(deadline, clock):
+                return pause("execute")
+            current_records = {
+                str(item.get("feedback_id", "")): item
+                for item in _mvp_filter_feedback_records(load_feedback_records(settings))
+            }
+            approval_checkpoint_needed = False
+            # Persist approval for the entire bounded batch before the first
+            # external write. A deploy can restart Agent while Vercel is
+            # validating an earlier article; later articles must remain durable
+            # approved work that the recovery pulse can resume immediately.
+            for item in enriched_report["action_queue"]:
+                feedback_id = str(item.get("feedback_id", "")).strip()
+                record = current_records.get(feedback_id)
+                if not record:
+                    continue
+                if feedback_id not in bounded_feedback_ids:
+                    continue
+                if record.get("status") in {"new", "error"} and _record_is_auto_executable(record):
+                    record = website_ops.update_feedback_entry(
+                        record,
+                        {
+                            "status": "approved",
+                            "action_type": str(record.get("suggested_action_type", "")).strip(),
+                            "action_value": str(record.get("suggested_action_value", "")).strip(),
+                            "reviewed_at": datetime.now(timezone.utc).isoformat(),
+                            "review_notes": "Auto-approved by Website Ops: high-confidence deterministic action.",
+                        },
+                    )
+                    current_records[feedback_id] = record
+                    approval_checkpoint_needed = True
+            if approval_checkpoint_needed:
+                _checkpoint_website_ops_cache(settings)
+            for item in enriched_report["action_queue"]:
+                feedback_id = str(item.get("feedback_id", "")).strip()
+                if feedback_id not in bounded_feedback_ids:
+                    continue
+                record = current_records.get(feedback_id)
+                if not record:
+                    continue
+                if record.get("status") != "approved" or not _record_is_auto_executable(record):
+                    continue
+                if _pipeline_budget_expired(deadline, clock):
+                    return pause("execute")
+                try:
+                    result = _execute_record(
+                        settings,
+                        config,
+                        record,
+                        raise_on_error=True,
+                        budget_deadline=deadline,
+                    )
+                except PipelineBudgetExceeded:
+                    return pause("execute")
+                if result:
+                    executed_actions.append(result)
+            if executed_actions:
+                feedback_entries = load_feedback_records(settings)
+                visible_feedback_entries = _mvp_filter_feedback_records(feedback_entries)
+                enriched_report["executed_actions"] = list(enriched_report.get("executed_actions") or []) + executed_actions
+                enriched_report["changes_applied"] = int(enriched_report.get("changes_applied", 0) or 0) + len(executed_actions)
+                enriched_report["auto_executed_today"] = len(executed_actions)
+                enriched_report["action_queue"] = _sync_action_queue_feedback(
+                    settings,
+                    list(enriched_report.get("action_queue") or []),
+                    visible_feedback_entries,
+                    report_slug=_slugify_text(report_title),
+                )
+        next_stage = "finalize"
+        persist_cursor(
+            next_stage=next_stage,
+            executed_actions=executed_actions,
+            has_baseline=has_baseline,
+            monitored_urls=list(monitored_urls),
+            observations=observations,
+            report=enriched_report,
+        )
+
+    if _pipeline_budget_expired(deadline, clock):
+        return pause("finalize")
     indexing_inventory = load_indexing_inventory(settings.website_ops_root)
     crawl_inventory = load_crawl_inventory(settings.website_ops_root)
     crawl_observations = collect_crawl_resource_observations(
         crawl_inventory,
-        list(pipeline.get("observations") or []),
+        observations,
     )
     crawl_verification = build_crawl_verification(
         crawl_inventory,
@@ -1942,19 +2221,22 @@ def run_website_ops(settings: Settings, *, mode: str = "daily") -> WebsiteOpsAct
     enriched_report["operations_summary"] = _build_operations_summary(enriched_report)
     enriched_report["run_outcome"] = classify_run_outcome(enriched_report)
     enriched_report["program_status"] = enriched_report["run_outcome"]["status"]
-    artifacts = website_ops.write_daily_report_artifacts(enriched_report, output_dir=output_dir, config=config)
+    website_ops.write_daily_report_artifacts(
+        enriched_report,
+        output_dir=output_dir,
+        config=config,
+    )
     enriched_report["email_delivery"] = send_website_ops_report_email(
         settings,
         mode=mode,
         report=enriched_report,
     )
+    _clear_pipeline_cursor(settings, mode, run_date)
     return WebsiteOpsActionResult(
         ok=enriched_report["run_outcome"]["status"] != FAILED_OUTCOME,
         message=str(enriched_report["run_outcome"]["summary"]),
         report=enriched_report,
     )
-
-
 def _status_chip(value: str) -> str:
     return f'<span class="status-chip status-{html.escape(_feedback_status(value), quote=True)}">{html.escape(_feedback_status_label(value))}</span>'
 
@@ -3092,6 +3374,9 @@ def render_dashboard_page(settings: Settings, *, flash_message: str = "", user: 
     if run_status in {"queued", "running"}:
         state_label, state_tone = "Working", "neutral"
         state_copy = "Today’s plan is running. The page will refresh when the next verified result is available."
+    elif run_status == "work-in-progress":
+        state_label, state_tone = "In progress", "neutral"
+        state_copy = "Qualified work is still in progress. No production change is verified yet."
     elif run_status in {"failed", "failed-outcome"} or report_status in {"failed", "failed-outcome", "needs-attention"}:
         state_label, state_tone = "Needs attention", "bad"
         state_copy = "The latest required check did not finish successfully. Production remains unchanged unless a verified change is listed below."

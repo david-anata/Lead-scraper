@@ -20,6 +20,14 @@ from sales_support_agent.services.website_ops_editorial_quality import (
 from sales_support_agent.services import website_ops_vendor as website_ops
 
 
+class PipelineBudgetExceeded(Exception):
+    """The caller’s runtime budget ended before deployment verification finished.
+
+    The durable commit stays in place. The next scheduled run continues
+    verification instead of treating the pause as a failed publication.
+    """
+
+
 METADATA_ACTION_TYPES = {
     "meta_update",
     "meta_title_update",
@@ -613,11 +621,24 @@ def _live_metadata_matches(page_url: str, requested: Mapping[str, str], config: 
     return True
 
 
+def _verification_deadline(
+    timeout_seconds: int,
+    budget_deadline: float | None,
+) -> tuple[float, bool]:
+    """Return the poll deadline and whether the caller’s budget set it."""
+
+    window_deadline = time.monotonic() + timeout_seconds
+    if budget_deadline is None or float(budget_deadline) >= window_deadline:
+        return window_deadline, False
+    return float(budget_deadline), True
+
+
 def execute_github_metadata_action(
     record: Mapping[str, Any],
     *,
     config: Any,
     timestamp: datetime | None = None,
+    budget_deadline: float | None = None,
 ) -> dict[str, Any]:
     timestamp = timestamp or datetime.now(timezone.utc)
     requested = validate_metadata_action(record)
@@ -639,7 +660,7 @@ def execute_github_metadata_action(
 
     timeout_seconds = max(30, int(os.getenv("WEBSITE_OPS_DEPLOY_VERIFY_TIMEOUT_SECONDS", "300")))
     poll_seconds = max(5, int(os.getenv("WEBSITE_OPS_DEPLOY_VERIFY_POLL_SECONDS", "15")))
-    deadline = time.monotonic() + timeout_seconds
+    deadline, budget_limited = _verification_deadline(timeout_seconds, budget_deadline)
     while time.monotonic() < deadline:
         try:
             if _live_metadata_matches(page_url, requested, config):
@@ -668,8 +689,18 @@ def execute_github_metadata_action(
                 }
         except Exception:  # noqa: BLE001 - deployment can be briefly unavailable
             pass
-        time.sleep(poll_seconds)
+        if budget_limited:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            time.sleep(min(poll_seconds, remaining))
+        else:
+            time.sleep(poll_seconds)
 
+    if budget_limited:
+        raise PipelineBudgetExceeded(
+            "Metadata verification paused at the runtime budget; the durable commit is kept."
+        )
     try:
         current_source, current_sha = client.get_file(source_path)
         if current_source == after_source:
@@ -691,6 +722,7 @@ def execute_github_article_action(
     *,
     config: Any,
     timestamp: datetime | None = None,
+    budget_deadline: float | None = None,
 ) -> dict[str, Any]:
     timestamp = timestamp or datetime.now(timezone.utc)
     raw_value = str(
@@ -786,7 +818,7 @@ def execute_github_article_action(
         5,
         int(os.getenv("WEBSITE_OPS_DEPLOY_VERIFY_POLL_SECONDS", "15")),
     )
-    deadline = time.monotonic() + timeout_seconds
+    deadline, budget_limited = _verification_deadline(timeout_seconds, budget_deadline)
     while time.monotonic() < deadline:
         try:
             observation = website_ops.collect_page_observation(page_url, config=config)
@@ -822,7 +854,17 @@ def execute_github_article_action(
                 }
         except Exception:  # noqa: BLE001 - deployment can be briefly unavailable
             pass
-        time.sleep(poll_seconds)
+        if budget_limited:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            time.sleep(min(poll_seconds, remaining))
+        else:
+            time.sleep(poll_seconds)
+    if budget_limited:
+        raise PipelineBudgetExceeded(
+            "Article verification paused at the runtime budget; the durable publication commit was preserved."
+        )
     raise website_ops.ExecutionError(
         "Production article verification timed out; the durable publication commit was preserved for reconciliation."
     )

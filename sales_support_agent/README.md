@@ -361,6 +361,16 @@ metadata. If production does not converge inside the verification window, the
 executor attempts a rollback commit and records the action as failed. Branded
 body-copy changes remain suggestion-only.
 
+The hourly cron `GET /api/jobs/website-ops/run` runs one bounded step per
+invocation so it returns inside Vercel's 800 second limit. The default step
+budget is 540 seconds and `WEBSITE_OPS_STEP_BUDGET_SECONDS` can set it between
+30 and 600. A cursor records the next stage (`resume_approved`, `report`,
+`execute`, or `finalize`) and the following hour continues there. A daily run
+that still has qualified work and no verified production change is stored as
+`work_in_progress`, not `failed_outcome`. When `WEBSITE_OPS_DATABASE_MIRROR` is
+enabled, that cron GET mirrors the Website Ops cache to Postgres, including
+run state, so `state_updated_at` advances after the run.
+
 Deck generator:
 
 - `SHARED_BRAND_PACKAGE_PATH`
