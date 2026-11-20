@@ -1,0 +1,109 @@
+"""Choose the call log writer.
+
+`VOICE_DATABASE_URL` uses the limited Postgres role. Otherwise the service-role
+REST client is used. Neither path runs on the audio loop: the callers hand
+the work to a thread.
+"""
+
+from __future__ import annotations
+
+from typing import Any
+
+from voice.leads import HttpClient, SupabaseStore
+from voice.postgres_log import PostgresLog
+from voice.session import CallSession
+
+
+class LoggingStore:
+    """Postgres when configured, REST otherwise."""
+
+    def __init__(
+        self,
+        *,
+        database_url: str = "",
+        supabase_url: str = "",
+        service_key: str = "",
+        owner: str = "building-operator",
+        http: HttpClient | None = None,
+        connect: Any = None,
+    ) -> None:
+        self.postgres = PostgresLog(database_url, owner=owner, connect=connect) if database_url else None
+        self.rest = (
+            SupabaseStore(supabase_url, service_key, http=http, owner=owner)
+            if supabase_url and service_key
+            else None
+        )
+
+    @property
+    def configured(self) -> bool:
+        return self.postgres is not None or (self.rest is not None and self.rest.configured)
+
+    @property
+    def http(self) -> Any:
+        return self.rest.http if self.rest is not None else None
+
+    @http.setter
+    def http(self, value: Any) -> None:
+        if self.rest is not None:
+            self.rest.http = value
+
+    def save_call(
+        self,
+        session: CallSession,
+        *,
+        sms_notified: bool,
+        create_inquiry: bool | None = None,
+    ) -> dict[str, str]:
+        if self.postgres is not None:
+            return self.postgres.save_call(
+                session,
+                sms_notified=sms_notified,
+                create_inquiry=create_inquiry,
+            )
+        if self.rest is not None:
+            return self.rest.save_call(
+                session,
+                sms_notified=sms_notified,
+                create_inquiry=create_inquiry,
+            )
+        return {"call_log": "skipped", "inquiry_id": ""}
+
+    def latest_sms(self, caller_number: str) -> dict[str, Any] | None:
+        """Most recent SMS log row for this sender, if the writer can read one."""
+
+        if self.postgres is not None:
+            return self.postgres.latest_sms(caller_number)
+        if self.rest is not None:
+            return self.rest.latest_sms(caller_number)
+        return None
+
+    def save_sms(self, **kwargs: Any) -> None:
+        if self.postgres is not None:
+            self.postgres.save_sms(**kwargs)
+            return
+        if self.rest is not None:
+            self.rest.save_sms(**kwargs)
+
+    def set_sms_notified(self, call_sid: str, notified: bool) -> None:
+        if self.postgres is not None:
+            self.postgres.set_sms_notified(call_sid, notified)
+            return
+        if self.rest is not None:
+            self.rest.set_sms_notified(call_sid, notified)
+
+    def resolve_caller(self, phone: str) -> dict[str, str]:
+        if self.postgres is None:
+            return {}
+        return self.postgres.resolve_caller(phone)
+
+    def probe_known_callers(self) -> bool | None:
+        if self.postgres is None:
+            return None
+        return self.postgres.probe_known_callers()
+
+    def probe_logging(self) -> bool | None:
+        """Privilege probe when Postgres is the writer. None means REST or unconfigured."""
+
+        if self.postgres is None:
+            return None
+        return self.postgres.probe_privileges()

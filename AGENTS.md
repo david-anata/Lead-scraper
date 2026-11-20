@@ -21,6 +21,7 @@ The sales support agent powers an internal sales support automation flow that en
 
 - `main.py`: original single-file lead-scraper FastAPI app
 - `sales_support_agent/`: modular sales support agent app
+- `voice/`: self-contained phone receptionist. Do not fold it into the sales agent.
 - `requirements.txt`: shared Python dependencies
 - `README.md`: repo-level instructions
 - `sales_support_agent/README.md`: sales support agent setup and architecture
@@ -76,6 +77,16 @@ Sales support agent:
 cd /Users/davidnarayan/Documents/Playground/Lead-scraper
 uvicorn sales_support_agent.main:app --host 0.0.0.0 --port 8010 --reload
 ```
+
+Phone receptionist (separate process, separate Render service):
+
+```bash
+cd /Users/davidnarayan/Documents/Playground/Lead-scraper
+pip install -r voice/requirements.txt
+uvicorn voice.main:app --host 0.0.0.0 --port 8090 --reload
+```
+
+See `voice/README.md` for Twilio webhooks, env vars, and the call log migration.
 
 ## Required Environment Variables
 

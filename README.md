@@ -1,9 +1,10 @@
 # Lead Scraper Repo
 
-This repo now contains two FastAPI services:
+This repo now contains three FastAPI services:
 
 - the original lead-scraper service in [`main.py`](/Users/davidnarayan/Documents/Playground/Lead-scraper/main.py)
-- the new post-creation ClickUp sales support agent in [`sales_support_agent/main.py`](/Users/davidnarayan/Documents/Playground/Lead-scraper/sales_support_agent/main.py)
+- the post-creation ClickUp sales support agent in [`sales_support_agent/main.py`](/Users/davidnarayan/Documents/Playground/Lead-scraper/sales_support_agent/main.py)
+- the Anata phone receptionist in [`voice/`](voice/README.md), deployed as its own Render web service
 
 ## Lead Scraper Service
 
@@ -61,7 +62,8 @@ If any required variables are missing, the app fails clearly at startup.
 
 - `main.py`: original lead-scraper FastAPI application entrypoint and all service logic
 - `sales_support_agent/`: modular ClickUp sales support agent
-- `requirements.txt`: shared Python dependencies
+- `voice/`: Twilio and xAI phone receptionist. Setup is in `voice/README.md`.
+- `requirements.txt`: shared Python dependencies for the lead scraper and sales agent. The voice service has its own `voice/requirements.txt`.
 
 ## Run Locally
 

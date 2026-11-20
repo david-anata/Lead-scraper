@@ -426,3 +426,59 @@ services:
     schedule: "30 13 * * *"
     buildCommand: pip install -r requirements.txt pytest
     startCommand: python scripts/run_building_synthetic_journey.py
+
+  # Separate from the sales-support agent. One instance because a live call's
+  # media stream and the later dial result have to meet in this process.
+  # Do not use a free instance: it sleeps, and the phone line will miss calls.
+  - type: web
+    name: anata-voice-receptionist
+    runtime: python
+    plan: starter
+    numInstances: 1
+    autoDeployTrigger: commit
+    buildCommand: pip install -r voice/requirements.txt
+    startCommand: uvicorn voice.main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /health
+    envVars:
+      - key: PYTHON_VERSION
+        value: "3.11.11"
+      - key: XAI_VOICE_MODEL
+        value: grok-voice-latest
+      - key: XAI_VOICE
+        value: ara
+      - key: SMS_AUTOREPLY
+        value: "true"
+      - key: RECORDING_ENABLED
+        value: "false"
+      - key: VOICE_SIGNATURE_VALIDATION
+        value: "true"
+      - key: VOICE_EVENTS_CALENDAR_ID
+        value: c_0e16476c25a1a45fe0ff1b15619e1d6fee639fdbc4682c26fb19ad84b4a78862@group.calendar.google.com
+      - key: XAI_API_KEY
+        sync: false
+      - key: TWILIO_ACCOUNT_SID
+        sync: false
+      - key: TWILIO_AUTH_TOKEN
+        sync: false
+      - key: FORWARD_TO_NUMBER
+        sync: false
+      - key: NOTIFY_SMS_NUMBER
+        sync: false
+      - key: PUBLIC_BASE_URL
+        sync: false
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_SERVICE_ROLE_KEY
+        sync: false
+      - key: VOICE_DATABASE_URL
+        sync: false
+      - key: GOOGLE_CALENDAR_SERVICE_ACCOUNT_JSON
+        sync: false
+      - key: LINE_CONTEXTS_JSON
+        sync: false
+      - key: KNOWN_CALLER_NUMBERS
+        sync: false
+      - key: BUILDING_DEFAULT_LEAD_OWNER
+        sync: false
+      - key: TWILIO_MESSAGING_SERVICE_SID
+        sync: false
