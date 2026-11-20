@@ -235,7 +235,9 @@ oldest unenriched brand first, up to each row's remaining `daily_cap`
 (the signal caps are 100; `icp_baseline` is 25 and does not take leftover
 company room). The recipes are interleaved. `icp_baseline` companies
 first seen before 2026-11-20 stay in the library and are not enriched.
-Companies first seen on or after that date are the daily feed. `social_surge`
+A throttled or zero-cap baseline row does not enrich them either. Companies
+first seen on or after that date are the daily feed, and only while the
+row is active with room left in its cap. `social_surge`
 and every other non-campaign recipe use whatever room is left, newest
 first. The enrich order does not move a contact already in Instantly.
 Each recipe is still pushed from the active `outbound_campaigns` row, or

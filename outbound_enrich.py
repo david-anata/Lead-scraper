@@ -331,8 +331,12 @@ def order_leads_for_enrich(engine, leads: list[dict[str, Any]], *, since_utc) ->
     contributes its oldest not-yet-enriched brands, up to the cap minus
     companies of that recipe (and its aliases) already enriched since
     ``since_utc``. Campaigns are interleaved so one recipe cannot spend
-    the whole run. Baseline, social, and every other recipe keep the
+    the whole run. Social and every other non-baseline recipe keep the
     order they arrived in. ``leads`` from ``load_leads`` is newest first.
+    ``icp_baseline`` is enriched only while its row is active with a
+    positive cap, and only for companies first seen on or after
+    ``BASELINE_NEW_LEAD_FROM``. A throttled or zero-cap row does not
+    let those companies through the general list.
 
     Older signal brands are loaded from the lead table. They are not
     limited to the newest page, which is where ``icp_baseline`` and
@@ -352,7 +356,16 @@ def order_leads_for_enrich(engine, leads: list[dict[str, Any]], *, since_utc) ->
         return _order_leads_for_enrich(engine, general, since_utc=since_utc)
     except Exception:  # noqa: BLE001
         logger.exception("[outbound-enrich] could not put campaign recipes first")
-        return general
+        return _without_baseline(general)
+
+
+def _without_baseline(leads: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Drop icp_baseline. The general list is not a back door into AGENT SDR."""
+
+    return [
+        lead for lead in leads
+        if str(lead.get("recipe") or "").strip() != "icp_baseline"
+    ]
 
 
 def _order_leads_for_enrich(engine, general: list[dict[str, Any]], *, since_utc) -> list[dict[str, Any]]:
@@ -364,22 +377,25 @@ def _order_leads_for_enrich(engine, general: list[dict[str, Any]], *, since_utc)
         if row.get("status") == "active" and int(row.get("daily_cap") or 0) > 0
     ]
     if not rows:
-        return general
+        return _without_baseline(general)
     ordered_rows = source._ordered(rows)
     active_baseline = any(
         str(row.get("recipe_key") or "") == "icp_baseline"
-        and str(row.get("status") or "") == "active"
-        and int(row.get("daily_cap") or 0) > 0
         for row in ordered_rows
     )
 
     def _feeds_today(lead: dict[str, Any]) -> bool:
-        """Historical baseline companies stay out of the AGENT SDR feed."""
+        """Baseline enters the campaign bucket only while that feed is open.
 
-        if not active_baseline:
-            return True
+        The date cutoff applies even when the row is throttled or uncapped.
+        Those states are not in ``ordered_rows``, so this only admits a new
+        company onto an active, positive-cap baseline row.
+        """
+
         if str(lead.get("recipe") or "").strip() != "icp_baseline":
             return True
+        if not active_baseline:
+            return False
         return baseline_company_is_new(lead.get("first_seen_at"))
 
     owner: dict[str, str] = {}
@@ -390,7 +406,7 @@ def _order_leads_for_enrich(engine, general: list[dict[str, Any]], *, since_utc)
         for name in names:
             owner.setdefault(name, str(row["recipe_key"]))
     if not owner:
-        return general
+        return _without_baseline(general)
 
     from sales_support_agent.services import outbound_memory
 
@@ -447,9 +463,10 @@ def _order_leads_for_enrich(engine, general: list[dict[str, Any]], *, since_utc)
         ordered.append(lead)
     campaign_count = len(ordered)
     for lead in general:
-        # The campaign bucket already took today's baseline cap. Older
-        # baseline companies, and any new ones past that cap, stay out.
-        if active_baseline and str(lead.get("recipe") or "").strip() == "icp_baseline":
+        # Baseline never uses leftover enrich room. The campaign bucket
+        # already took today's cap of new companies, and a throttled or
+        # zero-cap row must not fall through to this list.
+        if str(lead.get("recipe") or "").strip() == "icp_baseline":
             continue
         domain = _contacts.normalize_domain(str(lead.get("domain") or ""))
         if domain and domain in seen:
