@@ -145,17 +145,17 @@ def test_stale_trial_default_does_not_receive_filler_leads(engine, monkeypatch, 
                     "most_recently_published_product": {"title": "Toothpaste Tabs"},
                 },
             } for i in range(10)],
-            push=lambda *a, **k: called.append(a[1] if len(a) > 1 else k.get("campaign_id")),
+            push=lambda *a, **k: called.append(a[1] if len(a) > 1 else k.get("campaign_id")) or ok_push(*a, **k),
         )
-    assert out["ran"] and out["pushed"] == 0 and out["campaign_missing"] is False
+    assert out["ran"] and out["pushed"] == 10 and out["campaign_missing"] is False
     assert out["campaign_id"] == ""
-    assert called == []
+    assert called == [push.LIVE_CAMPAIGN_ID]
     text = job.summary_text(out)
     assert posts == []
     assert push.LEGACY_TRIAL_CAMPAIGN_ID not in text
-    assert "Queued, no matching v2 campaign: 10" in text
+    assert "Queued, no matching v2 campaign" not in text
     assert "OUTBOUND_INSTANTLY_CAMPAIGN_ID is unset" not in caplog.text
-    assert len(oe.unpushed(engine)) == 10
+    assert oe.unpushed(engine) == []
 
 
 def test_max_contacts_comes_from_the_env(engine, monkeypatch):
@@ -597,6 +597,41 @@ def test_cut_campaign_stays_behind_baseline(engine):
         since_utc=datetime(2026, 10, 22, 6, 0, 0),
     )
     assert ordered[0]["domain"] == baseline[0]
+
+
+def test_an_active_baseline_feed_skips_companies_from_before_the_restart(engine):
+    campaigns.ensure_tables(engine)
+    with engine.begin() as conn:
+        conn.execute(text(
+            "INSERT INTO outbound_campaigns "
+            "(campaign_id, name, recipe_key, recipe_aliases, storeleads_filters, "
+            "status, daily_cap, template_ref) VALUES ("
+            ":campaign_id, :name, 'icp_baseline', '', :filters, 'active', 25, 'icp_baseline')"
+        ), {
+            "campaign_id": push.LIVE_CAMPAIGN_ID,
+            "name": "icp_baseline|standard|us_shopify_1m_20m",
+            "filters": '{"f:p":"shopify"}',
+        })
+    old = _store_recipe(engine, "icp_baseline", 2, "2026-11-05")
+    memory.record_leads(engine, [{
+        "domain": "newbase.com", "brand": "New", "recipe": "icp_baseline",
+        "categories": "Apparel", "site_product": "toothpaste tabs",
+        "store_profile": {
+            "description": "Toothpaste tabs",
+            "most_recently_published_product": {"title": "Toothpaste Tabs"},
+        },
+    }])
+    _stamp(engine, "newbase.com", "2026-11-20 09:00:00")
+    ordered = oe.order_leads_for_enrich(
+        engine, memory.load_leads(engine, limit=1000),
+        since_utc=datetime(2026, 11, 20, 6, 0, 0),
+    )
+    domains = [lead["domain"] for lead in ordered]
+    assert domains[0] == "newbase.com"
+    assert old[0] not in domains and old[1] not in domains
+    assert oe.baseline_company_is_new("2026-11-20 00:00:00") is True
+    assert oe.baseline_company_is_new("2026-11-19 23:59:59") is False
+    assert oe.BASELINE_NEW_LEAD_FROM == "2026-11-20"
 
 
 def test_off_unless_explicitly_on(engine, monkeypatch):

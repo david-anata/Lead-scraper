@@ -340,6 +340,44 @@ def test_sourcing_pays_each_seed_cap_when_the_room_can_hold_them(engine):
     assert out["recorded"] == 300
 
 
+def test_baseline_stays_at_25_when_leftover_room_remains(engine):
+    """AGENT SDR takes its cap. Leftover room stays with the signal campaigns."""
+
+    campaigns.ensure_tables(engine)
+    with engine.begin() as conn:
+        conn.execute(text(
+            "INSERT INTO outbound_campaigns "
+            "(campaign_id, name, recipe_key, recipe_aliases, storeleads_filters, "
+            "status, daily_cap, template_ref) VALUES ("
+            ":campaign_id, :name, 'icp_baseline', '', :filters, 'active', 25, 'icp_baseline')"
+        ), {
+            "campaign_id": push.LIVE_CAMPAIGN_ID,
+            "name": "icp_baseline|standard|us_shopify_1m_20m",
+            "filters": (
+                '{"f:p":"shopify","f:ds":"Active","f:cc":"US","f:it":"email",'
+                '"f:ermin":8333333,"f:ermax":166666666}'
+            ),
+        })
+    seen = []
+
+    def fetch(api_key, **kwargs):
+        seen.append(kwargs["extra_params"])
+        return SimpleNamespace(domains=_domains_for(kwargs["extra_params"], 80), next_cursor=None, error="")
+
+    out = source.source_active_campaigns(
+        engine, api_key="storeleads-key", now=NOW, fetch=fetch, company_room=800,
+    )
+    recorded = {item["recipe_key"]: item["recorded"] for item in out["campaigns"]}
+    assert recorded["icp_baseline"] == 25
+    baseline_calls = [call for call in seen if call.get("f:ermin") == 8_333_333]
+    assert baseline_calls
+    assert baseline_calls[0]["f:ermax"] == 166_666_666
+    assert baseline_calls[0]["f:p"] == "shopify"
+    assert baseline_calls[0]["f:ds"] == "Active"
+    assert baseline_calls[0]["f:it"] == "email"
+    assert baseline_calls[0]["f:cc"] == "US"
+
+
 def test_room_above_the_daily_caps_is_offered_to_recipes_that_can_fill_it(engine):
     """Four caps of 100 are 400. A 600 company ceiling still has 200 left."""
 
@@ -852,6 +890,21 @@ def test_revenue_band_experiments_stay_off_and_do_not_create_a_campaign(engine, 
     assert target == "" and status == "queued" and route == ""
     parent, parent_status, parent_route = push.resolve_recipe_campaign("amz_off", ["route:amz_off"])
     assert parent_status == "routed" and parent_route == "amz_off" and parent
+
+
+def test_agent_sdr_restart_migration_is_data_only():
+    sql = (
+        Path(__file__).parents[1] / "sales_support_agent/migrations/20261120_icp_baseline_agent_sdr.sql"
+    ).read_text(encoding="utf-8")
+    lowered = sql.lower()
+    assert "4f118329-c07e-4279-9c08-12059f2a49f4" in sql
+    assert "71add6d5-0096-52df-a6e2-66135fbe22e4" in sql
+    assert "icp_baseline|hold|no_trial_offer_ingest" in sql
+    assert "include_in_daily = 1" in lowered
+    assert "8333333" in sql and "166666666" in sql
+    assert "daily_cap" in lowered and "25" in sql
+    for forbidden in ("create table", "alter table", "drop table", "unpause"):
+        assert forbidden not in lowered
 
 
 def test_migration_seeds_the_five_campaigns_and_locks_down_the_role():

@@ -31,6 +31,11 @@ logger = logging.getLogger(__name__)
 
 _DOMAINS = "outbound_enriched"
 _PEOPLE = "outbound_enriched_contacts"
+
+# David approved the AGENT SDR feed on 2026-11-20. Baseline companies already
+# in the library stay there. Only a company first seen on or after this date
+# is enriched for icp_baseline, and only while that campaign row is active.
+BASELINE_NEW_LEAD_FROM = "2026-11-20"
 # A paid search that stopped before a verified email. The credits count toward
 # today's cap, and the domain stays eligible for a later run to finish.
 _CREDIT_HOLD = "credit_hold"
@@ -285,6 +290,13 @@ def companies_enriched_by_recipe(engine, since_utc, recipes: Iterable[str]) -> d
     return counts
 
 
+def baseline_company_is_new(first_seen_at: Any) -> bool:
+    """True when an icp_baseline company was first stored on or after the restart."""
+
+    seen = str(first_seen_at or "")[:10]
+    return bool(seen) and seen >= BASELINE_NEW_LEAD_FROM
+
+
 def _recipe_names(row: dict[str, Any]) -> list[str]:
     names = [str(row.get("recipe_key") or "").strip()]
     names.extend(
@@ -354,6 +366,22 @@ def _order_leads_for_enrich(engine, general: list[dict[str, Any]], *, since_utc)
     if not rows:
         return general
     ordered_rows = source._ordered(rows)
+    active_baseline = any(
+        str(row.get("recipe_key") or "") == "icp_baseline"
+        and str(row.get("status") or "") == "active"
+        and int(row.get("daily_cap") or 0) > 0
+        for row in ordered_rows
+    )
+
+    def _feeds_today(lead: dict[str, Any]) -> bool:
+        """Historical baseline companies stay out of the AGENT SDR feed."""
+
+        if not active_baseline:
+            return True
+        if str(lead.get("recipe") or "").strip() != "icp_baseline":
+            return True
+        return baseline_company_is_new(lead.get("first_seen_at"))
+
     owner: dict[str, str] = {}
     names_by_campaign: dict[str, list[str]] = {}
     for row in ordered_rows:
@@ -392,7 +420,7 @@ def _order_leads_for_enrich(engine, general: list[dict[str, Any]], *, since_utc)
     )
     for lead in candidates:
         domain = _contacts.normalize_domain(str(lead.get("domain") or ""))
-        if not domain or domain in done:
+        if not domain or domain in done or not _feeds_today(lead):
             continue
         campaign_key = owner.get(str(lead.get("recipe") or "").strip())
         if campaign_key and campaign_key in buckets:
@@ -419,6 +447,10 @@ def _order_leads_for_enrich(engine, general: list[dict[str, Any]], *, since_utc)
         ordered.append(lead)
     campaign_count = len(ordered)
     for lead in general:
+        # The campaign bucket already took today's baseline cap. Older
+        # baseline companies, and any new ones past that cap, stay out.
+        if active_baseline and str(lead.get("recipe") or "").strip() == "icp_baseline":
+            continue
         domain = _contacts.normalize_domain(str(lead.get("domain") or ""))
         if domain and domain in seen:
             continue
@@ -864,9 +896,10 @@ def push_pending(engine, campaign_id: str, *, dry_run: bool = True, limit: int =
     """Add not-yet-pushed contacts to Instantly, one campaign per recipe group.
 
     A recipe on ``outbound_campaigns`` with status active or throttled goes
-    to that campaign when it is one of the v2 recipes. ``cut`` and
-    ``proposed`` v2 recipes stay unpushed. Filler recipes stay queued unless
-    stored signals prove a v2 recipe. ``campaign_id`` and
+    to that campaign when the recipe is mapped. ``icp_baseline`` goes to
+    AGENT SDR. ``cut`` and ``proposed`` recipes stay unpushed. Filler
+    recipes stay queued unless stored signals prove a v2 recipe.
+    ``campaign_id`` and
     ``OUTBOUND_INSTANTLY_CAMPAIGN_ID`` are not used, including when that
     variable still names Trial Offer Oct. ``redo_partner`` is left unpushed.
     Suppressed emails and domains, departed contacts, and role inboxes are left

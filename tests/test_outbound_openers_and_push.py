@@ -320,7 +320,7 @@ def test_configured_campaign_id_does_not_fall_back(monkeypatch):
     assert push.configured_campaign_id() == "campaign-1"
 
 
-def test_recipe_campaign_map_is_fixed_and_does_not_use_the_retired_campaign():
+def test_recipe_campaign_map_sends_baseline_to_agent_sdr_only():
     assert push.RECIPE_CAMPAIGN_MAP == {
         "amz_on": "8e0df427-1f18-43ac-b0c6-e8ea787123d7",
         "amz_off": "138a162d-6654-4916-9959-20c11e31214b",
@@ -328,8 +328,11 @@ def test_recipe_campaign_map_is_fixed_and_does_not_use_the_retired_campaign():
         "replatform": "d1c197e3-bf1f-4f41-bcb9-e30e73975a2c",
         "replatformed": "d1c197e3-bf1f-4f41-bcb9-e30e73975a2c",
         "abby_reengage": "907d32fd-d6db-4ce6-8edc-485b78cce120",
+        "icp_baseline": "4f118329-c07e-4279-9c08-12059f2a49f4",
     }
-    assert push.LIVE_CAMPAIGN_ID not in push.RECIPE_CAMPAIGN_MAP.values()
+    assert push.RECIPE_CAMPAIGN_MAP["icp_baseline"] == push.LIVE_CAMPAIGN_ID
+    assert list(push.RECIPE_CAMPAIGN_MAP.values()).count(push.LIVE_CAMPAIGN_ID) == 1
+    assert "icp_baseline" not in push.FILLER_RECIPES
     assert "redo_partner" in push.PUSH_EXCLUDED_RECIPES
 
 
@@ -345,8 +348,8 @@ def test_campaign_for_recipe_ignores_the_default_and_the_env(monkeypatch):
     assert push.campaign_for_recipe("plan_upgrade", "caller") == push.RECIPE_CAMPAIGN_MAP["plan_upgrade"]
     assert push.campaign_for_recipe("social_surge", "caller") == ""
     assert push.campaign_for_recipe("  amz_off  ") == push.RECIPE_CAMPAIGN_MAP["amz_off"]
-    assert push.campaign_for_recipe("icp_baseline") == ""
-    assert push.campaign_for_recipe("icp_baseline", push.LEGACY_TRIAL_CAMPAIGN_ID) == ""
+    assert push.campaign_for_recipe("icp_baseline") == push.LIVE_CAMPAIGN_ID
+    assert push.campaign_for_recipe("icp_baseline", push.LEGACY_TRIAL_CAMPAIGN_ID) == push.LIVE_CAMPAIGN_ID
     assert push.campaign_for_recipe("abby_reengage", "") == push.RECIPE_CAMPAIGN_MAP["abby_reengage"]
     assert push.LEGACY_TRIAL_CAMPAIGN_ID not in push.RECIPE_CAMPAIGN_MAP.values()
 
@@ -402,10 +405,11 @@ def test_dry_run_keeps_held_fillers_off_trial_offer_unless_a_signal_matches():
     assert push.LEGACY_TRIAL_CAMPAIGN_ID not in plan["routed"]
     assert not set(plan["routed"]).intersection(push.HOLD_INGEST_CAMPAIGN_IDS)
     assert plan["routed"][push.RECIPE_CAMPAIGN_MAP["amz_on"]] == 1
-    assert plan["routed"][push.RECIPE_CAMPAIGN_MAP["plan_upgrade"]] == 2
-    assert plan["blocked"] == 3
+    assert plan["routed"][push.RECIPE_CAMPAIGN_MAP["plan_upgrade"]] == 1
+    assert plan["blocked"] == 4
     assert plan["queued"] == 1
-    assert dry["routed_contacts"] == 3
+    assert dry["routed_contacts"] == 2
+    assert push.LIVE_CAMPAIGN_ID not in plan["routed"]
     # A hold row flipped back to active still must not receive the filler recipe.
     pointed = dict(push.RECIPE_CAMPAIGN_MAP)
     pointed["icp_baseline"] = "71add6d5-0096-52df-a6e2-66135fbe22e4"
@@ -417,6 +421,33 @@ def test_dry_run_keeps_held_fillers_off_trial_offer_unless_a_signal_matches():
     assert held_open["legacy_or_hold_targets"] == 0
     assert held_open["queued"] == 1
     assert held_open["routed"] == {}
+
+
+def test_mapped_baseline_routes_without_a_signal_token():
+    """A baseline lead goes to AGENT SDR. A signal token does not move it."""
+
+    bare = push.resolve_recipe_campaign("icp_baseline", [])
+    assert bare == (push.LIVE_CAMPAIGN_ID, "routed", "icp_baseline")
+    with_signal = push.resolve_recipe_campaign(
+        "icp_baseline", [push.ROUTE_PLAN_UPGRADE, push.ROUTE_AMZ_ON],
+    )
+    assert with_signal == (push.LIVE_CAMPAIGN_ID, "routed", "icp_baseline")
+    plan = push.dry_run_route_plan(
+        [
+            {"recipe": "icp_baseline", "signals": []},
+            {"recipe": "icp_baseline", "signals": [push.ROUTE_PLAN_UPGRADE]},
+            {"recipe": "social_surge", "signals": []},
+        ],
+        campaign_map=dict(push.RECIPE_CAMPAIGN_MAP),
+    )
+    assert plan["legacy_or_hold_targets"] == 0
+    assert plan["routed"] == {push.LIVE_CAMPAIGN_ID: 2}
+    assert plan["queued"] == 1
+    assert plan["blocked"] == 0
+    blocked = push.resolve_recipe_campaign(
+        "icp_baseline", [], campaign_map=dict(push.RECIPE_CAMPAIGN_MAP), blocked={"icp_baseline"},
+    )
+    assert blocked == ("", "blocked", "")
 
 
 class _R:

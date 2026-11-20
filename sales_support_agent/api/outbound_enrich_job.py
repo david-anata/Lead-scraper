@@ -11,11 +11,14 @@ first and within that campaign's remaining ``daily_cap``, interleaved so
 one recipe cannot spend the run. Baseline and every other recipe follow,
 newest first. It finds up to two verified decision-makers per brand
 (Prospeo), writes an opening line, and adds them to Instantly. A recipe
-listed in ``RECIPE_CAMPAIGN_MAP`` goes to that campaign. The enrich order
-does not change that routing and does not move a contact already in Instantly.
-Filler recipes are queued unless stored signals prove a v2 recipe.
-``OUTBOUND_INSTANTLY_CAMPAIGN_ID`` is not a destination, even when it still
-names Trial Offer Oct. There is no fallback to the retired campaign.
+listed in ``RECIPE_CAMPAIGN_MAP`` goes to that campaign. ``icp_baseline``
+goes to AGENT SDR // MARCH '26. The enrich order does not change that
+routing and does not move a contact already in Instantly. Adding a lead
+uses ``skip_if_in_workspace``, so a contact already in another campaign
+stays there. Filler recipes other than ``icp_baseline`` are queued unless
+stored signals prove a v2 recipe. ``OUTBOUND_INSTANTLY_CAMPAIGN_ID`` is
+not a destination, even when it still names Trial Offer Oct. AGENT SDR
+is not a fallback for an unmapped recipe, and this job does not unpause it.
 ``redo_partner`` contacts are stored and not pushed. The run summary,
 including bounce counts, is written to the log. It is not posted to Slack.
 
