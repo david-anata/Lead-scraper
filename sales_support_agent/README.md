@@ -304,8 +304,11 @@ reply on the thread.
 
 Cold steps ask for a small yes instead of a call. The four signal campaigns
 take their steps from `outbound_signal_copy.py`: five emails in one thread,
-sent on days 0, 3, 7, 11, and 16. Each of those steps, and each live
-`abby_reengage` step, ends with a plain opt-out line and the postal address.
+sent on days 0, 3, 7, 11, and 16. Step 1 has a third variant with no
+personalization line. On `amz_off v2` and `plan_upgrade`, step 1 variant 2
+stays disabled (`v_disabled`) so a later apply does not turn it back on.
+Each of those steps, and each live `abby_reengage` step, ends with a plain
+opt-out line and the postal address.
 Trial Offer is not rewritten. The five-minute Abby job
 (`/api/jobs/abby/run`, `*/5 * * * *`) applies that copy once and pauses
 subsequence `0c2f113f-ebed-4890-92df-c241d925dcdf`. The before/after report
