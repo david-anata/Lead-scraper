@@ -7,6 +7,7 @@ import os
 import secrets
 import logging
 import hashlib
+import time
 from datetime import date, datetime, timedelta
 from threading import Event
 from typing import Any
@@ -38,6 +39,9 @@ from sales_support_agent.services.job_lease import (
     claim_scheduled_job,
     finish_scheduled_job,
 )
+from sales_support_agent.services.website_ops_outcomes import (
+    persisted_run_disposition,
+)
 from sales_support_agent.services.website_ops_storage import (
     database_mirror_enabled,
     website_ops_cache_transaction,
@@ -48,7 +52,24 @@ router = APIRouter(prefix="/api/jobs/website-ops", tags=["website-ops-jobs"])
 logger = logging.getLogger(__name__)
 WEBSITE_OPS_PULSE_HOURS = (8, 9, 10, 11, 12, 13, 14, 15)
 WEBSITE_OPS_RUNNING_STALE_AFTER = timedelta(minutes=45)
+# Stay well under Vercel's 800s maxDuration, including snapshot time after return.
+WEBSITE_OPS_STEP_BUDGET_SECONDS = 540
+WEBSITE_OPS_STEP_BUDGET_MAX_SECONDS = 600
 _RELEASE_LOG_HOSTS = {"anatainc.com", "anatabuilding.com"}
+
+
+def _website_ops_step_budget_seconds() -> int:
+    """Return the per-invocation budget, capped so the cron returns before 800s."""
+
+    raw = os.getenv(
+        "WEBSITE_OPS_STEP_BUDGET_SECONDS",
+        str(WEBSITE_OPS_STEP_BUDGET_SECONDS),
+    )
+    try:
+        budget = int(raw)
+    except (TypeError, ValueError):
+        budget = WEBSITE_OPS_STEP_BUDGET_SECONDS
+    return max(30, min(budget, WEBSITE_OPS_STEP_BUDGET_MAX_SECONDS))
 
 
 def _pulse_slot(local_now: datetime) -> str:
@@ -64,7 +85,7 @@ def _daily_run_is_fresh(state: dict[str, Any], local_now: datetime) -> bool:
     if str(daily.get("run_date", "")) != local_now.date().isoformat():
         return False
     status = str(daily.get("status", ""))
-    if status == "succeeded":
+    if status in {"succeeded", "work_in_progress"}:
         return True
     if status != "running":
         return False
@@ -333,6 +354,10 @@ def _run_due_modes(
     run_business_date = business_date or datetime.now(
         ZoneInfo("America/Denver")
     ).date()
+    # One budget for every mode in this invocation. A later mode that does not
+    # fit yields immediately and resumes on the next cron instead of crossing
+    # Vercel's 800s maxDuration.
+    deadline = time.monotonic() + _website_ops_step_budget_seconds()
     for mode in modes:
         current_state = get_website_ops_run_state(settings, mode)
         repeated_daily_pulse = (
@@ -361,57 +386,16 @@ def _run_due_modes(
                 "last_pulse_slot": pulse_slot if mode == "daily" else "",
             },
         )
-        max_attempts = max(
-            1,
-            min(int(os.getenv("WEBSITE_OPS_RUN_MAX_ATTEMPTS", "3") or "3"), 5),
-        )
-        result = None
-        final_error: Exception | None = None
-        last_attempt = 0
-        for attempt in range(1, max_attempts + 1):
-            last_attempt = attempt
-            write_website_ops_run_state(
+        try:
+            result = run_website_ops(
                 settings,
-                mode,
-                {
-                    "attempt_count": str(attempt),
-                    "recovery_status": "retrying" if attempt > 1 else "primary",
-                },
+                mode=mode,
+                deadline=deadline,
+                business_date=run_business_date,
             )
-            try:
-                result = run_website_ops(settings, mode=mode)
-                final_error = None
-                attempt_outcome = dict(
-                    (getattr(result, "report", None) or {}).get("run_outcome") or {}
-                )
-                attempt_status = str(attempt_outcome.get("status", "") or "").strip()
-                attempt_delta = int(
-                    attempt_outcome.get("production_delta_count", 0) or 0
-                )
-                retryable_zero_delta = (
-                    mode == "daily"
-                    and attempt_status in {"work_in_progress", "failed_outcome"}
-                    and attempt_delta == 0
-                    and attempt < max_attempts
-                )
-                if retryable_zero_delta:
-                    logger.warning(
-                        "Website Ops daily attempt %s/%s produced no verified delta; retrying.",
-                        attempt,
-                        max_attempts,
-                    )
-                    continue
-                break
-            except Exception as exc:  # noqa: BLE001
-                final_error = exc
-                logger.exception(
-                    "Website Ops %s attempt %s/%s failed.",
-                    mode,
-                    attempt,
-                    max_attempts,
-                )
-        if final_error is not None or result is None:
-            message = str(final_error or "Website Ops run did not return a result.")
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("Website Ops %s attempt failed.", mode)
+            message = str(exc or "Website Ops run did not return a result.")
             write_website_ops_run_state(
                 settings,
                 mode,
@@ -419,6 +403,7 @@ def _run_due_modes(
                     "status": "failed",
                     "last_completed_at": datetime.now(ZoneInfo("UTC")).isoformat(),
                     "last_error": message,
+                    "attempt_count": "1",
                     "recovery_status": "exhausted",
                 },
             )
@@ -426,13 +411,18 @@ def _run_due_modes(
             results[mode] = {
                 "status": "failed",
                 "message": message,
-                "attempts": max_attempts,
+                "attempts": 1,
             }
             continue
         completed_at = datetime.now(ZoneInfo("UTC"))
         outcome = dict((getattr(result, "report", None) or {}).get("run_outcome") or {})
         outcome_status = str(outcome.get("status", "") or "").strip()
         production_delta_count = int(outcome.get("production_delta_count", 0) or 0)
+        disposition = persisted_run_disposition(
+            mode=mode,
+            outcome=outcome,
+            ok=bool(getattr(result, "ok", True)),
+        )
         outcome_updates = {
             "outcome_status": outcome_status,
             "outcome_message": str(outcome.get("summary", "") or ""),
@@ -442,21 +432,11 @@ def _run_due_modes(
             "last_stage": str(outcome.get("last_stage", "") or ""),
             "next_operation": str(outcome.get("next_operation", "") or ""),
             "failure_stage": str(outcome.get("failure_stage", "") or ""),
+            "attempt_count": "1",
+            "recovery_status": str(disposition["recovery_status"]),
         }
-        qualified_quiet_day = (
-            outcome_status == "no_qualified_opportunity"
-            and bool(outcome.get("full_candidate_review"))
-        )
-        daily_target_missed = mode == "daily" and not (
-            (outcome_status == "production_verified" and production_delta_count > 0)
-            or qualified_quiet_day
-        )
-        if (
-            not bool(getattr(result, "ok", True))
-            or outcome_status == "failed_outcome"
-            or daily_target_missed
-        ):
-            message = result.message or "Website Ops completed without the required outcome."
+        if disposition["failure"]:
+            message = str(disposition["last_error"] or result.message or "")
             write_website_ops_run_state(
                 settings,
                 mode,
@@ -465,7 +445,6 @@ def _run_due_modes(
                     "status": "failed_outcome",
                     "last_completed_at": completed_at.isoformat(),
                     "last_error": message,
-                    "recovery_status": "outcome_failed",
                 },
             )
             send_website_ops_failure_email(settings, mode=mode, error=message)
@@ -473,26 +452,29 @@ def _run_due_modes(
                 "status": "failed_outcome",
                 "message": message,
                 "outcome": outcome,
-                "attempts": last_attempt,
+                "attempts": 1,
             }
             continue
-        write_website_ops_run_state(
-            settings,
-            mode,
-            {
-                **outcome_updates,
-                "status": "succeeded",
-                "last_completed_at": completed_at.isoformat(),
-                "last_successful_date": run_business_date.isoformat(),
-                "last_error": "",
-                "recovery_status": "recovered" if last_attempt > 1 else "not_needed",
-            },
-        )
+        if disposition["status"] == "work_in_progress":
+            logger.info(
+                "Website Ops %s is in progress with no verified production delta; the next cron resumes it.",
+                mode,
+            )
+        completion = {
+            **outcome_updates,
+            "status": str(disposition["status"]),
+            "last_completed_at": completed_at.isoformat(),
+            "last_error": "",
+        }
+        if disposition["successful_day"]:
+            completion["last_successful_date"] = run_business_date.isoformat()
+        write_website_ops_run_state(settings, mode, completion)
         results[mode] = {
-            "status": "succeeded",
+            "status": str(disposition["status"]),
             "message": result.message,
             "outcome": outcome,
-            "attempts": last_attempt,
+            "attempts": 1,
+            "resume": bool(outcome.get("resume_required")),
         }
     return results
 

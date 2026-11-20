@@ -98,6 +98,9 @@ from sales_support_agent.services.fulfillment_deck.wms_client import wms_runtime
 from sales_support_agent.services.gmail_drafts import create_bulk_draft_payloads
 from sales_support_agent.services.instantly_webhooks import InstantlyWebhookService
 from sales_support_agent.services.sync import ClickUpSyncService
+from sales_support_agent.services.website_ops_outcomes import (
+    persisted_run_disposition,
+)
 from sales_support_agent.services.website_ops import (
     execute_approved_website_ops_actions,
     get_feedback_record,
@@ -1246,6 +1249,11 @@ def admin_website_ops(request: Request, run_status: str = "") -> Response:
     if run_status:
         if authoritative_status == "succeeded":
             flash_message = str(authoritative_state.get("outcome_message", "") or "Today’s plan produced a verified outcome.")
+        elif authoritative_status == "work-in-progress":
+            flash_message = str(
+                authoritative_state.get("outcome_message", "")
+                or "Today’s plan is in progress. No production change is verified yet."
+            )
         elif authoritative_status in {"failed", "failed-outcome"}:
             stage = str(authoritative_state.get("failure_stage") or authoritative_state.get("last_stage") or "the final outcome check")
             retry = str(authoritative_state.get("next_retry_at") or "the next scheduled workday run")
@@ -1488,33 +1496,54 @@ def admin_website_ops_run(request: Request, mode: str = Form(default="daily")) -
     outcome = dict((getattr(result, "report", None) or {}).get("run_outcome") or {})
     outcome_status = str(outcome.get("status", "") or "")
     production_delta_count = int(outcome.get("production_delta_count", 0) or 0)
-    succeeded = bool(getattr(result, "ok", False)) and (
-        normalized_mode != "daily"
-        or (outcome_status == "production_verified" and production_delta_count > 0)
-        or outcome_status == "no_qualified_opportunity"
+    disposition = persisted_run_disposition(
+        mode=normalized_mode,
+        outcome=outcome,
+        ok=bool(getattr(result, "ok", False)),
     )
+    if (
+        outcome_status == "no_qualified_opportunity"
+        and bool(getattr(result, "ok", False))
+        and normalized_mode == "daily"
+    ):
+        # Manual runs keep the existing quiet-day contract. A short review is
+        # still a completed day. In-progress work is handled above and stays
+        # out of this branch.
+        disposition = {
+            "status": "succeeded",
+            "failure": False,
+            "successful_day": True,
+            "recovery_status": "not_needed",
+            "last_error": "",
+        }
+    updates = {
+        "status": str(disposition["status"]),
+        "run_date": business_date,
+        "last_completed_at": finished_at.isoformat(),
+        "last_error": str(disposition["last_error"] or ""),
+        "attempt_count": "1",
+        "recovery_status": str(disposition["recovery_status"]),
+        "outcome_status": outcome_status,
+        "outcome_message": str(outcome.get("summary", "") or ""),
+        "expected_output": str(outcome.get("expected_output", "") or ""),
+        "actual_output": str(outcome.get("actual_output", "") or ""),
+        "production_delta_count": str(production_delta_count),
+        "last_stage": str(outcome.get("last_stage", "") or ""),
+        "failure_stage": str(outcome.get("failure_stage", "") or ""),
+        "next_operation": str(outcome.get("next_operation", "") or ""),
+    }
+    updates["last_successful_date"] = business_date if disposition["successful_day"] else ""
     write_website_ops_run_state(
         request.app.state.settings,
         normalized_mode,
-        {
-            "status": "succeeded" if succeeded else "failed_outcome",
-            "run_date": business_date,
-            "last_completed_at": finished_at.isoformat(),
-            "last_successful_date": business_date if succeeded else "",
-            "last_error": "" if succeeded else str(outcome.get("summary") or result.message),
-            "attempt_count": "1",
-            "recovery_status": "not_needed" if succeeded else "outcome_failed",
-            "outcome_status": outcome_status,
-            "outcome_message": str(outcome.get("summary", "") or ""),
-            "expected_output": str(outcome.get("expected_output", "") or ""),
-            "actual_output": str(outcome.get("actual_output", "") or ""),
-            "production_delta_count": str(production_delta_count),
-            "last_stage": str(outcome.get("last_stage", "") or ""),
-            "failure_stage": str(outcome.get("failure_stage", "") or ""),
-            "next_operation": str(outcome.get("next_operation", "") or ""),
-        },
+        updates,
     )
-    redirect_status = "completed" if succeeded else "failed_outcome"
+    if disposition["successful_day"]:
+        redirect_status = "completed"
+    elif disposition["status"] == "work_in_progress":
+        redirect_status = "work_in_progress"
+    else:
+        redirect_status = "failed_outcome"
     return RedirectResponse(url=f"/admin/website-ops?run_status={redirect_status}", status_code=302)
 
 

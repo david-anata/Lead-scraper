@@ -145,7 +145,7 @@ class AdminWebsiteOpsTests(unittest.TestCase):
         self.assertEqual(reopened, [])
         update.assert_not_called()
 
-    def test_daily_pulse_retries_zero_delta_until_production_is_verified(self) -> None:
+    def test_daily_pulse_keeps_in_progress_work_without_retrying_inside_one_invocation(self) -> None:
         settings = SimpleNamespace()
         active = SimpleNamespace(
             ok=True,
@@ -153,17 +153,9 @@ class AdminWebsiteOpsTests(unittest.TestCase):
             report={
                 "run_outcome": {
                     "status": "work_in_progress",
+                    "summary": "329 active qualified item(s); no production delta yet.",
                     "production_delta_count": 0,
-                }
-            },
-        )
-        verified = SimpleNamespace(
-            ok=True,
-            message="published",
-            report={
-                "run_outcome": {
-                    "status": "production_verified",
-                    "production_delta_count": 1,
+                    "actual_output": "329 active qualified item(s); no production delta yet.",
                 }
             },
         )
@@ -176,8 +168,11 @@ class AdminWebsiteOpsTests(unittest.TestCase):
                 "sales_support_agent.api.website_ops_jobs_router.write_website_ops_run_state"
             ) as write_state,
             mock.patch(
+                "sales_support_agent.api.website_ops_jobs_router.send_website_ops_failure_email"
+            ) as failure_email,
+            mock.patch(
                 "sales_support_agent.api.website_ops_jobs_router.run_website_ops",
-                side_effect=[active, verified],
+                return_value=active,
             ) as run,
         ):
             result = _run_due_modes(
@@ -188,21 +183,25 @@ class AdminWebsiteOpsTests(unittest.TestCase):
                 business_date=date(2026, 8, 1),
             )
 
-        self.assertEqual(run.call_count, 2)
-        self.assertEqual(result["daily"]["status"], "succeeded")
-        self.assertEqual(result["daily"]["attempts"], 2)
+        self.assertEqual(run.call_count, 1)
+        self.assertEqual(result["daily"]["status"], "work_in_progress")
+        self.assertEqual(result["daily"]["attempts"], 1)
+        failure_email.assert_not_called()
         persisted_updates = [call.args[2] for call in write_state.call_args_list]
         self.assertEqual(persisted_updates[0]["run_date"], "2026-08-01")
-        self.assertEqual(persisted_updates[-1]["last_successful_date"], "2026-08-01")
+        self.assertEqual(persisted_updates[-1]["status"], "work_in_progress")
+        self.assertEqual(persisted_updates[-1]["outcome_status"], "work_in_progress")
+        self.assertNotIn("last_successful_date", persisted_updates[-1])
 
-    def test_daily_pulse_fails_truthfully_after_zero_delta_retries_exhaust(self) -> None:
+    def test_daily_pulse_still_records_a_real_failed_outcome_once(self) -> None:
         settings = SimpleNamespace()
-        active = SimpleNamespace(
-            ok=True,
-            message="work remains",
+        failed = SimpleNamespace(
+            ok=False,
+            message="verification failed",
             report={
                 "run_outcome": {
-                    "status": "work_in_progress",
+                    "status": "failed_outcome",
+                    "summary": "verification failed",
                     "production_delta_count": 0,
                 }
             },
@@ -220,7 +219,7 @@ class AdminWebsiteOpsTests(unittest.TestCase):
             ) as failure_email,
             mock.patch(
                 "sales_support_agent.api.website_ops_jobs_router.run_website_ops",
-                return_value=active,
+                return_value=failed,
             ) as run,
         ):
             result = _run_due_modes(
@@ -230,9 +229,9 @@ class AdminWebsiteOpsTests(unittest.TestCase):
                 force=True,
             )
 
-        self.assertEqual(run.call_count, 3)
+        self.assertEqual(run.call_count, 1)
         self.assertEqual(result["daily"]["status"], "failed_outcome")
-        self.assertEqual(result["daily"]["attempts"], 3)
+        self.assertEqual(result["daily"]["attempts"], 1)
         failure_email.assert_called_once()
 
     def test_generated_article_identity_parser_reads_registry_contract(self) -> None:
@@ -1065,7 +1064,11 @@ example
                     )
                 self.assertEqual(response.status_code, 200)
                 self.assertEqual(response.json()["details"]["daily"]["status"], "succeeded")
-                run.assert_called_once_with(app.state.settings, mode="daily")
+                run.assert_called_once()
+                self.assertEqual(run.call_args.args[0], app.state.settings)
+                self.assertEqual(run.call_args.kwargs["mode"], "daily")
+                self.assertIsInstance(run.call_args.kwargs["deadline"], float)
+                self.assertIsInstance(run.call_args.kwargs["business_date"], date)
             finally:
                 db.engine = previous_engine
 

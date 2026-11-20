@@ -169,6 +169,24 @@ def website_ops_cache_transaction(engine: Any, root: Path):
             snapshot_website_ops_root(engine, root)
 
 
+_MUTATING_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
+_CRON_RUN_PATH = "/api/jobs/website-ops/run"
+
+
+def website_ops_request_persists_state(method: str, path: str) -> bool:
+    """Return whether this request must mirror Website Ops files to Postgres.
+
+    Vercel Cron calls ``GET /api/jobs/website-ops/run``. That invocation writes
+    run state and pipeline progress, so it has to persist even though it is a
+    GET. Read-only GETs, including health, stay out of the snapshot path.
+    """
+
+    if str(method or "").upper() in _MUTATING_METHODS:
+        return True
+    normalized = str(path or "").rstrip("/") or "/"
+    return normalized == _CRON_RUN_PATH
+
+
 class WebsiteOpsStorageMiddleware(BaseHTTPMiddleware):
     """Keep each web instance's disposable Website Ops cache synchronized."""
 
@@ -189,9 +207,10 @@ class WebsiteOpsStorageMiddleware(BaseHTTPMiddleware):
             request.app.state.settings,
         )
         engine = request.app.state.session_factory.kw["bind"]
+        persists = website_ops_request_persists_state(request.method, request.url.path)
         acquired = _CACHE_SYNC_LOCK.acquire(blocking=False)
         if not acquired:
-            if request.method in {"POST", "PUT", "PATCH", "DELETE"}:
+            if persists:
                 return JSONResponse(
                     {"detail": "Website Ops is completing a scheduled pulse. Retry shortly."},
                     status_code=409,
@@ -200,7 +219,7 @@ class WebsiteOpsStorageMiddleware(BaseHTTPMiddleware):
             return await call_next(request)
         try:
             response = await call_next(request)
-            if request.method in {"POST", "PUT", "PATCH", "DELETE"}:
+            if persists:
                 snapshot_website_ops_root(engine, Path(settings.website_ops_root))
             return response
         finally:

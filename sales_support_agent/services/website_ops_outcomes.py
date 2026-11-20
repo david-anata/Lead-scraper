@@ -107,3 +107,58 @@ def classify_run_outcome(report: Mapping[str, Any]) -> dict[str, Any]:
         "candidate_review_count": reviewed_count,
         "full_candidate_review": full_candidate_review,
     }
+
+
+def persisted_run_disposition(
+    *,
+    mode: str,
+    outcome: Mapping[str, Any],
+    ok: bool,
+) -> dict[str, Any]:
+    """Decide how a finished attempt is stored.
+
+    A daily run that is still working and has no verified production delta is
+    in progress. That is not a failed outcome. The next cron invocation resumes
+    it. A verified change or a fully reviewed quiet day is a successful day.
+    """
+
+    outcome_status = str(outcome.get("status", "") or "").strip()
+    try:
+        production_delta_count = int(outcome.get("production_delta_count", 0) or 0)
+    except (TypeError, ValueError):
+        production_delta_count = 0
+    qualified_quiet_day = (
+        outcome_status == NO_OPPORTUNITY_OUTCOME
+        and bool(outcome.get("full_candidate_review"))
+    )
+    verified = outcome_status == VERIFIED_OUTCOME and production_delta_count > 0
+    if mode == "daily" and outcome_status == ACTIVE_OUTCOME:
+        return {
+            "status": ACTIVE_OUTCOME,
+            "failure": False,
+            "successful_day": False,
+            "recovery_status": (
+                "resume_next_pulse" if outcome.get("resume_required") else "in_progress"
+            ),
+            "last_error": "",
+        }
+    daily_target_missed = mode == "daily" and not (verified or qualified_quiet_day)
+    failure = (not ok) or outcome_status == FAILED_OUTCOME or daily_target_missed
+    if failure:
+        message = str(outcome.get("summary", "") or "").strip() or (
+            "Website Ops completed without the required outcome."
+        )
+        return {
+            "status": FAILED_OUTCOME,
+            "failure": True,
+            "successful_day": False,
+            "recovery_status": "outcome_failed",
+            "last_error": message,
+        }
+    return {
+        "status": "succeeded",
+        "failure": False,
+        "successful_day": True,
+        "recovery_status": "not_needed",
+        "last_error": "",
+    }
