@@ -213,8 +213,14 @@ def rewrite_steps(steps: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], li
     return updated, changed
 
 
+def _variant_disabled(variant: dict[str, Any]) -> bool:
+    """Instantly v2 pauses one variant with ``v_disabled``. Missing means live."""
+
+    return variant.get("v_disabled") is True
+
+
 def _normalized_steps(steps: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """The fields this apply owns: type, delay, unit, subject, body."""
+    """The fields this apply owns: type, delay, unit, subject, body, and v_disabled."""
 
     normalized: list[dict[str, Any]] = []
     for step in steps or []:
@@ -227,6 +233,7 @@ def _normalized_steps(steps: list[dict[str, Any]]) -> list[dict[str, Any]]:
             variants.append({
                 "subject": str(variant.get("subject") or ""),
                 "body": str(variant.get("body") or ""),
+                "v_disabled": _variant_disabled(variant),
             })
         normalized.append({
             "type": str(step.get("type") or "email"),
@@ -246,10 +253,13 @@ def _body_changes(before_steps: list[dict[str, Any]], after_steps: list[dict[str
             if not isinstance(variant, dict):
                 continue
             before = ""
+            before_disabled = False
             if variant_index < len(previous_variants):
                 before = str(previous_variants[variant_index].get("body") or "")
+                before_disabled = _variant_disabled(previous_variants[variant_index])
             after = str(variant.get("body") or "")
-            if after != before:
+            after_disabled = _variant_disabled(variant)
+            if after != before or before_disabled != after_disabled:
                 changes.append({
                     "step": str(index + 1),
                     "variant": str(variant_index + 1),
