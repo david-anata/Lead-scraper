@@ -163,6 +163,12 @@ class FindResult:
     credits_used: int = 0
     candidates_seen: int = 0
     reason: str = ""
+    # Set by the provider client. The enrich job uses these instead of parsing
+    # reason text when it decides whether Apollo should run.
+    credits_exhausted: bool = False
+    rate_limited: bool = False
+    unverified_skipped: int = 0
+    auth_failed: bool = False
 
     @property
     def ok(self) -> bool:
@@ -451,6 +457,49 @@ def search_failure_reason(status: int, data: dict[str, Any], api_key: str) -> st
 
 Post = Callable[..., tuple[int, dict[str, Any]]]
 
+_CREDIT_CODES = frozenset({
+    "INSUFFICIENT_CREDITS",
+    "NO_CREDITS",
+    "OUT_OF_CREDITS",
+    "QUOTA_EXCEEDED",
+    "QUOTA_EXHAUSTED",
+    "PAYMENT_REQUIRED",
+})
+
+
+def provider_credit_failure(status: int, data: dict[str, Any]) -> bool:
+    """True when the provider account is out of credits or quota.
+
+    HTTP 402, an insufficient-credit code, or a quota message counts. A rate
+    limit (429) does not: that is temporary and is reported separately.
+    """
+
+    if status == 402:
+        return True
+    payload = data or {}
+    code = str(payload.get("error_code") or payload.get("code") or "")
+    code = code.upper().replace(" ", "_").replace("-", "_")
+    if code in _CREDIT_CODES:
+        return True
+    parts: list[str] = []
+    for key in ("error", "message", "error_message", "detail"):
+        value = payload.get(key)
+        if isinstance(value, str):
+            parts.append(value)
+    blob = " ".join(parts).lower()
+    needles = (
+        "insufficient credit",
+        "insufficient credits",
+        "out of credits",
+        "no credits remaining",
+        "not enough credits",
+        "credit limit",
+        "quota exceeded",
+        "quota exhausted",
+        "payment required",
+    )
+    return any(needle in blob for needle in needles)
+
 
 def _http_post(url: str, *, key: str, body: dict[str, Any], timeout: int = 25) -> tuple[int, dict[str, Any]]:
     resp = requests.post(
@@ -500,8 +549,9 @@ def _run_person_search(
     """One Prospeo person search.
 
     Returns ``(outcome, results, credits, reason)``. Outcome is ``ok``,
-    ``no_results``, ``rate``, or ``error``. A miss is not charged. A search
-    that returns people costs one credit unless Prospeo marks it free.
+    ``no_results``, ``rate``, ``credits``, or ``error``. A miss is not charged.
+    A search that returns people costs one credit unless Prospeo marks it free.
+    HTTP 402, quota, and insufficient-credit responses are ``credits``.
     """
 
     body = {"page": 1, "filters": _search_filters(domain, titles=titles)}
@@ -512,6 +562,8 @@ def _run_person_search(
         return "error", [], 0, _redact(f"search failed: {exc}", api_key)
     if status == 429:
         return "rate", [], 0, "Rate limit reached."
+    if provider_credit_failure(status, data):
+        return "credits", [], 0, "Out of contact-finder credits."
     if status != 200 or data.get("error"):
         reason = search_failure_reason(status, data, api_key)
         code = str((data or {}).get("error_code") or "").upper()
@@ -560,13 +612,22 @@ def find_contacts(
         domain, api_key=api_key, post=post, sleep=sleep, pace_seconds=pace_seconds, titles=True,
     )
     result.credits_used += credits
+    if outcome == "credits":
+        result.reason = "Out of contact-finder credits."
+        result.credits_exhausted = True
+        return result
     if outcome == "no_results" and room():
         outcome, found, credits, reason = _run_person_search(
             domain, api_key=api_key, post=post, sleep=sleep, pace_seconds=pace_seconds, titles=False,
         )
         result.credits_used += credits
+    if outcome == "credits":
+        result.reason = "Out of contact-finder credits."
+        result.credits_exhausted = True
+        return result
     if outcome == "rate":
         result.reason = "Rate limit reached."
+        result.rate_limited = True
         return result
     if outcome == "error":
         result.reason = reason
@@ -610,11 +671,13 @@ def find_contacts(
             continue
         if status == 429:
             result.reason = "Rate limit reached."
+            result.rate_limited = True
+            break
+        if provider_credit_failure(status, data):
+            result.reason = "Out of contact-finder credits."
+            result.credits_exhausted = True
             break
         if status != 200 or data.get("error"):
-            if (data.get("error_code") or "") == "INSUFFICIENT_CREDITS":
-                result.reason = "Out of contact-finder credits."
-                break
             continue  # NO_MATCH: not charged, try the next person
         p = data.get("person") or {}
         email = ((p.get("email") or {}).get("email") or "").strip().lower()

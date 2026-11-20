@@ -41,6 +41,7 @@ _CREATE = (
         status TEXT,
         contacts_found INTEGER,
         credits_used INTEGER,
+        apollo_credits INTEGER,
         reason TEXT,
         enriched_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     )""",
@@ -62,6 +63,7 @@ _CREATE = (
         pushed_at TIMESTAMP,
         email_status TEXT,
         skip_reason TEXT,
+        provider TEXT,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     )""",
 )
@@ -70,6 +72,10 @@ _PEOPLE_ALTERS = (
     f"ALTER TABLE {_PEOPLE} ADD COLUMN email_status TEXT",
     f"ALTER TABLE {_PEOPLE} ADD COLUMN skip_reason TEXT",
     f"ALTER TABLE {_PEOPLE} ADD COLUMN brand_angle TEXT",
+    f"ALTER TABLE {_PEOPLE} ADD COLUMN provider TEXT",
+)
+_DOMAINS_ALTERS = (
+    f"ALTER TABLE {_DOMAINS} ADD COLUMN apollo_credits INTEGER",
 )
 
 
@@ -83,7 +89,7 @@ def ensure_tables(engine) -> None:
 
     for table, sql in zip((_DOMAINS, _PEOPLE), _CREATE, strict=True):
         create_table_if_absent(engine, sql, table)
-    for stmt in _PEOPLE_ALTERS:
+    for stmt in (*_PEOPLE_ALTERS, *_DOMAINS_ALTERS):
         try:
             with engine.begin() as conn:
                 conn.execute(text(stmt))
@@ -116,41 +122,124 @@ def known_emails(engine) -> set[str]:
     return {str(r[0]).lower() for r in rows}
 
 
-def _record_domain(engine, domain: str, status: str, found: int, credits: int, reason: str) -> None:
+def _column_names(engine, table: str) -> set[str]:
+    """Column names for ``table``. Empty when the table cannot be read."""
+
+    try:
+        dialect = str(getattr(getattr(engine, "dialect", None), "name", "") or "")
+    except Exception:  # noqa: BLE001
+        dialect = ""
+    try:
+        with engine.connect() as conn:
+            if dialect == "sqlite":
+                rows = conn.execute(text(f"PRAGMA table_info({table})")).fetchall()
+                return {str(row[1]) for row in rows}
+            rows = conn.execute(text(
+                "SELECT column_name FROM information_schema.columns "
+                "WHERE table_schema = 'public' AND table_name = :t"
+            ), {"t": table}).fetchall()
+            return {str(row[0]) for row in rows}
+    except Exception:  # noqa: BLE001
+        logger.exception("[outbound-enrich] could not read columns for %s", table)
+        return set()
+
+
+def _apollo_credits_in_text(reason: str) -> int:
+    import re
+    return sum(int(match) for match in re.findall(r"apollo_credits=(\d+)", reason or ""))
+
+
+def _record_domain(engine, domain: str, status: str, found: int, credits: int, reason: str,
+                   apollo_credits: int = 0) -> None:
+    track_apollo = "apollo_credits" in _column_names(engine, _DOMAINS)
     with engine.begin() as conn:
-        existing = conn.execute(text(
-            f"SELECT status, COALESCE(credits_used, 0) FROM {_DOMAINS} WHERE domain = :d"
-        ), {"d": domain}).fetchone()
+        if track_apollo:
+            existing = conn.execute(text(
+                f"SELECT status, COALESCE(credits_used, 0), COALESCE(apollo_credits, 0) "
+                f"FROM {_DOMAINS} WHERE domain = :d"
+            ), {"d": domain}).fetchone()
+        else:
+            existing = conn.execute(text(
+                f"SELECT status, COALESCE(credits_used, 0), COALESCE(reason, '') "
+                f"FROM {_DOMAINS} WHERE domain = :d"
+            ), {"d": domain}).fetchone()
         stored_credits = int(credits)
+        stored_apollo = int(apollo_credits)
         if existing and str(existing[0]) == _CREDIT_HOLD:
             stored_credits += int(existing[1] or 0)
-        conn.execute(text(
-            f"INSERT INTO {_DOMAINS} (domain, status, contacts_found, credits_used, reason) "
-            "VALUES (:d, :s, :f, :c, :r) ON CONFLICT (domain) DO UPDATE SET "
-            "status = :s, contacts_found = :f, credits_used = :c, reason = :r, "
-            "enriched_at = CURRENT_TIMESTAMP"),
-            {
-                "d": domain, "s": status, "f": found, "c": stored_credits,
-                "r": reason[:500],
-            })
+            if track_apollo:
+                stored_apollo += int(existing[2] or 0)
+            else:
+                stored_apollo += _apollo_credits_in_text(str(existing[2] or ""))
+        stored_reason = (reason or "")[:500]
+        if not track_apollo and stored_apollo:
+            import re
+            stored_reason = re.sub(r"\s*apollo_credits=\d+", "", stored_reason).strip()
+            stored_reason = f"{stored_reason} apollo_credits={stored_apollo}".strip()[:500]
+        if track_apollo:
+            conn.execute(text(
+                f"INSERT INTO {_DOMAINS} "
+                "(domain, status, contacts_found, credits_used, apollo_credits, reason) "
+                "VALUES (:d, :s, :f, :c, :a, :r) ON CONFLICT (domain) DO UPDATE SET "
+                "status = :s, contacts_found = :f, credits_used = :c, apollo_credits = :a, "
+                "reason = :r, enriched_at = CURRENT_TIMESTAMP"),
+                {
+                    "d": domain, "s": status, "f": found, "c": stored_credits,
+                    "a": stored_apollo, "r": stored_reason,
+                })
+        else:
+            conn.execute(text(
+                f"INSERT INTO {_DOMAINS} (domain, status, contacts_found, credits_used, reason) "
+                "VALUES (:d, :s, :f, :c, :r) ON CONFLICT (domain) DO UPDATE SET "
+                "status = :s, contacts_found = :f, credits_used = :c, reason = :r, "
+                "enriched_at = CURRENT_TIMESTAMP"),
+                {
+                    "d": domain, "s": status, "f": found, "c": stored_credits,
+                    "r": stored_reason,
+                })
+
+
+def _contact_provider(contact: _contacts.Contact) -> str:
+    provider = str(getattr(contact, "source", "") or "prospeo").strip().lower()
+    if provider not in {"prospeo", "apollo"}:
+        return "prospeo"
+    return provider
 
 
 def _record_person(engine, c: _contacts.Contact, opener: str, source: str,
                    lead: dict[str, Any], brand_angle: str = "") -> None:
     cats = lead.get("categories") or ""
     if isinstance(cats, (list, tuple)):
-        cats = ", ".join(str(c) for c in cats)
+        cats = ", ".join(str(item) for item in cats)
+    provider = _contact_provider(c)
+    track_provider = "provider" in _column_names(engine, _PEOPLE)
+    if not track_provider and not getattr(_record_person, "_warned_missing_provider", False):
+        _record_person._warned_missing_provider = True  # type: ignore[attr-defined]
+        logger.info(
+            "[outbound-enrich] outbound_enriched_contacts.provider is missing. "
+            "Apply sales_support_agent/migrations/20261120_outbound_apollo_provider.sql "
+            "to store the provider on each contact. This run still counts providers in the summary."
+        )
+    columns = (
+        "email, domain, first_name, last_name, title, linkedin_url, "
+        "opener, opener_source, brand_angle, brand, category, recipe, tier, email_status"
+    )
+    values = ":e, :d, :f, :l, :t, :u, :o, :s, :angle, :b, :cat, :r, :tier, :status"
+    params = {
+        "e": c.email, "d": c.domain, "f": c.first_name, "l": c.last_name, "t": c.title,
+        "u": c.linkedin_url, "o": opener, "s": source, "angle": brand_angle or "",
+        "b": str(lead.get("brand") or c.domain), "cat": str(cats or lead.get("niche") or ""),
+        "r": str(lead.get("recipe") or ""), "tier": str(lead.get("tier") or ""),
+        "status": c.email_status or "",
+    }
+    if track_provider:
+        columns += ", provider"
+        values += ", :provider"
+        params["provider"] = provider
     with engine.begin() as conn:
         conn.execute(text(
-            f"INSERT INTO {_PEOPLE} (email, domain, first_name, last_name, title, linkedin_url, "
-            "opener, opener_source, brand_angle, brand, category, recipe, tier, email_status) "
-            "VALUES (:e, :d, :f, :l, :t, :u, :o, :s, :angle, :b, :cat, :r, :tier, :status) "
-            "ON CONFLICT (email) DO NOTHING"),
-            {"e": c.email, "d": c.domain, "f": c.first_name, "l": c.last_name, "t": c.title,
-             "u": c.linkedin_url, "o": opener, "s": source, "angle": brand_angle or "",
-             "b": str(lead.get("brand") or c.domain), "cat": str(cats or lead.get("niche") or ""),
-             "r": str(lead.get("recipe") or ""), "tier": str(lead.get("tier") or ""),
-             "status": c.email_status or ""})
+            f"INSERT INTO {_PEOPLE} ({columns}) VALUES ({values}) ON CONFLICT (email) DO NOTHING"),
+            params)
 
 
 def unpushed(engine, limit: int = 500, *,
@@ -226,6 +315,14 @@ class EnrichReport:
     queued: int = 0
     push_note: str = ""
     samples: list[dict[str, Any]] = field(default_factory=list)
+    contacts_prospeo: int = 0
+    contacts_apollo: int = 0
+    apollo_credits_used: int = 0
+    apollo_domains: int = 0
+    skipped_apollo_unverified: int = 0
+    skipped_apollo_cap: int = 0
+    prospeo_exhausted: bool = False
+    skip_reasons: dict[str, int] = field(default_factory=dict)
 
     @property
     def find_rate(self) -> float:
@@ -249,6 +346,14 @@ class EnrichReport:
             "stopped_reason": self.stopped_reason, "pushed": self.pushed,
             "suppressed": self.suppressed, "queued": self.queued,
             "push_note": self.push_note, "samples": self.samples[:10],
+            "contacts_prospeo": self.contacts_prospeo,
+            "contacts_apollo": self.contacts_apollo,
+            "apollo_credits_used": self.apollo_credits_used,
+            "apollo_domains": self.apollo_domains,
+            "skipped_apollo_unverified": self.skipped_apollo_unverified,
+            "skipped_apollo_cap": self.skipped_apollo_cap,
+            "prospeo_exhausted": self.prospeo_exhausted,
+            "skip_reasons": dict(self.skip_reasons),
         }
 
 
@@ -449,10 +554,32 @@ def run_enrichment(
     deadline: Optional[float] = None,
     clock: Optional[Callable[[], float]] = None,
     already_in_instantly: Optional[Callable[[str], Optional[bool]]] = None,
+    post: Optional[Callable[..., Any]] = None,
+    sleep: Optional[Callable[[float], None]] = None,
+    apollo_find: Optional[Callable[..., _contacts.FindResult]] = None,
+    apollo_api_key: Optional[str] = None,
+    apollo_credit_budget: Optional[int] = None,
 ) -> EnrichReport:
     import time as _time
+    import outbound_apollo as _apollo
     clock = clock or _time.monotonic
-    find = find or _contacts.find_contacts
+
+    def _default_find(domain: str, **kwargs: Any) -> _contacts.FindResult:
+        if post is not None:
+            kwargs.setdefault("post", post)
+        if sleep is not None:
+            kwargs.setdefault("sleep", sleep)
+        return _contacts.find_contacts(domain, **kwargs)
+
+    def _default_apollo_find(domain: str, **kwargs: Any) -> _contacts.FindResult:
+        if post is not None:
+            kwargs.setdefault("post", post)
+        if sleep is not None:
+            kwargs.setdefault("sleep", sleep)
+        return _apollo.find_contacts(domain, **kwargs)
+
+    find = find or _default_find
+    apollo_find = apollo_find or _default_apollo_find
     write = write or _openers.write_opener
     write_angle = write_angle or _openers.write_brand_angle
     push = push or _push.push_leads
@@ -474,6 +601,26 @@ def run_enrichment(
         logger.exception("[outbound-enrich] could not read state")
         report.stopped_reason = "Could not read enrichment state."
         return report
+
+    if apollo_api_key is None:
+        apollo_api_key = _apollo.load_api_key()
+    else:
+        apollo_api_key = str(apollo_api_key or "").strip()
+    if apollo_credit_budget is None:
+        spent_today = int(enriched_since(engine, _apollo.denver_midnight_utc()).get("apollo_credits") or 0)
+        apollo_credit_budget = max(0, _apollo.daily_credit_cap() - spent_today)
+    if not apollo_api_key:
+        logger.info(
+            "[outbound-enrich] Apollo fallback disabled: APOLLO_API_KEY is not set. "
+            "Prospeo behavior is unchanged."
+        )
+    else:
+        logger.info(
+            "[outbound-enrich] Apollo fallback enabled. Credit budget for this run: %s.",
+            apollo_credit_budget,
+        )
+    prospeo_exhausted = False
+    apollo_stopped = False
 
     leads_by_domain: dict[str, dict[str, Any]] = {}
     for lead in leads:
@@ -549,11 +696,19 @@ def run_enrichment(
         }
         if str(lead.get("recipe") or "").strip() == "sales_org":
             find_kwargs["rank_title"] = _contacts.sales_title_rank
-        res = find(domain, **find_kwargs)
-        report.credits_used += res.credits_used
+        if prospeo_exhausted:
+            res = _contacts.FindResult(
+                domain=domain,
+                reason="Out of contact-finder credits.",
+                credits_exhausted=True,
+            )
+        else:
+            res = find(domain, **find_kwargs)
         if res.reason == "Credit budget reached." and not res.contacts:
             # Keep the spent search on the row so the next hour's cap sees it.
             # credit_hold is not a finished domain, so a later run can complete it.
+            # This is our Prospeo cap, not an Apollo fallback.
+            report.credits_used += res.credits_used
             report.stopped_reason = res.reason
             try:
                 _record_domain(
@@ -562,10 +717,67 @@ def run_enrichment(
             except Exception:  # noqa: BLE001
                 logger.exception("[outbound-enrich] could not save credits for %s", domain)
             break
+        was_exhausted = prospeo_exhausted
+        decision = _apollo.decide_fallback(
+            res,
+            apollo_key=apollo_api_key,
+            apollo_find=apollo_find,
+            apollo_credit_budget=int(apollo_credit_budget),
+            apollo_spent=report.apollo_credits_used,
+            prospeo_exhausted=prospeo_exhausted,
+            apollo_stopped=apollo_stopped,
+            max_contacts=max_contacts,
+            rank_title=find_kwargs.get("rank_title"),
+        )
+        prospeo_exhausted = decision.prospeo_exhausted
+        apollo_stopped = decision.apollo_stopped
+        report.prospeo_exhausted = prospeo_exhausted
+        if decision.prospeo_exhausted and not was_exhausted:
+            logger.info(
+                "[outbound-enrich] Prospeo is out of credits; later domains in this run skip Prospeo."
+            )
+        if decision.fallback_reason:
+            report.skip_reasons[decision.fallback_reason] = (
+                report.skip_reasons.get(decision.fallback_reason, 0) + 1
+            )
+        if not apollo_api_key and decision.fallback_reason:
+            report.skip_reasons["apollo_disabled"] = report.skip_reasons.get("apollo_disabled", 0) + 1
+        if decision.cap_blocked:
+            report.skipped_apollo_cap += 1
+            report.skip_reasons["apollo_cap"] = report.skip_reasons.get("apollo_cap", 0) + 1
+        if decision.unverified_skipped:
+            report.skipped_apollo_unverified += decision.unverified_skipped
+            report.skip_reasons["apollo_unverified"] = (
+                report.skip_reasons.get("apollo_unverified", 0) + decision.unverified_skipped
+            )
+        if decision.apollo_called:
+            report.apollo_domains += 1
+        report.apollo_credits_used += decision.apollo_credits
+        res = decision.result
+        report.credits_used += res.credits_used
+        if decision.leave_open:
+            # Prospeo could not finish this domain and Apollo did not either.
+            # Leave it eligible. A recorded none would never be tried again.
+            if res.credits_used or decision.apollo_credits:
+                try:
+                    _record_domain(
+                        engine, domain, _CREDIT_HOLD, 0, res.credits_used,
+                        res.reason or decision.stop_reason,
+                        apollo_credits=decision.apollo_credits,
+                    )
+                except Exception:  # noqa: BLE001
+                    logger.exception("[outbound-enrich] could not save credits for %s", domain)
+            if decision.stop_run:
+                report.stopped_reason = decision.stop_reason or res.reason
+                break
+            continue
         fresh = [c for c in res.contacts if c.email not in emails_seen]
         status = "found" if fresh else ("duplicate" if res.contacts else "none")
         try:
-            _record_domain(engine, domain, status, len(fresh), res.credits_used, res.reason)
+            _record_domain(
+                engine, domain, status, len(fresh), res.credits_used, res.reason,
+                apollo_credits=decision.apollo_credits,
+            )
             for c in fresh:
                 profile: dict[str, Any] = {}
                 try:
@@ -600,10 +812,16 @@ def run_enrichment(
                     _set_opener_hold(engine, c.email, hold)
                 emails_seen.add(c.email)
                 report.contacts_found += 1
+                provider = _contact_provider(c)
+                if provider == "apollo":
+                    report.contacts_apollo += 1
+                else:
+                    report.contacts_prospeo += 1
                 if len(report.samples) < 10:
                     report.samples.append({"domain": domain, "email": c.email, "title": c.title,
                                            "opener": line, "opener_source": src,
-                                           "brand_angle": angle, "brand_angle_source": angle_src})
+                                           "brand_angle": angle, "brand_angle_source": angle_src,
+                                           "provider": provider})
             if fresh:
                 report.companies_with_contacts += 1
                 try:
@@ -618,8 +836,8 @@ def run_enrichment(
             logger.exception("[outbound-enrich] could not save %s", domain)
             report.stopped_reason = "Database write failed."
             break
-        if res.reason.startswith(("Out of contact-finder credits", "Rate limit")):
-            report.stopped_reason = res.reason
+        if decision.stop_run:
+            report.stopped_reason = decision.stop_reason or res.reason
             break
 
     if not dry_run:
@@ -1076,13 +1294,37 @@ def push_pending(engine, campaign_id: str, *, dry_run: bool = True, limit: int =
 
 
 def enriched_since(engine, since_utc) -> dict[str, int]:
-    """Companies tried and credits spent since a UTC timestamp (daily caps)."""
+    """Companies tried and credits spent since a UTC timestamp (daily caps).
+
+    ``credits`` is Prospeo. ``apollo_credits`` is the Apollo fallback. When the
+    Apollo column is not migrated yet, the total is read from ``apollo_credits=N``
+    tokens stored on the domain reason.
+    """
     ensure_tables(engine)
+    track_apollo = "apollo_credits" in _column_names(engine, _DOMAINS)
     with engine.connect() as conn:
+        if track_apollo:
+            row = conn.execute(text(
+                f"SELECT COUNT(*), COALESCE(SUM(credits_used), 0), "
+                f"COALESCE(SUM(apollo_credits), 0) FROM {_DOMAINS} WHERE enriched_at >= :t"
+            ), {"t": since_utc}).fetchone()
+            return {
+                "companies": int(row[0] or 0),
+                "credits": int(row[1] or 0),
+                "apollo_credits": int(row[2] or 0),
+            }
         row = conn.execute(text(
-            f"SELECT COUNT(*), COALESCE(SUM(credits_used), 0) FROM {_DOMAINS} WHERE enriched_at >= :t"),
-            {"t": since_utc}).fetchone()
-    return {"companies": int(row[0] or 0), "credits": int(row[1] or 0)}
+            f"SELECT COUNT(*), COALESCE(SUM(credits_used), 0) FROM {_DOMAINS} WHERE enriched_at >= :t"
+        ), {"t": since_utc}).fetchone()
+        reasons = conn.execute(text(
+            f"SELECT COALESCE(reason, '') FROM {_DOMAINS} WHERE enriched_at >= :t"
+        ), {"t": since_utc}).fetchall()
+    apollo = sum(_apollo_credits_in_text(str(item[0] or "")) for item in reasons)
+    return {
+        "companies": int(row[0] or 0),
+        "credits": int(row[1] or 0),
+        "apollo_credits": apollo,
+    }
 
 
 MAX_ENRICH_LIST_DOMAINS = 200
