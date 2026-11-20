@@ -264,6 +264,30 @@ def _match_credits(data: dict[str, Any]) -> int:
     return 0
 
 
+def _transient_http(status: int) -> bool:
+    """Server errors and timeouts are retryable. A 4xx miss is not."""
+
+    return status == 408 or status >= 500
+
+
+def _retryable_apollo(result: contacts.FindResult) -> bool:
+    """True when Apollo did not finish the lookup, so the domain stays open."""
+
+    if (
+        result.transient_failure
+        or result.rate_limited
+        or result.credits_exhausted
+        or result.auth_failed
+    ):
+        return True
+    reason = (result.reason or "").strip().lower()
+    if reason.startswith("search failed") or reason.startswith("enrich failed"):
+        return True
+    if reason.startswith("apollo returned 5") or "apollo returned 408" in reason:
+        return True
+    return reason == "apollo credit budget reached."
+
+
 def _failure_reason(status: int, data: dict[str, Any], api_key: str) -> str:
     code = (data or {}).get("error_code") or (data or {}).get("code") or status
     message = ""
@@ -329,6 +353,7 @@ def find_contacts(
         )
     except Exception as exc:  # noqa: BLE001
         result.reason = _redact(f"search failed: {exc}", api_key)
+        result.transient_failure = True
         return result
     if "credits_consumed" in data:
         try:
@@ -349,6 +374,7 @@ def find_contacts(
         return result
     if status != 200:
         result.reason = _failure_reason(status, data, api_key)
+        result.transient_failure = _transient_http(status)
         return result
 
     found = _people(data)
@@ -384,7 +410,8 @@ def find_contacts(
             )
         except Exception as exc:  # noqa: BLE001
             result.reason = _redact(f"enrich failed: {exc}", api_key)
-            continue
+            result.transient_failure = True
+            break
         if status == 429:
             result.reason = "Rate limit reached."
             result.rate_limited = True
@@ -396,6 +423,10 @@ def find_contacts(
         if contacts.provider_credit_failure(status, data):
             result.reason = "Out of Apollo credits."
             result.credits_exhausted = True
+            break
+        if _transient_http(status):
+            result.reason = _failure_reason(status, data, api_key)
+            result.transient_failure = True
             break
         if status != 200:
             continue
@@ -535,13 +566,18 @@ def decide_fallback(
         )
     except Exception as exc:  # noqa: BLE001
         logger.exception("[outbound-apollo] fallback failed for %s", prospeo.domain)
+        decision.leave_open = True
+        decision.apollo_called = True
         decision.result = contacts.FindResult(
             domain=prospeo.domain,
             credits_used=prospeo.credits_used,
             reason=_redact(f"{prospeo.reason} Apollo: {exc}", apollo_key)[:500],
+            transient_failure=True,
         )
         return decision
     if not isinstance(apollo_res, contacts.FindResult):
+        decision.leave_open = True
+        decision.apollo_called = True
         decision.result = prospeo
         return decision
     decision.apollo_called = True
@@ -559,12 +595,7 @@ def decide_fallback(
         )
         return decision
 
-    blocked = bool(
-        apollo_res.rate_limited
-        or apollo_res.credits_exhausted
-        or apollo_res.auth_failed
-        or (apollo_res.reason or "") == "Apollo credit budget reached."
-    )
+    blocked = _retryable_apollo(apollo_res)
     if blocked:
         decision.leave_open = True
         decision.cap_blocked = (apollo_res.reason or "") == "Apollo credit budget reached."
@@ -576,6 +607,7 @@ def decide_fallback(
             credits_exhausted=apollo_res.credits_exhausted,
             rate_limited=apollo_res.rate_limited,
             auth_failed=apollo_res.auth_failed,
+            transient_failure=apollo_res.transient_failure,
             unverified_skipped=apollo_res.unverified_skipped,
         )
         if decision.prospeo_exhausted and (apollo_res.credits_exhausted or apollo_res.auth_failed):

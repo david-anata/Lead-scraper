@@ -169,6 +169,7 @@ class FindResult:
     rate_limited: bool = False
     unverified_skipped: int = 0
     auth_failed: bool = False
+    transient_failure: bool = False
 
     @property
     def ok(self) -> bool:

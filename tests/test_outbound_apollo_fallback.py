@@ -450,6 +450,106 @@ def test_summary_names_both_providers():
     assert "apollo_unverified 2" in text_out
 
 
+def test_apollo_server_error_leaves_the_domain_retryable():
+    calls = []
+
+    def post(url, *, key, body, timeout=25):
+        calls.append(url)
+        if url == oc.PROSPEO_SEARCH_URL:
+            return 402, {"error": True, "error_code": "INSUFFICIENT_CREDITS"}
+        if url == apollo.APOLLO_SEARCH_URL:
+            return 500, {"error": "unavailable"}
+        raise AssertionError(url)
+
+    db = engine()
+    report = _run(db, post, domains=("a.com", "b.com"))
+    assert report.contacts_found == 0
+    assert report.apollo_domains == 2
+    assert oe.enriched_domains(db) == set()
+    again = []
+
+    def post_again(url, *, key, body, timeout=25):
+        again.append(url)
+        if url == oc.PROSPEO_SEARCH_URL:
+            return 402, {"error": True, "error_code": "INSUFFICIENT_CREDITS"}
+        if url == apollo.APOLLO_SEARCH_URL:
+            return 200, _verified_search("")
+        if url == apollo.APOLLO_MATCH_URL:
+            domain = "a.com" if again.count(apollo.APOLLO_SEARCH_URL) == 1 else "b.com"
+            return 200, _verified_match(domain)
+        raise AssertionError(url)
+
+    recovered = _run(db, post_again, domains=("a.com", "b.com"))
+    assert recovered.contacts_apollo == 2
+    assert oe.enriched_domains(db) == {"a.com", "b.com"}
+
+
+def test_apollo_transport_error_does_not_finish_the_domain():
+    def post(url, *, key, body, timeout=25):
+        if url == oc.PROSPEO_SEARCH_URL:
+            return 400, {"error": True, "error_code": "NO_RESULTS"}
+        raise TimeoutError("timed out")
+
+    db = engine()
+    report = _run(db, post, domains=("brand.com",))
+    assert report.contacts_found == 0
+    assert "brand.com" not in oe.enriched_domains(db)
+
+
+def test_apollo_finder_exception_leaves_the_domain_open():
+    db = engine()
+
+    def find(domain, *, api_key, max_contacts=2, **_kwargs):
+        return oc.FindResult(
+            domain=domain,
+            reason="Out of contact-finder credits.",
+            credits_exhausted=True,
+        )
+
+    def apollo_find(domain, **_kwargs):
+        raise RuntimeError("socket timeout")
+
+    report = oe.run_enrichment(
+        db,
+        [lead("brand.com")],
+        api_key="k" * 20,
+        find=find,
+        apollo_find=apollo_find,
+        apollo_api_key="a" * 20,
+        apollo_credit_budget=5,
+        write=lambda item, _contact=None: (f"{item['brand']} sells toothpaste tabs.", "ai"),
+        write_angle=lambda item, _contact=None: ("", "none"),
+    )
+    assert report.contacts_found == 0
+    assert "brand.com" not in oe.enriched_domains(db)
+
+
+def test_null_credit_column_keeps_the_reason_token_in_the_daily_total():
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+
+    db = engine()
+    oe.ensure_tables(db)
+    since = datetime(2020, 1, 1, tzinfo=ZoneInfo("America/Denver"))
+    with db.begin() as conn:
+        conn.execute(text(
+            "INSERT INTO outbound_enriched "
+            "(domain, status, contacts_found, credits_used, apollo_credits, reason, enriched_at) "
+            "VALUES ('held.com', 'credit_hold', 0, 1, NULL, 'held apollo_credits=4', :t), "
+            "('done.com', 'found', 1, 0, 2, 'already counted apollo_credits=9', :t), "
+            "('zero.com', 'found', 0, 0, 0, 'stale apollo_credits=7', :t)"
+        ), {"t": since})
+    assert oe.enriched_since(db, since)["apollo_credits"] == 6
+    oe._record_domain(db, "held.com", oe._CREDIT_HOLD, 0, 0, "still held", apollo_credits=1)
+    assert oe.enriched_since(db, since)["apollo_credits"] == 7
+    with db.connect() as conn:
+        stored = conn.execute(text(
+            "SELECT apollo_credits, reason FROM outbound_enriched WHERE domain = 'held.com'"
+        )).one()
+    assert stored[0] == 5
+    assert "apollo_credits=" not in (stored[1] or "")
+
+
 def test_apollo_credits_survive_when_the_column_is_not_migrated(monkeypatch):
     db = engine()
     oe.ensure_tables(db)

@@ -155,23 +155,28 @@ def _record_domain(engine, domain: str, status: str, found: int, credits: int, r
     with engine.begin() as conn:
         if track_apollo:
             existing = conn.execute(text(
-                f"SELECT status, COALESCE(credits_used, 0), COALESCE(apollo_credits, 0) "
+                f"SELECT status, COALESCE(credits_used, 0), apollo_credits, COALESCE(reason, '') "
                 f"FROM {_DOMAINS} WHERE domain = :d"
             ), {"d": domain}).fetchone()
         else:
             existing = conn.execute(text(
-                f"SELECT status, COALESCE(credits_used, 0), COALESCE(reason, '') "
+                f"SELECT status, COALESCE(credits_used, 0), NULL, COALESCE(reason, '') "
                 f"FROM {_DOMAINS} WHERE domain = :d"
             ), {"d": domain}).fetchone()
         stored_credits = int(credits)
         stored_apollo = int(apollo_credits)
         if existing and str(existing[0]) == _CREDIT_HOLD:
             stored_credits += int(existing[1] or 0)
-            if track_apollo:
-                stored_apollo += int(existing[2] or 0)
-            else:
-                stored_apollo += _apollo_credits_in_text(str(existing[2] or ""))
+            prior_apollo = existing[2]
+            # A row written before the column existed keeps its spend in the
+            # reason token. NULL is that case. Zero is a real recorded zero.
+            if prior_apollo is None:
+                prior_apollo = _apollo_credits_in_text(str(existing[3] or ""))
+            stored_apollo += int(prior_apollo or 0)
         stored_reason = (reason or "")[:500]
+        if track_apollo:
+            import re
+            stored_reason = re.sub(r"\s*apollo_credits=\d+", "", stored_reason).strip()
         if not track_apollo and stored_apollo:
             import re
             stored_reason = re.sub(r"\s*apollo_credits=\d+", "", stored_reason).strip()
@@ -1296,30 +1301,31 @@ def push_pending(engine, campaign_id: str, *, dry_run: bool = True, limit: int =
 def enriched_since(engine, since_utc) -> dict[str, int]:
     """Companies tried and credits spent since a UTC timestamp (daily caps).
 
-    ``credits`` is Prospeo. ``apollo_credits`` is the Apollo fallback. When the
-    Apollo column is not migrated yet, the total is read from ``apollo_credits=N``
-    tokens stored on the domain reason.
+    ``credits`` is Prospeo. ``apollo_credits`` is the Apollo fallback. A NULL
+    ``apollo_credits`` value still counts ``apollo_credits=N`` in the reason, so
+    spend recorded before the column existed is not dropped when the column is
+    added later the same day. A numeric value, including zero, wins over the token.
     """
     ensure_tables(engine)
     track_apollo = "apollo_credits" in _column_names(engine, _DOMAINS)
     with engine.connect() as conn:
-        if track_apollo:
-            row = conn.execute(text(
-                f"SELECT COUNT(*), COALESCE(SUM(credits_used), 0), "
-                f"COALESCE(SUM(apollo_credits), 0) FROM {_DOMAINS} WHERE enriched_at >= :t"
-            ), {"t": since_utc}).fetchone()
-            return {
-                "companies": int(row[0] or 0),
-                "credits": int(row[1] or 0),
-                "apollo_credits": int(row[2] or 0),
-            }
         row = conn.execute(text(
             f"SELECT COUNT(*), COALESCE(SUM(credits_used), 0) FROM {_DOMAINS} WHERE enriched_at >= :t"
         ), {"t": since_utc}).fetchone()
-        reasons = conn.execute(text(
-            f"SELECT COALESCE(reason, '') FROM {_DOMAINS} WHERE enriched_at >= :t"
-        ), {"t": since_utc}).fetchall()
-    apollo = sum(_apollo_credits_in_text(str(item[0] or "")) for item in reasons)
+        if track_apollo:
+            credit_rows = conn.execute(text(
+                f"SELECT apollo_credits, COALESCE(reason, '') FROM {_DOMAINS} WHERE enriched_at >= :t"
+            ), {"t": since_utc}).fetchall()
+        else:
+            credit_rows = conn.execute(text(
+                f"SELECT NULL, COALESCE(reason, '') FROM {_DOMAINS} WHERE enriched_at >= :t"
+            ), {"t": since_utc}).fetchall()
+    apollo = 0
+    for value, reason in credit_rows:
+        if value is None:
+            apollo += _apollo_credits_in_text(str(reason or ""))
+        else:
+            apollo += int(value)
     return {
         "companies": int(row[0] or 0),
         "credits": int(row[1] or 0),

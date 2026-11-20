@@ -10,3 +10,13 @@ ALTER TABLE outbound_enriched
 
 ALTER TABLE outbound_enriched_contacts
     ADD COLUMN IF NOT EXISTS provider TEXT;
+
+-- Spend recorded before this column existed lives in the reason as
+-- apollo_credits=N. Copy the first token onto NULL rows so the daily cap
+-- does not drop that spend. A row that already has a number is left alone.
+UPDATE outbound_enriched
+SET apollo_credits = CAST(
+    substring(reason from 'apollo_credits=([0-9]+)') AS INTEGER
+)
+WHERE apollo_credits IS NULL
+  AND reason ~ 'apollo_credits=[0-9]+';
