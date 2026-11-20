@@ -31,6 +31,11 @@ logger = logging.getLogger(__name__)
 
 _DOMAINS = "outbound_enriched"
 _PEOPLE = "outbound_enriched_contacts"
+
+# David approved the AGENT SDR feed on 2026-11-20. Baseline companies already
+# in the library stay there. Only a company first seen on or after this date
+# is enriched for icp_baseline, and only while that campaign row is active.
+BASELINE_NEW_LEAD_FROM = "2026-11-20"
 # A paid search that stopped before a verified email. The credits count toward
 # today's cap, and the domain stays eligible for a later run to finish.
 _CREDIT_HOLD = "credit_hold"
@@ -285,6 +290,13 @@ def companies_enriched_by_recipe(engine, since_utc, recipes: Iterable[str]) -> d
     return counts
 
 
+def baseline_company_is_new(first_seen_at: Any) -> bool:
+    """True when an icp_baseline company was first stored on or after the restart."""
+
+    seen = str(first_seen_at or "")[:10]
+    return bool(seen) and seen >= BASELINE_NEW_LEAD_FROM
+
+
 def _recipe_names(row: dict[str, Any]) -> list[str]:
     names = [str(row.get("recipe_key") or "").strip()]
     names.extend(
@@ -319,8 +331,12 @@ def order_leads_for_enrich(engine, leads: list[dict[str, Any]], *, since_utc) ->
     contributes its oldest not-yet-enriched brands, up to the cap minus
     companies of that recipe (and its aliases) already enriched since
     ``since_utc``. Campaigns are interleaved so one recipe cannot spend
-    the whole run. Baseline, social, and every other recipe keep the
+    the whole run. Social and every other non-baseline recipe keep the
     order they arrived in. ``leads`` from ``load_leads`` is newest first.
+    ``icp_baseline`` is enriched only while its row is active with a
+    positive cap, and only for companies first seen on or after
+    ``BASELINE_NEW_LEAD_FROM``. A throttled or zero-cap row does not
+    let those companies through the general list.
 
     Older signal brands are loaded from the lead table. They are not
     limited to the newest page, which is where ``icp_baseline`` and
@@ -340,7 +356,16 @@ def order_leads_for_enrich(engine, leads: list[dict[str, Any]], *, since_utc) ->
         return _order_leads_for_enrich(engine, general, since_utc=since_utc)
     except Exception:  # noqa: BLE001
         logger.exception("[outbound-enrich] could not put campaign recipes first")
-        return general
+        return _without_baseline(general)
+
+
+def _without_baseline(leads: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Drop icp_baseline. The general list is not a back door into AGENT SDR."""
+
+    return [
+        lead for lead in leads
+        if str(lead.get("recipe") or "").strip() != "icp_baseline"
+    ]
 
 
 def _order_leads_for_enrich(engine, general: list[dict[str, Any]], *, since_utc) -> list[dict[str, Any]]:
@@ -352,8 +377,27 @@ def _order_leads_for_enrich(engine, general: list[dict[str, Any]], *, since_utc)
         if row.get("status") == "active" and int(row.get("daily_cap") or 0) > 0
     ]
     if not rows:
-        return general
+        return _without_baseline(general)
     ordered_rows = source._ordered(rows)
+    active_baseline = any(
+        str(row.get("recipe_key") or "") == "icp_baseline"
+        for row in ordered_rows
+    )
+
+    def _feeds_today(lead: dict[str, Any]) -> bool:
+        """Baseline enters the campaign bucket only while that feed is open.
+
+        The date cutoff applies even when the row is throttled or uncapped.
+        Those states are not in ``ordered_rows``, so this only admits a new
+        company onto an active, positive-cap baseline row.
+        """
+
+        if str(lead.get("recipe") or "").strip() != "icp_baseline":
+            return True
+        if not active_baseline:
+            return False
+        return baseline_company_is_new(lead.get("first_seen_at"))
+
     owner: dict[str, str] = {}
     names_by_campaign: dict[str, list[str]] = {}
     for row in ordered_rows:
@@ -362,7 +406,7 @@ def _order_leads_for_enrich(engine, general: list[dict[str, Any]], *, since_utc)
         for name in names:
             owner.setdefault(name, str(row["recipe_key"]))
     if not owner:
-        return general
+        return _without_baseline(general)
 
     from sales_support_agent.services import outbound_memory
 
@@ -392,7 +436,7 @@ def _order_leads_for_enrich(engine, general: list[dict[str, Any]], *, since_utc)
     )
     for lead in candidates:
         domain = _contacts.normalize_domain(str(lead.get("domain") or ""))
-        if not domain or domain in done:
+        if not domain or domain in done or not _feeds_today(lead):
             continue
         campaign_key = owner.get(str(lead.get("recipe") or "").strip())
         if campaign_key and campaign_key in buckets:
@@ -419,6 +463,11 @@ def _order_leads_for_enrich(engine, general: list[dict[str, Any]], *, since_utc)
         ordered.append(lead)
     campaign_count = len(ordered)
     for lead in general:
+        # Baseline never uses leftover enrich room. The campaign bucket
+        # already took today's cap of new companies, and a throttled or
+        # zero-cap row must not fall through to this list.
+        if str(lead.get("recipe") or "").strip() == "icp_baseline":
+            continue
         domain = _contacts.normalize_domain(str(lead.get("domain") or ""))
         if domain and domain in seen:
             continue
@@ -864,9 +913,10 @@ def push_pending(engine, campaign_id: str, *, dry_run: bool = True, limit: int =
     """Add not-yet-pushed contacts to Instantly, one campaign per recipe group.
 
     A recipe on ``outbound_campaigns`` with status active or throttled goes
-    to that campaign when it is one of the v2 recipes. ``cut`` and
-    ``proposed`` v2 recipes stay unpushed. Filler recipes stay queued unless
-    stored signals prove a v2 recipe. ``campaign_id`` and
+    to that campaign when the recipe is mapped. ``icp_baseline`` goes to
+    AGENT SDR. ``cut`` and ``proposed`` recipes stay unpushed. Filler
+    recipes stay queued unless stored signals prove a v2 recipe.
+    ``campaign_id`` and
     ``OUTBOUND_INSTANTLY_CAMPAIGN_ID`` are not used, including when that
     variable still names Trial Offer Oct. ``redo_partner`` is left unpushed.
     Suppressed emails and domains, departed contacts, and role inboxes are left

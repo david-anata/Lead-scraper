@@ -26,14 +26,14 @@ logger = logging.getLogger(__name__)
 INSTANTLY_ADD_LEADS_URL = "https://api.instantly.ai/api/v2/leads/add"
 CHUNK = 100
 
-# Retired "AGENT SDR // MARCH '26" campaign. Older read-only tools still name it.
-# Pushes must not fall back to this id. Mapped recipes use RECIPE_CAMPAIGN_MAP.
+# "AGENT SDR // MARCH '26". David approved feeding it again on 2026-11-20.
+# icp_baseline maps here. Unmapped recipes do not fall back to this id.
 # OUTBOUND_INSTANTLY_CAMPAIGN_ID is not a destination, even when it still
-# names Trial Offer Oct.
+# names Trial Offer Oct. This process does not unpause the campaign.
 LIVE_CAMPAIGN_ID = "4f118329-c07e-4279-9c08-12059f2a49f4"
 MISSING_CAMPAIGN_MESSAGE = (
     "OUTBOUND_INSTANTLY_CAMPAIGN_ID is unset. Skipping the Instantly push. "
-    "The retired campaign is not used as a fallback."
+    "AGENT SDR is not a fallback for an unmapped recipe."
 )
 DEFAULT_PROTECTED: tuple[str, ...] = ()
 
@@ -53,18 +53,21 @@ RECIPE_CAMPAIGN_MAP: dict[str, str] = {
     "replatform": "d1c197e3-bf1f-4f41-bcb9-e30e73975a2c",
     "replatformed": "d1c197e3-bf1f-4f41-bcb9-e30e73975a2c",
     "abby_reengage": "907d32fd-d6db-4ce6-8edc-485b78cce120",
+    "icp_baseline": LIVE_CAMPAIGN_ID,
 }
 
 # Partner-list contacts are stored for a separate pass and stay out of push_pending.
 REDO_PARTNER_RECIPE = "redo_partner"
 PUSH_EXCLUDED_RECIPES: frozenset[str] = frozenset({REDO_PARTNER_RECIPE})
 
-# Filler recipes are not v2 campaigns. Production marked these cut, cap 0,
+# Filler recipes are not campaigns. Production marked these cut, cap 0,
 # name "|hold|no_trial_offer_ingest", so unmatched contacts stay queued.
 # A stored eligibility token can still select a real v2 campaign. The recipe
-# name alone never does.
+# name alone never does. icp_baseline is mapped to AGENT SDR, so it is not
+# a filler: the recipe name is the destination, and a signal token does not
+# move that contact to another campaign.
 FILLER_RECIPES = frozenset({
-    "icp_baseline", "social_surge", "churned_tool", "new_growth_app",
+    "social_surge", "churned_tool", "new_growth_app",
 })
 HOLD_INGEST_CAMPAIGN_IDS = frozenset({
     "71add6d5-0096-52df-a6e2-66135fbe22e4",  # icp_baseline hold
@@ -108,7 +111,7 @@ def configured_campaign_id() -> str:
     """Return ``OUTBOUND_INSTANTLY_CAMPAIGN_ID`` when set.
 
     This is not a push destination. Unmapped recipes are queued.
-    ``LIVE_CAMPAIGN_ID`` is not a substitute.
+    ``LIVE_CAMPAIGN_ID`` is the icp_baseline campaign, not a substitute.
     """
 
     return (os.getenv("OUTBOUND_INSTANTLY_CAMPAIGN_ID") or "").strip()
@@ -280,12 +283,13 @@ def resolve_recipe_campaign(
 
     Returns ``(campaign_id, status, route_recipe)``. ``status`` is
     ``routed``, ``queued``, or ``blocked``. A recipe that already names a
-    v2 campaign uses that campaign. A filler recipe, including one held
-    by a cut ``|hold|no_trial_offer_ingest`` row, uses stored evidence only.
-    The filler name is not itself a destination. Plan upgrade wins over
+    campaign uses that campaign. ``icp_baseline`` routes to AGENT SDR
+    without a signal token. A filler recipe, including one held by a cut
+    ``|hold|no_trial_offer_ingest`` row, uses stored evidence only. The
+    filler name is not itself a destination. Plan upgrade wins over
     replatform, which wins over Amazon on or off. Amazon on and Amazon off
-    together, with no stronger signal, stays queued. A blocked v2 recipe
-    is not moved to a different campaign.
+    together, with no stronger signal, stays queued. A blocked recipe is
+    not moved to a different campaign.
     """
 
     blocked_names = {str(name or "").strip() for name in (blocked or []) if str(name or "").strip()}

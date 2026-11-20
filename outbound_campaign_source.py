@@ -11,7 +11,9 @@ values are set.
 Each campaign starts with a share of that room, and not more than its
 ``daily_cap``. Unused allowances and any room those caps do not claim go
 to recipes that still have results, even if that carries them past
-``daily_cap``. Sourcing does not call Prospeo and does not call Instantly.
+``daily_cap``. ``icp_baseline`` does not take that extra: its feed stays
+at its ``daily_cap`` (25 companies a day). Sourcing does not call Prospeo
+and does not call Instantly.
 New domains still have to pass the company-fit gate (US, own-brand
 physical product, revenue on file, niche, exclusion, and blocked category).
 
@@ -694,6 +696,12 @@ def source_active_campaigns(
         before = len(state["kept"])
         _pull_more(state, min(state["allowance"], room))
         room -= len(state["kept"]) - before
+
+    # Baseline stays at its daily cap. Leftover room still goes to the
+    # signal campaigns that can fill it.
+    for state in states:
+        if str(state["row"].get("recipe_key") or "") == "icp_baseline":
+            state["can_take"] = False
 
     for _cycle in range(4):
         if room <= 0:
