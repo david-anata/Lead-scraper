@@ -52,9 +52,10 @@ def test_a_question_asks_for_a_yes_and_does_not_offer_a_call():
 
 
 class FakeClient:
-    def __init__(self, received, threads=None):
+    def __init__(self, received, threads=None, leads=None):
         self.received = received
         self.threads = threads or {}
+        self.leads = leads or {}
         self.replies = []
         self.interest = []
 
@@ -78,6 +79,9 @@ class FakeClient:
     def block(self, value):
         return 200
 
+    def lead(self, address):
+        return self.leads.get(address, {})
+
 
 def email(body="yes please", ts="2026-11-13T15:00:00Z"):
     return {
@@ -89,6 +93,98 @@ def email(body="yes please", ts="2026-11-13T15:00:00Z"):
 
 def deck(**_kw):
     return DECK
+
+
+def test_instantly_fallback_includes_website_or_company_domain():
+    class Client:
+        def __init__(self, rec):
+            self.rec = rec
+
+        def lead(self, _email):
+            return self.rec
+
+    website = runner._instantly_info(Client({
+        "first_name": "Ann",
+        "company_name": "North Trampoline",
+        "website": "northtrampoline.com",
+        "company_domain": "other.example",
+    }), "pat@northtrampoline.com")
+    assert website == {
+        "first_name": "Ann",
+        "company": "North Trampoline",
+        "domain": "https://northtrampoline.com",
+    }
+    company_domain = runner._instantly_info(Client({
+        "first_name": "Ann",
+        "company_name": "North Trampoline",
+        "website": "",
+        "company_domain": "northtrampoline.com",
+    }), "pat@northtrampoline.com")
+    assert company_domain["domain"] == "https://northtrampoline.com"
+    spaced = runner._instantly_info(Client({
+        "website": "North Trampoline",
+        "company_domain": "https://northtrampoline.com",
+    }), "pat@northtrampoline.com")
+    assert spaced["domain"] == "https://northtrampoline.com"
+    neither = runner._instantly_info(Client({
+        "first_name": "Ann", "company_name": "North Trampoline",
+    }), "pat@northtrampoline.com")
+    assert neither["domain"] == "" and neither["company"] == "North Trampoline"
+
+
+def _deck_builder(calls):
+    def build(**kwargs):
+        calls.append(kwargs)
+        return DECK if kwargs.get("domain") else ""
+    return build
+
+
+def test_yes_with_website_and_no_db_row_sends_the_deck_and_logs_it():
+    engine = create_engine("sqlite://")
+    message = email("yes please")
+    message["lead"] = "pat@northtrampoline.com"
+    client = FakeClient([message], {"t1": [message]}, leads={
+        "pat@northtrampoline.com": {
+            "first_name": "Ann",
+            "company_name": "North Trampoline",
+            "website": "northtrampoline.com",
+        },
+    })
+    calls = []
+    out = runner.handle_email(
+        engine, message, client=client, campaign_id="camp", now=NOW, think=abby.think,
+        post_slack=lambda _t: None, lead_info=lambda _e: {},
+        run_mode="live", build_deck=_deck_builder(calls),
+    )
+    assert out["replied"] == 1 and client.interest == []
+    assert calls and calls[0]["domain"] == "https://northtrampoline.com"
+    assert calls[0]["company"] == "North Trampoline" and calls[0]["first_name"] == "Ann"
+    sent = client.replies[0]
+    assert sent["cc"] == [abby.founder_email()] and DECK in sent["body"]
+    with engine.connect() as conn:
+        row = conn.execute(text("SELECT status, deck_url, cc_address FROM abby_deck_sends")).one()
+    assert row[0] == "sent" and row[1] == DECK and row[2] == abby.founder_email()
+
+
+def test_yes_with_neither_domain_holds_and_records_failed():
+    engine = create_engine("sqlite://")
+    message = email("yes please")
+    message["lead"] = "pat@northtrampoline.com"
+    client = FakeClient([message], {"t1": [message]}, leads={
+        "pat@northtrampoline.com": {"first_name": "Ann", "company_name": "North Trampoline"},
+    })
+    calls = []
+    out = runner.handle_email(
+        engine, message, client=client, campaign_id="camp", now=NOW, think=abby.think,
+        post_slack=lambda _t: None, lead_info=lambda _e: {},
+        run_mode="live", build_deck=_deck_builder(calls),
+    )
+    assert out["held"] == 1 and out["replied"] == 0 and client.replies == []
+    assert calls and calls[0]["domain"] == ""
+    with engine.connect() as conn:
+        status, detail = conn.execute(text("SELECT status, detail FROM abby_deck_sends")).one()
+        action = conn.execute(text("SELECT action FROM abby_handled")).scalar()
+    assert status == "failed" and detail == "deck generation failed" and action == "hold"
 
 
 def test_yes_sends_the_deck_ccs_the_founder_and_logs_it(engine=None):
@@ -275,6 +371,101 @@ def test_fixer_does_not_reopen_a_still_held_human_question(monkeypatch):
         action = conn.execute(text("SELECT action FROM abby_handled")).scalar()
         outcome = conn.execute(text("SELECT outcome FROM abby_missed_reply_fixes")).scalar()
     assert action == "hold" and outcome == "still_held"
+
+
+def _held_deck_failure(email_id, lead, thread_id, sent_at, *, detail="deck generation failed"):
+    return (
+        "INSERT INTO abby_handled (email_id, thread_id, lead, category, action, mode, reply_id, detail, campaign_id) "
+        "VALUES (:email, :thread, :lead, 'interested', 'hold', 'live', '', :detail, 'camp')",
+        "INSERT INTO abby_missed_reply_fixes "
+        "(email_id, lead, campaign_id, previous_action, outcome, attempts, detail, sent_at) "
+        "VALUES (:email, :lead, 'camp', 'hold', 'failed', 3, :detail, :sent)",
+        {"email": email_id, "thread": thread_id, "lead": lead, "detail": detail, "sent": sent_at},
+    )
+
+
+def test_fixer_retries_a_recent_exhausted_deck_failure_once(monkeypatch):
+    monkeypatch.setenv("ABBY_MODE", "live")
+    monkeypatch.setenv("ABBY_TAKEOVER_AT", "2026-10-26T00:00:00Z")
+    monkeypatch.setenv("ABBY_START_AT", "2026-10-26T00:00:00Z")
+    engine = create_engine("sqlite://")
+    runner.ensure_tables(engine)
+    message = email("yes please")
+    message["lead"] = "pat@northtrampoline.com"
+    client = FakeClient([message], {"t1": [message]}, leads={
+        "pat@northtrampoline.com": {
+            "first_name": "Ann",
+            "company_name": "North Trampoline",
+            "website": "northtrampoline.com",
+        },
+    })
+    handled, fix, params = _held_deck_failure(
+        "e1", "pat@northtrampoline.com", "t1",
+        (NOW - timedelta(days=2)).replace(tzinfo=None),
+    )
+    with engine.begin() as conn:
+        conn.execute(text(handled), params)
+        conn.execute(text(fix), params)
+    calls = []
+    first = runner.run_missed_replies(
+        engine, client=client, campaign_ids=["camp"], now=NOW, think=abby.think,
+        lead_info=lambda _e: {}, build_deck=_deck_builder(calls),
+    )
+    second = runner.run_missed_replies(
+        engine, client=client, campaign_ids=["camp"], now=NOW, think=abby.think,
+        lead_info=lambda _e: {}, build_deck=_deck_builder(calls),
+    )
+    assert first["sent"] == 1 and second["sent"] == 0
+    assert len(client.replies) == 1 and DECK in client.replies[0]["body"]
+    assert calls[0]["domain"] == "https://northtrampoline.com"
+    with engine.connect() as conn:
+        outcome, attempts = conn.execute(text(
+            "SELECT outcome, attempts FROM abby_missed_reply_fixes WHERE email_id = 'e1'"
+        )).one()
+        status = conn.execute(text("SELECT status FROM abby_deck_sends")).scalar()
+    assert outcome == "sent" and attempts == 4 and status == "sent"
+
+
+def test_fixer_leaves_an_old_or_non_deck_exhausted_failure(monkeypatch):
+    monkeypatch.setenv("ABBY_MODE", "live")
+    monkeypatch.setenv("ABBY_TAKEOVER_AT", "2026-10-26T00:00:00Z")
+    monkeypatch.setenv("ABBY_START_AT", "2026-10-26T00:00:00Z")
+    engine = create_engine("sqlite://")
+    runner.ensure_tables(engine)
+    old = email("yes please")
+    old["lead"] = "old@northtrampoline.com"
+    other = email("Can you tell me the price?")
+    other["id"] = "e2"
+    other["thread_id"] = "t2"
+    other["lead"] = "ann@huppy.com"
+    client = FakeClient([old, other], {"t1": [old], "t2": [other]})
+    old_sql = _held_deck_failure(
+        "e1", "old@northtrampoline.com", "t1",
+        (NOW - timedelta(days=15)).replace(tzinfo=None),
+    )
+    other_sql = _held_deck_failure(
+        "e2", "ann@huppy.com", "t2",
+        (NOW - timedelta(days=1)).replace(tzinfo=None),
+        detail="send failed (500)",
+    )
+    with engine.begin() as conn:
+        for handled, fix, params in (old_sql, other_sql):
+            conn.execute(text(handled), params)
+            conn.execute(text(fix), params)
+
+    def think(*_args, **_kwargs):
+        raise AssertionError("an exhausted hold outside the deck window must stay closed")
+
+    out = runner.run_missed_replies(
+        engine, client=client, campaign_ids=["camp"], now=NOW, think=think,
+        lead_info=lambda _e: {},
+    )
+    assert out["sent"] == 0 and client.replies == []
+    with engine.connect() as conn:
+        rows = conn.execute(text(
+            "SELECT email_id, outcome, attempts FROM abby_missed_reply_fixes ORDER BY email_id"
+        )).fetchall()
+    assert rows == [("e1", "failed", 3), ("e2", "failed", 3)]
 
 
 def test_list_hides_a_thread_the_founder_already_answered():
