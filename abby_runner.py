@@ -791,6 +791,26 @@ def _is_suppressed(engine, lead: str) -> bool:
         return False
 
 
+def _without_suppressed(engine, addresses: list[str]) -> tuple[list[str], list[str]]:
+    """Split recipients into (allowed, suppressed).
+
+    A suppressed email or a suppressed domain is not written again, including
+    when an auto-reply names that address as the place to follow up.
+    """
+
+    allowed: list[str] = []
+    blocked: list[str] = []
+    for raw in addresses:
+        addr = (raw or "").strip().lower()
+        if not addr or addr in allowed or addr in blocked:
+            continue
+        if _is_suppressed(engine, addr):
+            blocked.append(addr)
+        else:
+            allowed.append(addr)
+    return allowed, blocked
+
+
 def _cancel_scheduled(engine, lead: str) -> None:
     try:
         with engine.begin() as conn:
@@ -1202,8 +1222,25 @@ def _handle_claimed(engine, email: dict, *, client: Instantly, campaign_id: str,
             detail = "shadow: " + decision.reply
             post_slack(f"[Abby draft, not sent] {lead} ({decision.category})\n\n{decision.reply}")
     if decision.action == "redirect":
-        targets = [addr for addr in decision.to_extra if addr and addr.lower() != lead]
-        if run_mode == "live" and targets:
+        named = [addr for addr in decision.to_extra if addr and addr.lower() != lead]
+        targets, blocked = _without_suppressed(engine, named)
+        if blocked:
+            skipped = ", ".join(blocked)
+            decision.note = f"{decision.note} Not sent to suppressed {skipped}.".strip()
+            decision.slack = (
+                f"{decision.slack} Skipped suppressed {skipped}."
+            ).strip()
+        if not targets:
+            decision = abby.Decision(
+                decision.category, "ignore", reason=decision.reason,
+                note=decision.note or f"Replacement for {lead} is suppressed. Nothing sent.",
+                slack=decision.slack or (
+                    f"Abby did not write a follow-up for {lead}. "
+                    "Every named address is suppressed."
+                ),
+                stop_sequences=decision.stop_sequences,
+            )
+        elif run_mode == "live":
             st, data = client.forward(
                 reply_to=email["id"], eaccount=email.get("eaccount") or "",
                 subject=_subject(email.get("subject") or ""), body=decision.reply, to=targets,
@@ -1220,7 +1257,7 @@ def _handle_claimed(engine, email: dict, *, client: Instantly, campaign_id: str,
             else:
                 reply_id = str((data or {}).get("id") or "")
                 counts["replied"] += 1
-        elif targets:
+        else:
             detail = "shadow: " + decision.reply
             post_slack(
                 f"[Abby draft, not sent] {lead} -> {', '.join(targets)} ({decision.category})\n\n{decision.reply}"

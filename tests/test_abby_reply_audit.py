@@ -345,6 +345,44 @@ def test_dead_inboxes_are_asked_once_and_then_stopped(monkeypatch):
     assert second[0] == "skip" and "suppressed" in second[1].lower()
 
 
+def test_a_suppressed_replacement_is_not_forwarded(monkeypatch):
+    engine = _engine(monkeypatch)
+    import outbound_suppression as suppression
+
+    suppression.add(engine, kind="domain", value="hellopatch.com", reason="opt_out", source="abby")
+    suppression.add(engine, kind="email", value="support@matatraders.com", reason="opt_out", source="abby")
+    jack = _mail(
+        "jack-blocked", "jack@arena.online",
+        "I have now left Arena.Online. Please contact olivia.smith@hellopatch.com.",
+        subject="OOO - I have left the business",
+    )
+    mata = _mail(
+        "mata-partial", "maureen@matatraders.com",
+        "This email is no longer active. Please contact sales@matatraders.com or support@matatraders.com.",
+        thread="mata-partial",
+    )
+    client = _Client([jack, mata], {"t1": [jack], "mata-partial": [mata]})
+    runner.run(
+        engine, client=client, campaign_id="camp", now=NOW, think=abby.think,
+        lead_info=lambda email: {"first_name": "Jack", "company": "Arena"} if email.startswith("jack") else {"company": "Mata Traders"},
+    )
+    assert client.replies == []
+    assert len(client.forwards) == 1
+    assert client.forwards[0]["to"] == ["sales@matatraders.com"]
+    assert "support@matatraders.com" not in client.forwards[0]["to"]
+    assert "olivia.smith@hellopatch.com" not in str(client.forwards)
+    with engine.connect() as conn:
+        rows = conn.execute(text(
+            "SELECT email_id, action, detail FROM abby_handled ORDER BY email_id"
+        )).fetchall()
+    saved = {row[0]: (row[1], row[2]) for row in rows}
+    assert saved["jack-blocked"][0] == "ignore"
+    assert "suppressed" in saved["jack-blocked"][1].lower()
+    assert saved["mata-partial"][0] == "redirect"
+    assert "support@matatraders.com" in saved["mata-partial"][1]
+    assert ("jack@arena.online", LEFT, "camp") in client.interest
+
+
 def test_nudges_do_not_go_back_to_a_departed_address(monkeypatch):
     engine = _engine(monkeypatch)
     import outbound_suppression as suppression
