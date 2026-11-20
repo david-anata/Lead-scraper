@@ -13,7 +13,7 @@ from outbound_cold_sequence import cold_urls
 
 def test_each_signal_campaign_has_five_steps_two_variants_and_passes_the_rules():
     assert signal.send_days() == (0, 3, 7, 11, 16)
-    assert yes.APPLY_KEY == "yes-cta-v4"
+    assert yes.APPLY_KEY == "yes-cta-v5"
     names = {name for name, _campaign_id in yes.LIVE_CAMPAIGNS}
     assert {"Trial Offer", "abby_reengage", "amz_on", "amz_off v2", "plan_upgrade", "replatform v2"} <= names
     for key, campaign_id in signal.CAMPAIGNS:
@@ -30,7 +30,7 @@ def test_each_signal_campaign_has_five_steps_two_variants_and_passes_the_rules()
                 assert "\u2014" not in raw and "\u2013" not in raw and " - " not in raw
                 assert "http" not in raw.lower() and "www." not in raw.lower()
                 visible = signal.visible_text(variant["body"])
-                assert visible.count("?") == 1
+                assert visible.replace("Not a fit? Just let me know and I won't follow up.", " ").count("?") == 1
                 assert signal.ASK in visible
                 assert "reply with" not in visible.lower()
                 assert "book" not in visible.lower() and "calendar" not in visible.lower()
@@ -43,9 +43,13 @@ def test_each_signal_campaign_has_five_steps_two_variants_and_passes_the_rules()
 
 def test_step_one_stays_under_80_with_a_full_opener_and_followups_stay_in_range():
     for row in signal.audit_rows():
+        assert "Not a fit? Just let me know and I won't follow up." in row["text"]
+        assert "anata Inc, 1657 N. State St., Lehi, UT 84043" in row["text"]
+        assert "http" not in row["text"].lower() and " - " not in row["text"]
         if row["step"] == 1:
-            assert row["words_at_max_opener"] <= 80
+            assert row["words_at_max_opener"] < 80
             assert row["words"] == signal.word_count(row["text"], opener_words=18)
+            assert signal.word_count(row["text"], opener_words=24, include_footer=True) > row["words_at_max_opener"]
             assert "{{personalization}}" in row["text"]
             assert "{{firstName | there}}" in row["text"]
         else:
@@ -102,13 +106,17 @@ def test_validators_reject_a_url_a_dash_a_long_step_and_a_second_ask():
         signal.require_valid(booked, campaign="amz_on")
 
 
-def test_trial_offer_and_reengage_copy_are_not_part_of_the_signal_apply():
+def test_trial_offer_is_left_alone_and_reengage_keeps_its_offer_plus_the_footer():
     assert signal.steps_for_campaign_id("e5f5046b-07e4-41ad-a395-79cf8766ccd0") is None
     assert signal.steps_for_campaign_id(reengage.TARGET_CAMPAIGN_ID) is None
     assert "14 days" in reengage.EMAIL_1
     assert "Can I send it to you?" in reengage.EMAIL_1
-    assert reengage.TARGET_CAMPAIGN_ID in yes.SKIP_COPY_CAMPAIGN_IDS
     assert "e5f5046b-07e4-41ad-a395-79cf8766ccd0" in yes.SKIP_COPY_CAMPAIGN_IDS
+    assert reengage.TARGET_CAMPAIGN_ID not in yes.SKIP_COPY_CAMPAIGN_IDS
+    for text in (reengage.EMAIL_1, reengage.EMAIL_2, reengage.EMAIL_3):
+        assert "Not a fit? Just let me know and I won't follow up." in text
+        assert "anata Inc, 1657 N. State St., Lehi, UT 84043" in text
+        assert "http" not in text.lower() and " - " not in text
 
 
 def test_yes_still_sends_the_deck_and_the_new_ask_is_the_one_abby_recognizes():
@@ -123,21 +131,24 @@ def test_yes_still_sends_the_deck_and_the_new_ask_is_the_one_abby_recognizes():
 
 class _Instantly:
     def __init__(self, steps):
-        self.steps = steps
+        self.default_steps = steps
+        self.by_id = {}
         self.reads = []
         self.patched = []
         self.paused = []
 
     def get_campaign(self, campaign_id):
         self.reads.append(campaign_id)
+        steps = self.by_id.get(campaign_id, self.default_steps)
         return 200, {
             "id": campaign_id,
             "daily_limit": 40,
-            "sequences": [{"steps": self.steps}],
+            "sequences": [{"steps": steps}],
         }
 
     def patch_campaign(self, campaign_id, body):
         self.patched.append((campaign_id, body))
+        self.by_id[campaign_id] = body["sequences"][0]["steps"]
         return 200, {}
 
     def get_subsequence(self, subsequence_id):
@@ -148,7 +159,7 @@ class _Instantly:
         return 200, {}
 
 
-def test_apply_replaces_signal_steps_and_does_not_read_trial_or_reengage():
+def test_apply_replaces_signal_steps_adds_the_reengage_footer_and_skips_trial():
     amz_on = "8e0df427-1f18-43ac-b0c6-e8ea787123d7"
     trial = "e5f5046b-07e4-41ad-a395-79cf8766ccd0"
     client = _Instantly([
@@ -163,9 +174,8 @@ def test_apply_replaces_signal_steps_and_does_not_read_trial_or_reengage():
         ("abby_reengage", reengage.TARGET_CAMPAIGN_ID),
     ))
     assert trial not in client.reads
-    assert reengage.TARGET_CAMPAIGN_ID not in client.reads
-    assert [item["name"] for item in report["campaigns"] if item.get("skipped")] == ["Trial Offer", "abby_reengage"]
-    assert len(client.patched) == 1
+    assert [item["name"] for item in report["campaigns"] if item.get("skipped")] == ["Trial Offer"]
+    assert len(client.patched) == 2
     patched_id, body = client.patched[0]
     assert patched_id == amz_on
     assert set(body) == {"sequences"}
@@ -175,6 +185,16 @@ def test_apply_replaces_signal_steps_and_does_not_read_trial_or_reengage():
     assert [step["delay"] for step in steps] == [3, 4, 4, 5, 0]
     assert steps[1]["variants"][0]["subject"] == ""
     assert signal.ASK in steps[0]["variants"][0]["body"]
+    assert "anata Inc, 1657 N. State St., Lehi, UT 84043" in steps[0]["variants"][0]["body"]
+    assert "https://" not in steps[0]["variants"][0]["body"]
+    assert report["campaigns"][0]["read_back"] == steps[0]["variants"][0]["body"]
+    reengage_body = client.patched[1][1]
+    assert set(reengage_body) == {"sequences"}
+    kept = reengage_body["sequences"][0]["steps"][0]
+    assert kept["delay"] == 4
+    assert kept["variants"][0]["subject"] == "old"
+    assert "Open to a quick intro with David?" in kept["variants"][0]["body"]
+    assert "Not a fit? Just let me know and I won't follow up." in kept["variants"][0]["body"]
     assert client.paused == [yes.BOOKING_SUBSEQUENCE_ID]
     assert report["campaigns"][0]["patched"] is True
 

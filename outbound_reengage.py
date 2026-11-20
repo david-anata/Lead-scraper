@@ -32,13 +32,22 @@ We now build your Amazon strategy and run the ad actions automatically, and you 
 I found something that could help {{companyName}}'s Amazon growth. Can I send it to you?
 
 {{RANDOM | Best | Cheers}},
-{{sendingAccountFirstName}}"""
+{{sendingAccountFirstName}}
+
+Not a fit? Just let me know and I won't follow up.
+anata Inc, 1657 N. State St., Lehi, UT 84043"""
 EMAIL_2 = """{{firstName | there}}, short version: free for 14 days, we build the strategy and run the ads. Mind if I put something together for {{companyName}}?
 
-{{sendingAccountFirstName}}"""
+{{sendingAccountFirstName}}
+
+Not a fit? Just let me know and I won't follow up.
+anata Inc, 1657 N. State St., Lehi, UT 84043"""
 EMAIL_3 = """Last one from me. If Amazon isn't a priority for {{companyName}} right now, no worries. If it is, mind if I put something together?
 
-{{sendingAccountFirstName}}"""
+{{sendingAccountFirstName}}
+
+Not a fit? Just let me know and I won't follow up.
+anata Inc, 1657 N. State St., Lehi, UT 84043"""
 
 
 def to_html(text: str) -> str:
