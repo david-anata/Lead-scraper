@@ -31,19 +31,26 @@ something outside the offer.
   low confidence -> no reply, ask David in Slack.
   asked whether she is AI -> she is an AI account specialist on David's team.
   out of office -> no reply now. A follow-up is scheduled for the day after
-      the parsed return date, or 7 days when no date is found. A missing
-      auto-reply header still counts when the subject starts with Automatic
-      reply, Out of Office, Autoreply, or OOO, or when the body shows
-      parental, maternity, or paternity leave, or at least two absence
-      phrases (annual leave, returning, limited email access, and the same
-      family) and does not ask a question, say yes, opt out, or show interest.
-  departed employee / automated forward -> ignore. No reply, no David CC,
-      no Interested status, no follow-up. A departed contact is recorded so
-      the brand can be tried again later. Nothing is sent. "I have left" and
+      the parsed return date, or 7 days when no date is found. A date that has
+      already passed on a new out-of-office note means they are still away, so
+      the wait starts over. "Hope your time away went well" is used only when
+      that follow-up is sent after the return date. A missing auto-reply
+      header still counts when the subject starts with Automatic reply, Out
+      of Office, Autoreply, or OOO, when the body shows parental, maternity,
+      or paternity leave, when someone is traveling until a stated date, or
+      when at least two absence phrases appear, and the note does not ask a
+      question, say yes, opt out, or show interest.
+  departed employee -> stop their Instantly sequences, remove them from
+      subsequences, and do not write back to that address. When the note names
+      a person at their own email, one follow-up goes only to that address.
+      A role inbox such as sales@ is not that person. "I have left" and
       "left the business" count, including when the subject starts with OOO.
       "No longer working at" and "no longer here" count the same way.
       A subject that is only OOO, with no departed wording, stays out of office.
-      If Instantly marked the message as human, the ignore is posted to Slack.
+  dead inbox -> the mailbox itself is closed or no longer monitored and the
+      note points at another address. Ask that address once who handles
+      ecommerce or growth, then stop. Do not write back to the dead address.
+      If Instantly marked the message as human, the decision is posted to Slack.
 """
 
 from __future__ import annotations
@@ -107,7 +114,7 @@ Categories: {", ".join(CATEGORIES)}.
 - hostile: insults, threats, legal language (spam laws, lawyers, reporting).
 - question: a specific question you can partly answer from the facts.
 - ai_question: asks if you are a bot, AI or a real person.
-- auto_reply: out of office, an automated message, a satisfaction survey, a departed-employee notice, or a forwarding notice. This includes "no longer with", "no longer part of", "no longer work at", "I have left", "I have now left", "left the business", "has left the company", "out of the office", a subject that starts with OOO, "please direct inquiries", "concluded my role", and "no longer monitoring". A mailbox rule that only points at info@, sales@, support@, or customerservice@ is auto_reply. Naming a person or giving their email does not make these a referral. Leave referral_email null. Choose auto_reply only when the message is clearly one of these. If a human wrote it, or you are unsure, choose other.
+- auto_reply: out of office, an automated message, a satisfaction survey, a departed-employee notice, a dead inbox, or a forwarding notice. This includes "no longer with", "no longer part of", "no longer work at", "I have left", "I have now left", "left the business", "has left the company", "out of the office", "traveling until", "email is no longer active", a subject that starts with OOO, "please direct inquiries", "concluded my role", and "no longer monitoring". A mailbox rule that only points at info@, sales@, support@, or customerservice@ is auto_reply. Naming a person or giving their email does not make these a referral. Leave referral_email null. Choose auto_reply only when the message is clearly one of these. If a human wrote it, or you are unsure, choose other.
 - wrong_person: a human says this is not their area and names no colleague and no address to send information to.
 
 Reply rules by category:
@@ -141,6 +148,7 @@ class Decision:
     note: str = ""                   # recorded on the handled row; never sent
     schedule_kind: str = ""          # out_of_office | not_now | has_solution | ""
     send_deck: bool = False          # reply with the Amazon plan, CC the founder
+    stop_sequences: bool = False     # mark left and remove Instantly subsequences
 
 
 def cc_david_requested(model_out: dict[str, Any]) -> bool:
@@ -335,15 +343,25 @@ _DEPARTED_PHRASES = (
     "no longer working for",
     "no longer here",
     "left the business",
-    "no longer monitored",
+    "i have moved on",
+    "i've moved on",
+)
+# The mailbox itself is closed. A person who left is classified above these,
+# even when the same note also says the inbox is not monitored.
+_DEAD_INBOX_PHRASES = (
     "email is no longer",
+    "this email is no longer",
     "inbox is no longer",
+    "mailbox is no longer",
+    "this address is no longer",
+    "email address is no longer",
+    "no longer in use",
+    "no longer monitored",
     "mailbox is not monitored",
     "inbox is not monitored",
     "email is not monitored",
     "this email is not monitored",
-    "i have moved on",
-    "i've moved on",
+    "this inbox is not monitored",
 )
 # "I have now left Arena" and "Mo has left REFY", but not "left a message"
 # or "left the office" (that one is out of office).
@@ -423,6 +441,14 @@ _OOO_WEAK_PHRASES = (
     "without access to my email",
     "responses may be delayed",
     "response may be delayed",
+    "traveling",
+    "travelling",
+)
+# "Traveling until Mon Nov 23" is one absence, with the return in the same line.
+# Two weak phrases are not required once the trip and the end date are both stated.
+_DATED_ABSENCE_RE = re.compile(
+    r"\b(?:travel+ing|travelling)\b.{0,60}\b(?:until|till|through|thru)\b",
+    re.I,
 )
 # A question or a yes aimed at Anata. "Please email my colleague" is not one.
 _HUMAN_REPLY_RE = re.compile(
@@ -472,6 +498,7 @@ class Notice(NamedTuple):
     kind: str
     reason: str
     note: str
+    targets: tuple[str, ...] = ()
 
 
 def is_role_address(address: str) -> bool:
@@ -623,6 +650,22 @@ def _says_departed(low: str) -> bool:
     return _LEFT_RE.search(low) is not None
 
 
+def _says_dead_inbox(low: str) -> bool:
+    return any(phrase in low for phrase in _DEAD_INBOX_PHRASES)
+
+
+def _name_from_address(address: str) -> str:
+    """Olivia from olivia.smith@. A role inbox has no first name."""
+
+    local = (address or "").split("@", 1)[0]
+    token = re.split(r"[._+\-]", local, maxsplit=1)[0]
+    if len(token) < 2 or not token.isalpha() or token.lower() in _NAME_STOP:
+        return ""
+    if is_role_address(address):
+        return ""
+    return token[:1].upper() + token[1:].lower()
+
+
 def _human_reply_signal(text: str) -> bool:
     """A question or interest aimed at us, not a request to contact someone else."""
 
@@ -754,11 +797,13 @@ def _notice(kind: str, reason: str, lead: str, suggested: list[str]) -> Notice:
     who = lead or "unknown"
     if kind == "departed":
         note = f"Departed contact {who}. Suggested for a later attempt: {dest}. Nothing sent."
+    elif kind == "dead_inbox":
+        note = f"Dead inbox {who}. Forwarding addresses: {dest}."
     elif kind == "out_of_office":
         note = f"Out of office from {who}. Suggested for a later attempt: {dest}. Nothing sent."
     else:
         note = f"Automated notice from {who}. Suggested for a later attempt: {dest}. Nothing sent."
-    return Notice(kind, reason, note)
+    return Notice(kind, reason, note, tuple(suggested))
 
 
 def automated_notice(message: Any = "", *, lead_email: str = "", subject: str = "",
@@ -781,6 +826,8 @@ def automated_notice(message: Any = "", *, lead_email: str = "", subject: str = 
     suggested = _suggested(own, lead_email)
     if _says_departed(low):
         return _notice("departed", "automatic reply: departed employee", lead_email, suggested)
+    if _says_dead_inbox(low):
+        return _notice("dead_inbox", "automatic reply: dead inbox", lead_email, suggested)
     if _SURVEY_RE.search(low):
         return _notice("auto_reply", "automatic reply: satisfaction survey", lead_email, suggested)
     if any(phrase in low for phrase in _OOO_PHRASES) or _subject_ooo(subject):
@@ -793,6 +840,8 @@ def automated_notice(message: Any = "", *, lead_email: str = "", subject: str = 
     # on the existing path so a real answer is not discarded.
     if not _human_reply_signal(body) and not _OPT_OUT_RE.search(own) and not explicit_yes(own):
         if any(_contains_phrase(low, phrase) for phrase in _GATED_OOO_PHRASES):
+            return _notice("out_of_office", "automatic reply: out of office", lead_email, suggested)
+        if _DATED_ABSENCE_RE.search(low):
             return _notice("out_of_office", "automatic reply: out of office", lead_email, suggested)
         if len(_weak_ooo_hits(body)) >= 2:
             return _notice("out_of_office", "automatic reply: out of office", lead_email, suggested)
@@ -807,7 +856,108 @@ def _message_flag(message: Any, is_auto_reply: Any) -> Any:
     return None
 
 
-def _ignore(notice: Notice, *, lead: str = "", human: bool = False) -> Decision:
+def _personal_replacements(targets: tuple[str, ...] | list[str], lead: str) -> list[str]:
+    """Named people. Role inboxes stay on the note and are not emailed."""
+
+    found: list[str] = []
+    who = (lead or "").strip().lower()
+    for addr in targets:
+        if not addr or addr == who or is_role_address(addr) or addr in found:
+            continue
+        found.append(addr)
+    return found
+
+
+def _forward_targets(targets: tuple[str, ...] | list[str], lead: str) -> list[str]:
+    """Every other address on a dead-inbox note, including a shared inbox."""
+
+    found: list[str] = []
+    who = (lead or "").strip().lower()
+    for addr in targets:
+        if not addr or addr == who or addr in found:
+            continue
+        found.append(addr)
+    return found
+
+
+def _lock_notice(notice: Notice, *, lead: str, human: bool, company: str,
+                 first_name: str) -> Decision:
+    """Stop the closed address. Write only to the replacement, once."""
+
+    who = lead or "unknown"
+    human_note = ""
+    if human:
+        human_note = (
+            f"Abby ignored a message Instantly marked as human from {who}. {notice.reason}. "
+        )
+    if notice.kind == "dead_inbox":
+        targets = _forward_targets(notice.targets, lead)
+        if not targets:
+            note = f"Dead inbox {who}. No forwarding address. Nothing sent."
+            slack = f"{human_note}Sequences are stopped. Nothing sent." if human else ""
+            return Decision(
+                "auto_reply", "ignore", reason=notice.reason, note=note,
+                slack=slack.strip(), stop_sequences=True,
+            )
+        from sales_support_agent.abby_playbook import render_dead_inbox_ask
+
+        dest = ", ".join(targets)
+        note = (
+            f"Dead inbox {who}. Asked once who handles ecommerce or growth: {dest}. "
+            "Nothing sent to the dead address."
+        )
+        slack = (
+            f"{human_note}Sequences are stopped. One note goes only to {dest}."
+            if human else
+            f"Dead inbox {who}. Abby asked {dest} once who handles ecommerce or growth, "
+            "then stopped the dead address."
+        )
+        return Decision(
+            "auto_reply", "redirect", reply=render_dead_inbox_ask(brand=company),
+            to_extra=targets, reason=notice.reason, note=note, slack=slack.strip(),
+            stop_sequences=True,
+        )
+
+    personal = _personal_replacements(notice.targets, lead)
+    if notice.kind == "departed" and personal:
+        from sales_support_agent.abby_playbook import render_named_replacement
+
+        dest = ", ".join(personal)
+        name = _name_from_address(personal[0]) if len(personal) == 1 else ""
+        note = (
+            f"Departed contact {who}. Follow-up goes only to {dest}. "
+            "Nothing sent to the departed address."
+        )
+        slack = (
+            f"{human_note}Sequences are stopped. The follow-up goes only to {dest}."
+            if human else
+            f"Departed contact {who}. Abby wrote only to {dest} and stopped their sequences."
+        )
+        return Decision(
+            "auto_reply", "redirect",
+            reply=render_named_replacement(
+                referrer=first_name, replacement_name=name, brand=company,
+                several=len(personal) > 1,
+            ),
+            to_extra=personal, reason=notice.reason, note=note, slack=slack.strip(),
+            stop_sequences=True,
+        )
+
+    slack = ""
+    if human:
+        slack = f"{human_note}Sequences are stopped. Nothing sent."
+    return Decision(
+        "auto_reply", "ignore", reason=notice.reason, note=notice.note,
+        slack=slack.strip(), stop_sequences=notice.kind == "departed",
+    )
+
+
+def _ignore(notice: Notice, *, lead: str = "", human: bool = False,
+            company: str = "", first_name: str = "") -> Decision:
+    if notice.kind in {"departed", "dead_inbox"}:
+        return _lock_notice(
+            notice, lead=lead, human=human, company=company, first_name=first_name,
+        )
     kind = "out_of_office" if notice.kind == "out_of_office" else ""
     slack = ""
     if human:
@@ -862,7 +1012,7 @@ def decide(model_out: dict[str, Any], *, lead_email: str, thread_categories: lis
     notice = automated_notice(message, lead_email=lead_email, subject=subject,
                               headers=headers, is_auto_reply=flag)
     if notice:
-        return _ignore(notice, lead=lead_email, human=human)
+        return _ignore(notice, lead=lead_email, human=human, company=company, first_name=first_name)
 
     if cat == "opt_out":
         return Decision(cat, "block", interest=-1, block_domain=_domain(lead_email),
@@ -1024,7 +1174,7 @@ Categories: {", ".join(CATEGORIES)}.
 - hostile: insults, threats, legal language (spam laws, lawyers, reporting).
 - question: a specific question you can partly answer from the facts.
 - ai_question: asks if you are a bot, AI or a real person.
-- auto_reply: out of office, an automated message, a satisfaction survey, a departed-employee notice, or a forwarding notice. This includes "no longer with", "no longer part of", "no longer work at", "I have left", "I have now left", "left the business", "has left the company", "out of the office", a subject that starts with OOO, "please direct inquiries", "concluded my role", and "no longer monitoring". A mailbox rule that only points at info@, sales@, support@, or customerservice@ is auto_reply. Naming a person or giving their email does not make these a referral. Leave referral_email null. Choose auto_reply only when the message is clearly one of these. If a human wrote it, or you are unsure, choose other.
+- auto_reply: out of office, an automated message, a satisfaction survey, a departed-employee notice, a dead inbox, or a forwarding notice. This includes "no longer with", "no longer part of", "no longer work at", "I have left", "I have now left", "left the business", "has left the company", "out of the office", "traveling until", "email is no longer active", a subject that starts with OOO, "please direct inquiries", "concluded my role", and "no longer monitoring". A mailbox rule that only points at info@, sales@, support@, or customerservice@ is auto_reply. Naming a person or giving their email does not make these a referral. Leave referral_email null. Choose auto_reply only when the message is clearly one of these. If a human wrote it, or you are unsure, choose other.
 - wrong_person: a human says this is not their area and names no colleague and no address to send information to.
 
 Do not draft the reply. Set reply to null.
@@ -1095,7 +1245,7 @@ def think(thread: list[dict[str, Any]], *, lead_email: str, company: str, first_
     human = instantly_marked_human(latest.get("is_auto_reply") if isinstance(latest, dict) else None)
     notice = automated_notice(latest, lead_email=lead_email)
     if notice:
-        return _ignore(notice, lead=lead_email, human=human)
+        return _ignore(notice, lead=lead_email, human=human, company=company, first_name=first_name)
     body = _body_text(latest)
     if not _OPT_OUT_RE.search(body):
         route = send_info_route(latest, lead_email=lead_email)

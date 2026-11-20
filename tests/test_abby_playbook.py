@@ -8,6 +8,7 @@ from sales_support_agent.abby_playbook import (
     SIGNATURE,
     ooo_due,
     ooo_personal_line,
+    ooo_plan,
     parse_return_date,
     render_has_solution_second,
     render_immediate_reply,
@@ -39,11 +40,31 @@ def test_missing_return_date_waits_seven_days():
     assert ooo_due("I am out of the office.", NOW) == NOW + timedelta(days=7)
 
 
+def test_a_passed_return_date_on_a_new_note_waits_again():
+    later = datetime(2026, 11, 20, 19, 25, tzinfo=timezone.utc)
+    text = "I am out of the office until November 19."
+    due, return_on = ooo_plan(text, later)
+    assert return_on is None
+    assert due == later + timedelta(days=7)
+
+
+def test_weekday_month_return_is_the_stated_day():
+    text = "I am traveling until Mon Nov 23."
+    assert parse_return_date(text, date(2026, 11, 16)) == date(2026, 11, 23)
+    due, return_on = ooo_plan(text, datetime(2026, 11, 16, 16, 6, tzinfo=timezone.utc))
+    assert return_on == date(2026, 11, 23)
+    assert due == datetime(2026, 11, 24, 15, 0, tzinfo=timezone.utc)
+
+
 def test_personal_lines_use_approved_wording_and_do_not_invent():
-    assert ooo_personal_line("Out of the office on vacation until November 4.") == "Hope you had a great vacation."
-    assert ooo_personal_line("At a trade show all week.") == "Hope the show was worth the trip."
-    assert ooo_personal_line("Out of the office.") == "Hope your time away went well."
-    health = ooo_personal_line("Out of the office for a family emergency.")
+    assert ooo_personal_line("Out of the office on vacation until November 4.") == "Hope all is well."
+    assert ooo_personal_line(
+        "Out of the office on vacation until November 4.", returned=True,
+    ) == "Hope you had a great vacation."
+    assert ooo_personal_line("At a trade show all week.", returned=True) == "Hope the show was worth the trip."
+    assert ooo_personal_line("Out of the office.") == "Hope all is well."
+    assert ooo_personal_line("Out of the office.", returned=True) == "Hope your time away went well."
+    health = ooo_personal_line("Out of the office for a family emergency.", returned=True)
     assert health == "Hope all is well."
     assert "emergency" not in health and "sick" not in health
 

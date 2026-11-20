@@ -177,7 +177,6 @@ def test_prompt_treats_departed_and_ooo_as_auto_reply():
 
 @pytest.mark.parametrize("lead,body,bits", [
     ("mac@riomarshoes.com", RIOMAR, ("Departed contact mac@riomarshoes.com", "customerservice@riomarshoes.com")),
-    ("carley@garbarinishop.com", GARBARINI, ("Departed contact carley@garbarinishop.com", "sierra@garbarinishop.com", "elisa@garbarinishop.com")),
     ("danielle@bellocq.com", BELLOCQ, ("Departed contact danielle@bellocq.com", "sales@bellocq.com")),
     ("mac@riomarshoes.com", OOO, ("Out of office from mac@riomarshoes.com", "info@riomarshoes.com")),
 ])
@@ -452,6 +451,7 @@ class FakeClient:
         self.received, self.threads = received, threads or {}
         self.interested, self.leads = interested or [], leads or {}
         self.replies, self.blocks, self.interest = [], [], []
+        self.forwards, self.removed = [], []
 
     def interested_latest(self, campaign_id):
         return list(self.interested)
@@ -483,6 +483,17 @@ class FakeClient:
     def block(self, value):
         self.blocks.append(value)
         return 200
+
+    def list_lead_labels(self):
+        return [{"label": "Left company", "interest_status": 51}]
+
+    def remove_from_subsequence(self, lead_id):
+        self.removed.append(lead_id)
+        return 200, {"id": lead_id}
+
+    def forward(self, **kw):
+        self.forwards.append(kw)
+        return 200, {"id": f"f{len(self.forwards)}"}
 
 
 @pytest.fixture
@@ -766,15 +777,15 @@ def test_no_nudges_once_david_is_in_the_thread(engine):
     assert c.replies == []
 
 
-def test_live_run_records_departed_notices_and_sends_nothing(engine):
-    """Riomar, Garbarini, and Bellocq: no reply, no Interested mark, note kept."""
+def test_live_run_stops_departed_leads_and_does_not_email_them(engine):
+    """Riomar and Bellocq name only a role inbox. Garbarini names two people."""
     cases = [
-        ("mac@riomarshoes.com", RIOMAR, "customerservice@riomarshoes.com"),
-        ("carley@garbarinishop.com", GARBARINI, "sierra@garbarinishop.com"),
-        ("danielle@bellocq.com", BELLOCQ, "sales@bellocq.com"),
+        ("mac@riomarshoes.com", RIOMAR, "customerservice@riomarshoes.com", "ignore"),
+        ("carley@garbarinishop.com", GARBARINI, "sierra@garbarinishop.com", "redirect"),
+        ("danielle@bellocq.com", BELLOCQ, "sales@bellocq.com", "ignore"),
     ]
     messages, threads = [], {}
-    for i, (lead, body, _needle) in enumerate(cases, start=1):
+    for i, (lead, body, _needle, _expected) in enumerate(cases, start=1):
         msg = email(i, lead=lead, thread=f"tn{i}")
         msg["body"] = {"text": body}
         msg["from_address_email"] = lead
@@ -786,19 +797,24 @@ def test_live_run_records_departed_notices_and_sends_nothing(engine):
 
     c = FakeClient(messages, threads)
     out = runner.run(engine, client=c, campaign_id="camp", now=NOW, think=think)
-    assert out["ignored"] == 3 and out["replied"] == 0 and out["held"] == 0
-    assert c.replies == [] and c.interest == [] and c.blocks == []
+    assert out["ignored"] == 2 and out["replied"] == 1 and out["held"] == 0
+    assert c.replies == [] and c.blocks == []
+    assert {item[0] for item in c.interest} == {lead for lead, _body, _needle, _action in cases}
+    assert {item[1] for item in c.interest} == {51}
+    assert c.forwards and "carley@garbarinishop.com" not in c.forwards[0]["to"]
+    assert c.forwards[0]["to"] == ["elisa@garbarinishop.com", "sierra@garbarinishop.com"]
     with engine.connect() as conn:
         rows = conn.execute(text(
             "SELECT lead, action, detail FROM abby_handled ORDER BY lead")).fetchall()
     saved = {lead: (action, detail) for lead, action, detail in rows}
-    for lead, _body, needle in cases:
+    for lead, _body, needle, expected in cases:
         action, detail = saved[lead]
-        assert action == "ignore"
-        assert "Departed contact" in detail and needle in detail and "Nothing sent." in detail
+        assert action == expected
+        assert "Departed contact" in detail and needle in detail
+        assert "Nothing sent" in detail
     import outbound_suppression as suppression
     emails, domains = suppression.lists(engine)
-    for lead, _body, _needle in cases:
+    for lead, _body, _needle, _action in cases:
         assert lead in emails
     assert domains == set()
 
@@ -1189,17 +1205,20 @@ def test_i_have_now_left_is_departed_and_not_interested():
         thread_categories=[], llm=lambda prompt: calls.append(prompt) or _bad_referral(prompt),
     )
     assert calls == []
-    assert result.action == "ignore" and result.interest is None and result.to_extra == []
+    assert result.action == "redirect" and result.interest is None and result.cc == []
+    assert result.stop_sequences is True
+    assert result.to_extra == ["olivia.smith@hellopatch.com"]
+    assert "jack@arena.online" not in result.reply
+    assert "Hi Olivia, Jack mentioned you at Arena." in result.reply
+    assert "http" not in result.reply and " - " not in result.reply
     assert "departed" in result.reason
     assert "olivia.smith@hellopatch.com" in result.note
-    assert "Nothing sent." in result.note
+    assert "Nothing sent to the departed address." in result.note
     assert result.slack and "Instantly marked as human" in result.slack
 
 
 @pytest.mark.parametrize("body", [
-    "I no longer work at Phizz. Please reach out to thom@phizz.co.",
     "Shenoa is no longer part of KaramMD Skin.",
-    "This email is no longer active. Please contact account@earthbath.com.",
     "Mo has left REFY. This inbox is no longer monitored.",
 ])
 def test_more_departed_wording_is_ignored_before_the_model(body):

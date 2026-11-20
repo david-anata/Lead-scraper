@@ -12,18 +12,22 @@ Safety rails, all in code:
     domains) and never get a reply;
   * hostile or legal replies blocklist the lead, mark them not interested,
     and get no further sends. Unsure or failed drafts are held for Slack;
-  * departed-employee notices and automated forwards are ignored: no reply,
-    no Interested status, no David CC, no follow-up. A departed contact is
-    recorded and suppressed from future Instantly pushes. The company can
-    still be tried later through a different person. A message Instantly
-    marked human is still posted to Slack when it is ignored;
+  * a departed employee is marked left in Instantly, removed from
+    subsequences, and suppressed from later pushes. Nothing is sent back to
+    that address. One follow-up goes only to a named replacement. A dead
+    inbox gets one ask, to the forwarding address, about who handles
+    ecommerce or growth, then stops. A message Instantly marked human is
+    still posted to Slack;
   * a human who asks us to send information to an address, including a role
     inbox, is held for Slack. That address is not emailed;
   * interest=1 is written only for a live interested or price reply;
   * a later campaign step, subsequence send, nudge, or scheduled follow-up
     does not count as an answer to a human question;
   * out-of-office replies are not answered now. A follow-up is scheduled
-    for the day after the parsed return date, or 7 days when no date is found;
+    for the day after the parsed return date, or 7 days when no date is found.
+    A later out-of-office replaces a pending follow-up. A return date that
+    has already passed starts the wait over. "Hope your time away went well"
+    is sent only after the return date;
   * the same handle_email() path serves the 5-minute poll and the reply webhook.
 """
 
@@ -32,7 +36,7 @@ from __future__ import annotations
 import logging
 import os
 import re
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from typing import Any, Callable, Iterable, Optional
 from zoneinfo import ZoneInfo
 
@@ -469,6 +473,48 @@ class Instantly:
             return 0, None
         return self._call("POST", f"webhooks/{webhook_id}/resume")
 
+    def list_lead_labels(self) -> list[dict]:
+        """Workspace lead labels, including a custom Left company status."""
+
+        items: list[dict] = []
+        params: dict[str, Any] = {"limit": 100}
+        for _ in range(10):
+            status, data = self._call("GET", "lead-labels", params=params)
+            if status != 200 or not isinstance(data, dict):
+                logger.warning("[abby] lead label list failed status=%s", status)
+                return items
+            items.extend(item for item in (data.get("items") or []) if isinstance(item, dict))
+            nxt = str(data.get("next_starting_after") or "").strip()
+            if not nxt:
+                return items
+            params["starting_after"] = nxt
+        return items
+
+    def remove_from_subsequence(self, lead_id: str) -> tuple[int, Any]:
+        """Take one lead out of the subsequence they are enrolled in."""
+
+        if not lead_id:
+            return 0, None
+        return self._call("POST", "leads/subsequence/remove", json={"id": lead_id})
+
+    def forward(self, *, reply_to: str, eaccount: str, subject: str, body: str,
+                to: list[str]) -> tuple[int, Any]:
+        """Send only to ``to``. The original recipient is not included."""
+
+        payload = {
+            "reply_to_uuid": reply_to,
+            "eaccount": eaccount,
+            "subject": subject,
+            "to_address_email_list": ",".join(addr for addr in to if addr),
+            "body": {"text": body, "html": abby.to_html(body)},
+            "include_original_body": False,
+        }
+        status, data = self._call("POST", "emails/forward", json=payload)
+        if is_read_timeout_result(status, data):
+            logger.warning("[abby] instantly forward read timed out; retrying once")
+            status, data = self._call("POST", "emails/forward", json=payload)
+        return status, data
+
 
 def _naive(value: Any) -> Optional[datetime]:
     if isinstance(value, datetime):
@@ -533,7 +579,7 @@ def _detail(email: dict, decision: abby.Decision, detail: str) -> str:
         parts.append(decision.note)
     if them:
         parts.append(f"THEM: {them}")
-    if decision.reply and decision.action == "reply":
+    if decision.reply and decision.action in {"reply", "redirect"}:
         parts.append("ABBY: " + re.sub(r"\s+", " ", decision.reply)[:300])
     return " | ".join(p for p in parts if p)[:1000]
 
@@ -554,8 +600,10 @@ def _abby_reply_ids(engine) -> set[str]:
 def _sent_today(engine, now: datetime) -> int:
     since = (now - timedelta(hours=24)).replace(tzinfo=None)
     with engine.connect() as conn:
-        row = conn.execute(text("SELECT COUNT(*) FROM abby_handled WHERE action IN ('reply', 'nudge', 'followup') AND mode = 'live' "
-                                "AND created_at >= :s"), {"s": since}).fetchone()
+        row = conn.execute(text(
+            "SELECT COUNT(*) FROM abby_handled WHERE action IN ('reply', 'nudge', 'followup', 'redirect') "
+            "AND mode = 'live' AND created_at >= :s"
+        ), {"s": since}).fetchone()
     return int(row[0] or 0)
 
 
@@ -754,6 +802,22 @@ def _cancel_scheduled(engine, lead: str) -> None:
         logger.exception("[abby] could not cancel scheduled follow-ups")
 
 
+def _cancel_pending_ooo(engine, lead: str) -> None:
+    """A newer out-of-office replaces a follow-up that has not gone out."""
+
+    if not lead:
+        return
+    try:
+        with engine.begin() as conn:
+            conn.execute(text(
+                "UPDATE abby_followups_scheduled SET status = 'cancelled', "
+                "detail = 'superseded by a later out of office' "
+                "WHERE lead = :l AND kind = 'out_of_office' AND status = 'pending'"
+            ), {"l": lead})
+    except Exception:  # noqa: BLE001
+        logger.exception("[abby] could not replace a pending out-of-office follow-up")
+
+
 def _schedule_rows(engine, *, email: dict, decision: abby.Decision, info: dict, lead: str,
                    reply_to: str, now: datetime, run_mode: str, campaign_id: str) -> int:
     """Insert playbook follow-ups. Live rows are pending; shadow rows are not sent."""
@@ -770,19 +834,33 @@ def _schedule_rows(engine, *, email: dict, decision: abby.Decision, info: dict, 
     brand = str(info.get("company") or "")
     reply_text = _message_text(email)
     status = "pending" if run_mode == "live" else "shadow"
-    planned: list[tuple[str, datetime, str]] = []
+    planned: list[tuple[str, datetime, str, str]] = []
     if decision.schedule_kind == "out_of_office":
-        due = playbook.ooo_due(reply_text, now)
-        planned.append(("out_of_office", due, playbook.render_ooo_followup(
-            first_name=first, brand=brand, reply_text=reply_text)))
+        due, return_on = playbook.ooo_plan(reply_text, now)
+        _cancel_pending_ooo(engine, lead)
+        stamp = return_on.isoformat() if return_on is not None else ""
+        planned.append((
+            "out_of_office", due,
+            playbook.render_ooo_followup(
+                first_name=first, brand=brand, reply_text=reply_text,
+                returned=return_on is not None,
+            ),
+            f"out_of_office return={stamp}",
+        ))
     elif decision.schedule_kind == "not_now":
         for day in playbook.NOT_NOW_DAYS:
-            planned.append((f"not_now_{day}", now + timedelta(days=day), playbook.render_not_now(day, first)))
+            planned.append((
+                f"not_now_{day}", now + timedelta(days=day),
+                playbook.render_not_now(day, first), decision.schedule_kind,
+            ))
     elif decision.schedule_kind == "has_solution":
         due = now + timedelta(days=playbook.HAS_SOLUTION_SECOND_DAYS)
-        planned.append(("has_solution_second", due, playbook.render_has_solution_second(first)))
+        planned.append((
+            "has_solution_second", due, playbook.render_has_solution_second(first),
+            decision.schedule_kind,
+        ))
     saved = 0
-    for kind, due, body in planned:
+    for kind, due, body, row_detail in planned:
         try:
             with engine.begin() as conn:
                 conn.execute(text(
@@ -796,7 +874,7 @@ def _schedule_rows(engine, *, email: dict, decision: abby.Decision, info: dict, 
                     "s": _subject(email.get("subject") or ""), "f": first, "b": brand,
                     "c": campaign_id, "k": kind, "d": due.replace(tzinfo=None),
                     "st": status, "body": body, "src": email.get("id") or "",
-                    "detail": decision.schedule_kind,
+                    "detail": row_detail,
                 })
             saved += 1
         except Exception:  # noqa: BLE001
@@ -1012,7 +1090,10 @@ def _handle_claimed(engine, email: dict, *, client: Instantly, campaign_id: str,
                 run_mode=run_mode)
         counts["skipped"] += 1
         return counts
-    if lead and _is_suppressed(engine, lead):
+    if lead and _is_suppressed(engine, lead) and (not _sender(email) or _sender(email) == lead):
+        notice = abby.automated_notice(email, lead_email=lead)
+        if run_mode == "live" and notice is not None and notice.kind in {"departed", "dead_inbox"}:
+            stop_lead_sequences(client, lead, campaign_id, post_slack)
         _finish(engine, email=email, decision=abby.Decision("other", "skip", reason="suppressed: no further sends"),
                 run_mode=run_mode)
         counts["skipped"] += 1
@@ -1032,12 +1113,19 @@ def _handle_claimed(engine, email: dict, *, client: Instantly, campaign_id: str,
     decision = think(thread, lead_email=lead, company=info.get("company", ""),
                      first_name=info.get("first_name", ""),
                      thread_categories=_thread_categories(engine, email.get("thread_id") or ""))
-    if lead and _is_departed(decision):
-        _remember_departed(engine, lead)
+    if decision.action == "redirect" and lead and _already_redirected(engine, lead, str(email.get("id") or "")):
+        decision = abby.Decision(
+            decision.category, "ignore", reason=decision.reason,
+            note=f"{decision.note} Already asked once.".strip(),
+            stop_sequences=decision.stop_sequences,
+        )
 
-    if decision.action == "reply" and run_mode == "live" and _sent_today(engine, now) >= cap:
-        decision = abby.Decision(decision.category, "hold", reason="daily cap reached",
-                                 slack=f"Abby hit her daily cap; {lead} is waiting for a reply.")
+    if decision.action in {"reply", "redirect"} and run_mode == "live" and _sent_today(engine, now) >= cap:
+        decision = abby.Decision(
+            decision.category, "hold", reason="daily cap reached",
+            slack=f"Abby hit her daily cap; {lead} is waiting for a reply.",
+            note=decision.note, stop_sequences=decision.stop_sequences,
+        )
 
     reply_id, detail = "", ""
     deck_url = ""
@@ -1113,6 +1201,38 @@ def _handle_claimed(engine, email: dict, *, client: Instantly, campaign_id: str,
         else:
             detail = "shadow: " + decision.reply
             post_slack(f"[Abby draft, not sent] {lead} ({decision.category})\n\n{decision.reply}")
+    if decision.action == "redirect":
+        targets = [addr for addr in decision.to_extra if addr and addr.lower() != lead]
+        if run_mode == "live" and targets:
+            st, data = client.forward(
+                reply_to=email["id"], eaccount=email.get("eaccount") or "",
+                subject=_subject(email.get("subject") or ""), body=decision.reply, to=targets,
+            )
+            if st != 200:
+                decision = abby.Decision(
+                    decision.category, "hold", reason=f"forward failed ({st})",
+                    note=decision.note, stop_sequences=decision.stop_sequences,
+                    slack=(
+                        f"Abby's note to {', '.join(targets)} for {lead} failed to send ({st}). "
+                        "Nothing went to the closed address."
+                    ),
+                )
+            else:
+                reply_id = str((data or {}).get("id") or "")
+                counts["replied"] += 1
+        elif targets:
+            detail = "shadow: " + decision.reply
+            post_slack(
+                f"[Abby draft, not sent] {lead} -> {', '.join(targets)} ({decision.category})\n\n{decision.reply}"
+            )
+    if decision.stop_sequences and lead:
+        if _is_dead_inbox(decision):
+            _remember_closed_inbox(engine, lead)
+        else:
+            _remember_departed(engine, lead)
+        _cancel_scheduled(engine, lead)
+        if run_mode == "live":
+            stop_lead_sequences(client, lead, campaign_id, post_slack)
     if decision.action == "block":
         dom = decision.block_domain
         blocked_value = lead if (not dom or dom in FREEMAIL) else dom
@@ -1385,6 +1505,118 @@ def _is_departed(decision: abby.Decision) -> bool:
     return "departed employee" in reason or note.startswith("departed contact")
 
 
+def _is_dead_inbox(decision: abby.Decision) -> bool:
+    reason = str(decision.reason or "").lower()
+    note = str(decision.note or "").lower()
+    return "dead inbox" in reason or note.startswith("dead inbox")
+
+
+_LEFT_LABEL_RE = re.compile(r"left(?:\s+the)?\s+company|\bdeparted\b", re.I)
+NOT_INTERESTED = -1
+
+
+def left_company_interest(labels: list[dict]) -> Optional[int]:
+    """The workspace interest value whose label is Left company, if one exists."""
+
+    for item in labels or []:
+        name = re.sub(r"\s+", " ", str(item.get("label") or "")).strip()
+        if not name or _LEFT_LABEL_RE.search(name) is None:
+            continue
+        try:
+            return int(item.get("interest_status"))
+        except (TypeError, ValueError):
+            continue
+    return None
+
+
+def _already_redirected(engine, lead: str, email_id: str) -> bool:
+    """True when this closed address was already asked, on an earlier email."""
+
+    try:
+        with engine.connect() as conn:
+            row = conn.execute(text(
+                "SELECT 1 FROM abby_handled WHERE lower(lead) = :l AND action = 'redirect' "
+                "AND email_id <> :i LIMIT 1"
+            ), {"l": (lead or "").lower(), "i": email_id}).fetchone()
+    except Exception:  # noqa: BLE001
+        logger.exception("[abby] could not check an earlier redirect")
+        return False
+    return row is not None
+
+
+def stop_lead_sequences(client: Any, lead: str, campaign_id: str,
+                        post_slack: Callable[[str], Any]) -> dict[str, Any]:
+    """Mark the lead left and take them out of any subsequence.
+
+    A Left company label stops the sequence. When the workspace has no such
+    label, Not Interested is the status Instantly completes a lead with.
+    Removal uses the lead id, which is what the subsequence API accepts.
+    """
+
+    records: list[dict] = []
+    getter = getattr(client, "leads_for_email", None)
+    if getter is not None:
+        try:
+            records = [row for row in (getter(lead) or []) if isinstance(row, dict)]
+        except Exception:  # noqa: BLE001
+            logger.exception("[abby] could not list leads to stop")
+            records = []
+    removed: list[str] = []
+    remover = getattr(client, "remove_from_subsequence", None)
+    seen_ids: set[str] = set()
+    for record in records:
+        lead_id = str(record.get("id") or "").strip()
+        if not lead_id or lead_id in seen_ids or remover is None:
+            continue
+        seen_ids.add(lead_id)
+        try:
+            status, _data = remover(lead_id)
+        except Exception:  # noqa: BLE001
+            logger.exception("[abby] subsequence remove failed")
+            post_slack(f"Abby could not remove {lead} from a subsequence.")
+            continue
+        # 404 means this lead is not in a subsequence. That is already stopped.
+        if status in {200, 404}:
+            removed.append(lead_id)
+            continue
+        post_slack(f"Abby could not remove {lead} from their subsequence ({status}).")
+    value: Optional[int] = None
+    raw = (os.getenv("ABBY_LEFT_COMPANY_INTEREST") or "").strip()
+    if raw:
+        try:
+            value = int(raw)
+        except ValueError:
+            logger.warning("[abby] ABBY_LEFT_COMPANY_INTEREST is not an integer")
+            value = None
+    if value is None:
+        labels: list[dict] = []
+        lister = getattr(client, "list_lead_labels", None)
+        if lister is not None:
+            try:
+                labels = [row for row in (lister() or []) if isinstance(row, dict)]
+            except Exception:  # noqa: BLE001
+                logger.exception("[abby] could not list lead labels")
+        value = left_company_interest(labels)
+    fallback = value is None
+    if value is None:
+        value = NOT_INTERESTED
+    campaigns: list[str] = []
+    for record in records:
+        cid = str(record.get("campaign") or record.get("campaign_id") or "").strip()
+        if cid and cid not in campaigns:
+            campaigns.append(cid)
+    if campaign_id and campaign_id not in campaigns:
+        campaigns.append(campaign_id)
+    for cid in campaigns:
+        confirm_interest(client, lead, value, cid, post_slack=post_slack)
+    if fallback and campaigns:
+        post_slack(
+            f"Abby stopped sequences for {lead}. Instantly has no Left company label, "
+            "so the lead was marked not interested and removed from subsequences."
+        )
+    return {"interest": value, "removed": removed, "fallback": fallback}
+
+
 def _remember_departed(engine, email: str) -> None:
     """Keep this address out of later pushes. Do not block the whole company."""
 
@@ -1396,6 +1628,19 @@ def _remember_departed(engine, email: str) -> None:
         )
     except Exception:  # noqa: BLE001
         logger.exception("[abby] could not record departed contact")
+
+
+def _remember_closed_inbox(engine, email: str) -> None:
+    """Keep a dead address out of later pushes. Do not block the whole company."""
+
+    try:
+        import outbound_suppression as suppression
+        suppression.add(
+            engine, kind="email", value=email, reason="dead_inbox",
+            source="abby", detail="inbox is no longer active", overwrite=False,
+        )
+    except Exception:  # noqa: BLE001
+        logger.exception("[abby] could not record a dead inbox")
 
 
 def _remember_opt_out(engine, value: str, post_slack: Optional[Callable[[str], Any]] = None,
@@ -1449,6 +1694,39 @@ def _send_due_followups(engine, client: Instantly, now: datetime, run_mode: str,
 
 
 FOLLOWUP_TIMEOUT_BACKOFF = timedelta(hours=1)
+_OOO_RETURNED_LINE = "Hope your time away went well."
+_OOO_STILL_OUT_LINE = "Hope all is well."
+
+
+def _ooo_return_date(detail: str) -> Optional[date]:
+    match = re.search(r"return=(\d{4}-\d{2}-\d{2})", detail or "")
+    if not match:
+        return None
+    try:
+        return date.fromisoformat(match.group(1))
+    except ValueError:
+        return None
+
+
+def _ooo_ready_to_send(body: str, detail: str, now: datetime) -> tuple[str, Optional[datetime]]:
+    """Hold the follow-up until the return date has passed.
+
+    The second value is the new due time when the note must wait. None means
+    send ``body`` now. A follow-up with no return date does not say the trip
+    went well.
+    """
+
+    moment = now if now.tzinfo else now.replace(tzinfo=timezone.utc)
+    today = moment.astimezone(timezone.utc).date()
+    return_on = _ooo_return_date(detail)
+    text_body = body or ""
+    if return_on is not None and today <= return_on:
+        due = datetime(return_on.year, return_on.month, return_on.day) + timedelta(days=1)
+        due = due.replace(hour=15)
+        return text_body, due
+    if return_on is None and _OOO_RETURNED_LINE in text_body:
+        text_body = text_body.replace(_OOO_RETURNED_LINE, _OOO_STILL_OUT_LINE)
+    return text_body, None
 
 
 def _post_followup_failure(engine, post_slack: Callable[[str], Any], text: str, now: datetime) -> None:
@@ -1491,7 +1769,8 @@ def send_due_scheduled(engine, client: Instantly, now: datetime, run_mode: str,
     try:
         with engine.connect() as conn:
             rows = conn.execute(text(
-                "SELECT id, lead, reply_to_id, eaccount, subject, body FROM abby_followups_scheduled "
+                "SELECT id, lead, reply_to_id, eaccount, subject, body, kind, detail "
+                "FROM abby_followups_scheduled "
                 "WHERE status = 'pending' AND due_at <= :n ORDER BY due_at LIMIT 8"
             ), {"n": now.replace(tzinfo=None)}).fetchall()
     except Exception:  # noqa: BLE001
@@ -1499,7 +1778,7 @@ def send_due_scheduled(engine, client: Instantly, now: datetime, run_mode: str,
         return 0
     sent = 0
     capped = False
-    for fid, lead, reply_to, eaccount, subject, body in rows:
+    for fid, lead, reply_to, eaccount, subject, body, kind, row_detail in rows:
         if _sent_today(engine, now) >= cap:
             capped = True
             break
@@ -1517,6 +1796,19 @@ def send_due_scheduled(engine, client: Instantly, now: datetime, run_mode: str,
             ), {"i": fid}).fetchone()
             if not claimed:
                 continue
+        if kind == "out_of_office":
+            body, waiting = _ooo_ready_to_send(body or "", row_detail or "", now)
+            if waiting is not None:
+                with engine.begin() as conn:
+                    conn.execute(text(
+                        "UPDATE abby_followups_scheduled SET status = 'pending', due_at = :d, body = :b "
+                        "WHERE id = :i"
+                    ), {"d": waiting, "b": body, "i": fid})
+                continue
+            with engine.begin() as conn:
+                conn.execute(text(
+                    "UPDATE abby_followups_scheduled SET body = :b WHERE id = :i AND status = 'sending'"
+                ), {"b": body, "i": fid})
         status, data = client.reply(
             reply_to=reply_to or "", eaccount=eaccount or "", subject=subject or "",
             body=body or "", cc=[], extra=[],
@@ -1662,6 +1954,8 @@ def _send_nudges(engine, client: Instantly, campaign_id: str, now: datetime, run
                     run_mode=run_mode, campaign_id=campaign_id)
             continue
         lead = str(anchor.get("lead") or latest.get("lead") or "").lower()
+        if lead and _is_suppressed(engine, lead):
+            continue
         info = lead_info(lead) or _instantly_info(client, lead)
         body, cc = nudge_text(n, info.get("first_name", ""), info.get("company", ""))
         if run_mode == "live" and _sent_today(engine, now) >= cap:
