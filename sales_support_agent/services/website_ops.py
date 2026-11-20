@@ -57,6 +57,7 @@ from sales_support_agent.services.website_ops_screaming_frog import (
 from sales_support_agent.services.website_ops_github import (
     CONTENT_ACTION_TYPES,
     METADATA_ACTION_TYPES,
+    PipelineBudgetExceeded,
     execute_github_article_action,
     execute_github_metadata_action,
     github_metadata_is_configured,
@@ -1431,12 +1432,21 @@ def _execute_feedback_action(
     record: Mapping[str, Any],
     *,
     config: website_ops.WebsiteOpsConfig,
+    budget_deadline: float | None = None,
 ) -> dict[str, Any]:
     action_type = str(record.get("action_type", "")).strip()
     if action_type in CONTENT_ACTION_TYPES and github_metadata_is_configured():
-        return execute_github_article_action(record, config=config)
+        return execute_github_article_action(
+            record,
+            config=config,
+            budget_deadline=budget_deadline,
+        )
     if action_type in METADATA_ACTION_TYPES and github_metadata_is_configured():
-        return execute_github_metadata_action(record, config=config)
+        return execute_github_metadata_action(
+            record,
+            config=config,
+            budget_deadline=budget_deadline,
+        )
     return website_ops.execute_feedback_action(record, config=config)
 
 
@@ -1589,6 +1599,7 @@ def _execute_record(
     *,
     require_auto_executable: bool = True,
     raise_on_error: bool = False,
+    budget_deadline: float | None = None,
 ) -> dict[str, Any] | None:
     if record.get("status") != "approved" or not record.get("action_type"):
         return None
@@ -1597,7 +1608,14 @@ def _execute_record(
     if require_auto_executable and not _record_is_auto_executable(record):
         return None
     try:
-        result = _execute_feedback_action(settings, record, config=config)
+        result = _execute_feedback_action(
+            settings,
+            record,
+            config=config,
+            budget_deadline=budget_deadline,
+        )
+    except PipelineBudgetExceeded:
+        raise
     except website_ops.ExecutionError as exc:
         _release_failed_article_claim(settings, record)
         website_ops.update_feedback_entry(
@@ -1937,12 +1955,16 @@ def run_website_ops(
                     continue
                 if _pipeline_budget_expired(deadline, clock):
                     return pause("resume_approved")
-                result = _execute_record(
-                    settings,
-                    config,
-                    record,
-                    raise_on_error=False,
-                )
+                try:
+                    result = _execute_record(
+                        settings,
+                        config,
+                        record,
+                        raise_on_error=False,
+                        budget_deadline=deadline,
+                    )
+                except PipelineBudgetExceeded:
+                    return pause("resume_approved")
                 if result:
                     executed_actions.append(result)
         next_stage = "report"
@@ -2094,12 +2116,16 @@ def run_website_ops(
                     continue
                 if _pipeline_budget_expired(deadline, clock):
                     return pause("execute")
-                result = _execute_record(
-                    settings,
-                    config,
-                    record,
-                    raise_on_error=True,
-                )
+                try:
+                    result = _execute_record(
+                        settings,
+                        config,
+                        record,
+                        raise_on_error=True,
+                        budget_deadline=deadline,
+                    )
+                except PipelineBudgetExceeded:
+                    return pause("execute")
                 if result:
                     executed_actions.append(result)
             if executed_actions:

@@ -72,6 +72,23 @@ def test_large_in_progress_queue_without_a_production_delta_is_not_a_failure() -
     assert outcome["failure_stage"] == ""
 
 
+def test_budget_pause_does_not_record_a_successful_weekly_period() -> None:
+    disposition = persisted_run_disposition(
+        mode="weekly",
+        outcome={
+            "status": "work_in_progress",
+            "production_delta_count": 0,
+            "resume_required": True,
+            "summary": "Paused before the report stage.",
+        },
+        ok=True,
+    )
+    assert disposition["status"] == ACTIVE_OUTCOME
+    assert disposition["failure"] is False
+    assert disposition["successful_day"] is False
+    assert disposition["recovery_status"] == "resume_next_pulse"
+
+
 def test_persisted_disposition_keeps_daily_in_progress_work_as_non_failure() -> None:
     disposition = persisted_run_disposition(
         mode="daily",

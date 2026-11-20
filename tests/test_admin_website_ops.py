@@ -76,6 +76,7 @@ from sales_support_agent.api.website_ops_jobs_router import (
     router as website_ops_jobs_router,
 )
 from sales_support_agent.services.website_ops_github import (
+    PipelineBudgetExceeded,
     execute_github_article_action,
     execute_github_metadata_action,
     generated_article_identities,
@@ -2738,6 +2739,42 @@ export const GENERATED_ARTICLES: readonly GeneratedArticle[] = [];
                 )
 
         client.put_file.assert_called_once()
+
+    def test_article_verification_yields_at_the_pipeline_budget_without_rolling_back(self) -> None:
+        record = self._generated_article_record()
+        source = '''import type { ArticlePageContent } from "@/components/pagekit/ArticlePage";
+export type GeneratedArticle = { content: ArticlePageContent };
+// WEBSITE_OPS_GENERATED_ARTICLES_START
+export const GENERATED_ARTICLES: readonly GeneratedArticle[] = [];
+// WEBSITE_OPS_GENERATED_ARTICLES_END
+'''
+        client = mock.Mock()
+        client.repository = "david-anata/anata-website"
+        client.branch = "main"
+        client.get_file.return_value = (source, "source-sha")
+        client.put_file.return_value = {"commit": {"sha": "commit-sha"}}
+        with mock.patch(
+            "sales_support_agent.services.website_ops_github.GitHubWebsiteClient",
+            return_value=client,
+        ), mock.patch(
+            "sales_support_agent.services.website_ops_github.website_ops.collect_page_observation",
+            return_value={"status_code": 404},
+        ), mock.patch(
+            "sales_support_agent.services.website_ops_github.time.monotonic",
+            side_effect=[0, 2],
+        ), mock.patch(
+            "sales_support_agent.services.website_ops_github.time.sleep"
+        ) as sleep:
+            with self.assertRaises(PipelineBudgetExceeded):
+                execute_github_article_action(
+                    record,
+                    config=SimpleNamespace(),
+                    timestamp=datetime(2026, 8, 1, tzinfo=timezone.utc),
+                    budget_deadline=1,
+                )
+
+        client.put_file.assert_called_once()
+        sleep.assert_not_called()
 
     def test_article_verification_accepts_the_site_title_suffix(self) -> None:
         record = self._generated_article_record()

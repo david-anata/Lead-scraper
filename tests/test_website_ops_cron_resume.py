@@ -21,10 +21,12 @@ from sales_support_agent.api.website_ops_jobs_router import (
 from sales_support_agent.services import website_ops_vendor as website_ops
 from sales_support_agent.services.website_ops import (
     get_website_ops_run_state,
+    load_feedback_records,
     load_website_ops_run_state,
     run_website_ops,
     save_feedback_record,
 )
+from sales_support_agent.services.website_ops_github import PipelineBudgetExceeded
 from sales_support_agent.services.website_ops_storage import (
     WebsiteOpsStorageMiddleware,
     ensure_website_ops_storage_schema,
@@ -282,7 +284,7 @@ def test_execution_chunk_resumes_the_remaining_item_on_the_next_invocation(tmp_p
     )
     calls: list[str] = []
 
-    def execute(settings, config, record, raise_on_error=False):
+    def execute(settings, config, record, raise_on_error=False, budget_deadline=None):
         feedback_id = str(record.get("feedback_id", ""))
         calls.append(feedback_id)
         website_ops.update_feedback_entry(record, {"status": "done", "execution_error": ""})
@@ -350,6 +352,87 @@ def test_execution_chunk_resumes_the_remaining_item_on_the_next_invocation(tmp_p
     assert len(set(calls)) == 2
     assert pipeline.call_count == 1
     assert resumed.ok is True
+
+
+def test_paused_weekly_run_is_not_recorded_as_a_successful_period(tmp_path) -> None:
+    root = tmp_path / "ops"
+    settings = _settings(root)
+    paused = SimpleNamespace(
+        ok=True,
+        message="Paused before the report stage.",
+        report={
+            "run_outcome": {
+                "status": "work_in_progress",
+                "summary": "Paused before the report stage.",
+                "production_delta_count": 0,
+                "resume_required": True,
+            }
+        },
+    )
+    with (
+        patch(
+            "sales_support_agent.api.website_ops_jobs_router.run_website_ops",
+            return_value=paused,
+        ),
+        patch(
+            "sales_support_agent.api.website_ops_jobs_router.send_website_ops_failure_email"
+        ) as failure_email,
+    ):
+        result = _run_due_modes(
+            settings,
+            ["weekly"],
+            trigger="render_cron",
+            force=True,
+            business_date=date(2026, 11, 16),
+        )
+
+    state = get_website_ops_run_state(settings, "weekly")
+    assert result["weekly"]["status"] == "work_in_progress"
+    assert state["status"] == "work_in_progress"
+    assert state["last_successful_date"] == ""
+    assert state["last_error"] == ""
+    failure_email.assert_not_called()
+
+
+def test_execution_budget_pause_leaves_the_approved_record_in_place(tmp_path) -> None:
+    root = tmp_path / "ops"
+    settings = _settings(root, execute_approved=True)
+    report_dir = root / "reports" / "daily"
+    report_dir.mkdir(parents=True)
+    (report_dir / "2026-11-01-report.md").write_text("# Report\n", encoding="utf-8")
+    record = save_feedback_record(
+        settings,
+        {
+            "summary": "Publish the waiting article",
+            "status": "approved",
+            "page_url": "https://anatainc.com/blog/waiting",
+            "action_type": "publish_blog_article",
+            "suggested_action_type": "publish_blog_article",
+            "execution_eligibility": "auto_execute",
+            "action_value": json.dumps({"slug": "waiting"}),
+        },
+    )
+    with patch(
+        "sales_support_agent.services.website_ops._execute_record",
+        side_effect=PipelineBudgetExceeded("verification paused"),
+    ):
+        paused = run_website_ops(
+            settings,
+            mode="daily",
+            deadline=100,
+            clock=lambda: 0,
+            business_date=date(2026, 11, 20),
+        )
+
+    assert paused.report["run_outcome"]["status"] == "work_in_progress"
+    assert paused.report["run_outcome"]["resume_required"] is True
+    stored = next(
+        item
+        for item in load_feedback_records(settings)
+        if item["feedback_id"] == record["feedback_id"]
+    )
+    assert stored["status"] == "approved"
+    assert stored.get("execution_error", "") == ""
 
 
 def test_in_progress_run_persists_across_invocations_until_production_is_verified(tmp_path) -> None:

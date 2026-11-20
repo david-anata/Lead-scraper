@@ -118,8 +118,10 @@ def persisted_run_disposition(
     """Decide how a finished attempt is stored.
 
     A daily run that is still working and has no verified production delta is
-    in progress. That is not a failed outcome. The next cron invocation resumes
-    it. A verified change or a fully reviewed quiet day is a successful day.
+    in progress. That is not a failed outcome. A budget pause is also in
+    progress for every mode, including weekly and monthly, so the unfinished
+    period is not recorded as successful. A verified change or a fully reviewed
+    quiet day is a successful day.
     """
 
     outcome_status = str(outcome.get("status", "") or "").strip()
@@ -132,14 +134,13 @@ def persisted_run_disposition(
         and bool(outcome.get("full_candidate_review"))
     )
     verified = outcome_status == VERIFIED_OUTCOME and production_delta_count > 0
-    if mode == "daily" and outcome_status == ACTIVE_OUTCOME:
+    budget_paused = bool(outcome.get("resume_required"))
+    if budget_paused or (mode == "daily" and outcome_status == ACTIVE_OUTCOME):
         return {
             "status": ACTIVE_OUTCOME,
             "failure": False,
             "successful_day": False,
-            "recovery_status": (
-                "resume_next_pulse" if outcome.get("resume_required") else "in_progress"
-            ),
+            "recovery_status": "resume_next_pulse" if budget_paused else "in_progress",
             "last_error": "",
         }
     daily_target_missed = mode == "daily" and not (verified or qualified_quiet_day)
