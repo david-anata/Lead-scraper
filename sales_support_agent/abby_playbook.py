@@ -21,6 +21,8 @@ SIGNATURE = "Abby\nAccount Specialist, Anata"
 NOT_NOW_DAYS = (30, 75)
 HAS_SOLUTION_SECOND_DAYS = 7
 OOO_FALLBACK_DAYS = 7
+OOO_RETURNED_LINE = "Hope your time away went well."
+OOO_STILL_OUT_LINE = "Hope all is well."
 _EM_DASH = "\u2014"
 _EN_DASH = "\u2013"
 
@@ -176,25 +178,36 @@ def parse_return_date(text: str, today: date) -> Optional[date]:
     return max(pool)
 
 
-def ooo_due(text: str, now: datetime) -> datetime:
-    """When to send the out-of-office follow-up.
+def ooo_plan(text: str, now: datetime) -> tuple[datetime, Optional[date]]:
+    """When to follow up, and the return date when that send is after it.
 
-    The day after the parsed return date, at 15:00 UTC. When the note has no
-    return date, seven days from ``now``.
+    A return date today or later is followed the next day at 15:00 UTC. The
+    line that assumes the trip is over belongs only on that send. A missing
+    date, or a date that has already passed on a note being read now, means
+    they are still away: wait seven days and do not use that line.
     """
 
     moment = now if now.tzinfo else now.replace(tzinfo=timezone.utc)
     parsed = parse_return_date(text, moment.date())
-    if parsed is None:
-        return moment + timedelta(days=OOO_FALLBACK_DAYS)
-    due = datetime(parsed.year, parsed.month, parsed.day, 15, 0, tzinfo=timezone.utc) + timedelta(days=1)
-    if due < moment:
-        return moment
+    if parsed is not None and parsed >= moment.date():
+        due = datetime(parsed.year, parsed.month, parsed.day, 15, 0, tzinfo=timezone.utc) + timedelta(days=1)
+        return due, parsed
+    return moment + timedelta(days=OOO_FALLBACK_DAYS), None
+
+
+def ooo_due(text: str, now: datetime) -> datetime:
+    """When to send the out-of-office follow-up."""
+
+    due, _return_on = ooo_plan(text, now)
     return due
 
 
-def ooo_personal_line(text: str) -> str:
-    """One approved personal line, or the neutral health line. Never a guess."""
+def ooo_personal_line(text: str, *, returned: bool = False) -> str:
+    """One approved personal line, or the neutral line. Never a guess.
+
+    ``returned`` is true only when the follow-up is sent after a stated
+    return date. Before that, the note does not say the time away went well.
+    """
 
     low = re.sub(r"\s+", " ", _own_text(text)).lower()
     loaded = _templates()
@@ -203,18 +216,21 @@ def ooo_personal_line(text: str) -> str:
     if step is not None:
         lines = dict(step.personal_lines)
     if any(word in low for word in _HEALTH_WORDS):
-        return "Hope all is well."
+        return OOO_STILL_OUT_LINE
+    if not returned:
+        return OOO_STILL_OUT_LINE
     if any(word in low for word in _VACATION_WORDS):
         return lines.get("vacation", "Hope you had a great vacation.")
     if any(word in low for word in _SHOW_WORDS):
         return lines.get("conference_or_trade_show", "Hope the show was worth the trip.")
-    return lines.get("no_reason", "Hope your time away went well.")
+    return lines.get("no_reason", OOO_RETURNED_LINE)
 
 
-def render_ooo_followup(*, first_name: str, brand: str, reply_text: str) -> str:
+def render_ooo_followup(*, first_name: str, brand: str, reply_text: str,
+                        returned: bool = False) -> str:
     """The approved out-of-office follow-up, with the personal line filled in."""
 
-    personal = ooo_personal_line(reply_text)
+    personal = ooo_personal_line(reply_text, returned=returned)
     name = _first(first_name) or "there"
     company = _brand(brand)
     loaded = _templates()
@@ -311,6 +327,35 @@ def render_referral(
     loaded = _templates()
     signature = loaded["wrong_person"].signature if loaded.get("wrong_person") else _signature()
     return _sign(core, signature)
+
+
+def render_named_replacement(*, referrer: str, replacement_name: str, brand: str,
+                             several: bool = False) -> str:
+    """One note to the person who replaced a departed contact.
+
+    A single named person uses the approved referral. Several named people
+    share one note so the departed address is not copied.
+    """
+
+    if not several and replacement_name:
+        return render_referral(
+            first_name=referrer, new_name=replacement_name, brand=brand, reply_text="",
+        )
+    who = _first(referrer) or "A colleague"
+    company = _brand(brand)
+    core = (
+        f"Hi, {who} is no longer at {company} and pointed me to you. "
+        f"I reached out about growing {company}'s sales on Amazon and Shopify. "
+        "Open to a quick look? We offer a free 14-day trial."
+    )
+    return _sign(core)
+
+
+def render_dead_inbox_ask(*, brand: str) -> str:
+    """The one question to a forwarding address. No second follow-up."""
+
+    company = _brand(brand)
+    return _sign(f"Hi, who handles ecommerce or growth for {company}?")
 
 
 def render_immediate_reply(

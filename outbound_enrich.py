@@ -831,7 +831,7 @@ def _campaign_routing(engine):
 
 
 def departed_emails(engine) -> set[str]:
-    """Emails Abby already classified as having left the company.
+    """Emails Abby already classified as having left, or as a dead inbox.
 
     A missing table means Abby has not recorded anyone here. That is not a
     reason to stop the push. A read error is the same: callers still apply
@@ -840,9 +840,10 @@ def departed_emails(engine) -> set[str]:
 
     sql = (
         "SELECT lower(lead) FROM abby_handled "
-        "WHERE lower(COALESCE(action, '')) = 'ignore' AND ("
+        "WHERE lower(COALESCE(action, '')) IN ('ignore', 'redirect') AND ("
         "lower(COALESCE(detail, '')) LIKE '%departed contact%' "
-        "OR lower(COALESCE(detail, '')) LIKE '%departed employee%'"
+        "OR lower(COALESCE(detail, '')) LIKE '%departed employee%' "
+        "OR lower(COALESCE(detail, '')) LIKE '%dead inbox%'"
         ")"
     )
     try:

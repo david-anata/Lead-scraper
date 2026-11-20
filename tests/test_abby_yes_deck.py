@@ -57,6 +57,9 @@ class FakeClient:
         self.threads = threads or {}
         self.replies = []
         self.interest = []
+        self._marked = []
+        self.forwards = []
+        self.removed = []
 
     def received_since(self, since, campaign_id):
         return list(self.received)
@@ -70,10 +73,24 @@ class FakeClient:
 
     def set_interest(self, lead, value, campaign_id):
         self.interest.append((lead, value, campaign_id))
+        self._marked.append({
+            "email": lead, "campaign": campaign_id, "lt_interest_status": value,
+        })
         return 200
 
     def leads_for_email(self, email):
-        return []
+        return [row for row in self._marked if row.get("email") == email]
+
+    def list_lead_labels(self):
+        return [{"label": "Left company", "interest_status": 51}]
+
+    def remove_from_subsequence(self, lead_id):
+        self.removed.append(lead_id)
+        return 200, {"id": lead_id}
+
+    def forward(self, **kw):
+        self.forwards.append(kw)
+        return 200, {"id": "fwd"}
 
     def block(self, value):
         return 200
@@ -223,7 +240,8 @@ def test_fixer_reclassifies_a_held_headerless_auto_reply_and_does_not_send(monke
     second = runner.run_missed_replies(
         engine, client=client, campaign_ids=["camp"], now=NOW, think=think,
     )
-    assert client.replies == [] and client.interest == []
+    assert client.replies == []
+    assert client.interest == [("larah@brand.com", 51, "camp")]
     assert first["sent"] == 0 and second["sent"] == 0
     with engine.connect() as conn:
         rows = conn.execute(text(

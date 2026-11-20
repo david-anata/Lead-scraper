@@ -314,16 +314,25 @@ to Slack. Each fix is one row in `abby_missed_reply_fixes`.
 
 A reply with no auto-reply header is still that notice when the subject
 starts with Automatic reply, Out of Office, Autoreply, or OOO, or when the
-body has parental, maternity, or paternity leave, or at least two absence
-phrases, and it does not ask a question, say a plain yes, opt out, or show
-interest. The hourly fixer
+body has parental, maternity, or paternity leave, or says someone is
+traveling until a date, or has at least two absence phrases, and it does not
+ask a question, say a plain yes, opt out, or show interest. The hourly fixer
 uses the same check. A hold that now matches is recorded as the ignore, the
 same way a header-detected auto-reply is, and nothing is sent. A human note
 that mentions time off and also answers or asks us something stays held.
 
+Someone who has left is marked with the workspace Left company label when
+Instantly has one, removed from any subsequence, and kept off later pushes.
+The company is not blocklisted. A named replacement gets one note, and that
+note is not copied back to the departed address. A dead inbox that points at
+another address is asked once who handles ecommerce or growth, then stopped.
+
 Out-of-office replies schedule one follow-up for the day after the parsed
-return date, or 7 days when no date is present. Not-now replies schedule
-check-ins at 30 and 75 days. A lead who already has a solution gets one later
+return date, or 7 days when no date is present. A new out-of-office replaces
+a follow-up that has not been sent. If the stated return date has already
+passed, the wait starts over instead of assuming they are back. The line
+"Hope your time away went well" is sent only after the return date. Not-now
+replies schedule check-ins at 30 and 75 days. A lead who already has a solution gets one later
 note, 7 days out, about running the free trial alongside their current tool.
 Wrong-person and referral replies use the approved templates. Hostile replies
 blocklist that lead and stop further sends. Opt-outs still block the company
