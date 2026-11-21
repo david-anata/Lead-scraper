@@ -34,7 +34,8 @@ def env(monkeypatch):
     monkeypatch.setenv("OUTBOUND_INSTANTLY_CAMPAIGN_ID", CAMPAIGN)
     for n in ("OUTBOUND_ENRICH_DAILY_COMPANIES",
               "OUTBOUND_ENRICH_DAILY_CREDITS", "OUTBOUND_ENRICH_PER_RUN",
-              "OUTBOUND_ENRICH_MAX_CONTACTS"):
+              "OUTBOUND_ENRICH_MAX_CONTACTS", "APOLLO_API_KEY",
+              "APOLLO_DAILY_CREDITS"):
         monkeypatch.delenv(n, raising=False)
 
 

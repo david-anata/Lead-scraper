@@ -118,6 +118,9 @@ Outbound contact finding (defaults are unchanged until these are set):
 
 - `OUTBOUND_ENRICH_DAILY_COMPANIES` — companies per weekday (default 120)
 - `OUTBOUND_ENRICH_DAILY_CREDITS` — Prospeo credits per weekday (default 250)
+- `APOLLO_DAILY_CREDITS` — Apollo fallback credits per Denver day (default 50).
+  People search is free. Each people match that returns a person counts as one
+  credit unless Apollo reports `credits_consumed`. Phone reveal stays off.
 - `OUTBOUND_ENRICH_PER_RUN` — companies per cron call (default 40)
 - `OUTBOUND_ENRICH_MAX_CONTACTS` — verified people per brand (default 2)
 - `ABBY_CAMPAIGN_IDS` — comma separated. When set, this replaces the outbound
@@ -221,6 +224,18 @@ Smaller revenue bands (`under_10k`, `10k_25k`, `25k_100k`) are separate
 recipe tags such as `amz_off__under_10k`. They stay off unless
 `OUTBOUND_REVENUE_BAND_EXPERIMENTS=true`. Turning that on does not create
 an Instantly campaign and does not spend the contact-finding cap.
+
+The hourly enrich job tries Prospeo first, then Apollo when Prospeo is out of
+credits (HTTP 402, quota, or an insufficient-credit response), returns HTTP 429,
+finds no person, or finds a person with no verified email. After Prospeo is out
+of credits, the rest of that run skips Prospeo. Only an email Apollo marks
+`verified` is kept. `APOLLO_API_KEY` empty disables the fallback and leaves the
+Prospeo path unchanged. The run summary records `contacts_prospeo`,
+`contacts_apollo`, `apollo_credits_used`, and `skip_reasons`. Each stored
+contact has `provider` `prospeo` or `apollo` once
+`sales_support_agent/migrations/20261120_outbound_apollo_provider.sql` is applied.
+Until that column exists, the summary still has the counts and Apollo credits
+are carried on the domain reason as `apollo_credits=N`.
 
 The hourly enrich job tries active `outbound_campaigns` recipes first,
 oldest unenriched brand first, up to each row's remaining `daily_cap`
