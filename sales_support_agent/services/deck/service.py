@@ -11,7 +11,7 @@ import math
 import mimetypes
 import re
 import secrets
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from urllib.parse import urljoin, urlparse
@@ -113,9 +113,13 @@ from sales_support_agent.services.deck.formatting import (  # noqa: F401
     _target_reference_label,
     _title_token_set,
     _titleize_slug,
+    clean_strategy_brand,
     deck_slug_with_timestamp,
     extract_short_product_name,
+    scrub_scraped_page_chrome,
+    strategy_deck_title,
     strip_site_title_noise,
+    usable_short_name,
     _trim_text,
 )
 from sales_support_agent.services.deck.parsing import (  # noqa: F401
@@ -525,6 +529,8 @@ class DeckGenerationService:
                             ("content_gate_passed", True),
                             ("content_gate_findings", []),
                             ("market_mode", "amazon"),
+                            ("amazon_presence", ""),
+                            ("amazon_listings", []),
                         )
                     },
                 },
@@ -543,6 +549,40 @@ class DeckGenerationService:
 
     # Overridable in tests; the default fetches public pages only.
     link_fetcher = None
+
+    def _lookup_amazon_presence(
+        self,
+        *,
+        brand: str,
+        domain: str,
+        source_type: str,
+        attached_asin: str,
+    ):
+        """Confirm Amazon presence before any deck claims the brand is absent.
+
+        An attached ASIN is already on Amazon. A website with no ASIN is
+        searched. Tests can set ``amazon_lookup`` to skip the network.
+        """
+
+        from sales_support_agent.services.deck.amazon_presence import (
+            AmazonPresence,
+            attached_presence,
+            lookup_brand_on_amazon,
+            unknown_presence,
+        )
+
+        if source_type == "amazon" or str(attached_asin or "").strip():
+            return attached_presence(attached_asin)
+        lookup = getattr(self, "amazon_lookup", None)
+        if lookup is None:
+            return lookup_brand_on_amazon(brand, domain=domain)
+        try:
+            found = lookup(brand, domain=domain)
+        except TypeError:
+            found = lookup(brand)
+        if isinstance(found, AmazonPresence):
+            return found
+        return unknown_presence("error", "Amazon lookup returned an unexpected result.")
 
     def _verify_brand_links(self, brand_website: str) -> dict[str, Any]:
         """Website and Amazon links, using the call-prep verification.
@@ -657,9 +697,10 @@ class DeckGenerationService:
             )
             story_markdown = ""
 
-        html_content = scrub_dash_copy(html_content)
-        story_markdown = scrub_dash_copy(story_markdown)
-        gate_findings = tuple(assess_deck_content(html_content))
+        html_content = scrub_scraped_page_chrome(scrub_dash_copy(html_content))
+        story_markdown = scrub_scraped_page_chrome(scrub_dash_copy(story_markdown))
+        presence_status = str(dataset.deck_payload.get("amazon_presence") or "")
+        gate_findings = tuple(assess_deck_content(html_content, amazon_presence=presence_status))
         dataset.deck_payload["content_gate_passed"] = not gate_findings
         dataset.deck_payload["content_gate_findings"] = list(gate_findings)
         if gate_findings:
@@ -709,6 +750,8 @@ class DeckGenerationService:
             "content_gate_passed": bool(dataset.deck_payload.get("content_gate_passed", True)),
             "content_gate_findings": list(dataset.deck_payload.get("content_gate_findings") or []),
             "market_mode": str(dataset.deck_payload.get("market_mode") or "amazon"),
+            "amazon_presence": presence_status,
+            "amazon_listings": list(dataset.deck_payload.get("amazon_listings") or []),
         }
         self.session.add(run)
         self.session.flush()
@@ -732,6 +775,8 @@ class DeckGenerationService:
             content_gate_passed=bool(dataset.deck_payload.get("content_gate_passed", True)),
             content_gate_findings=gate_findings,
             market_mode=str(dataset.deck_payload.get("market_mode") or "amazon"),
+            amazon_presence=presence_status,
+            amazon_listings=tuple(dataset.deck_payload.get("amazon_listings") or ()),
         )
 
     def _build_amazon_first_dataset(
@@ -871,9 +916,10 @@ class DeckGenerationService:
             warnings.append(mismatch_warning)
 
         verified_target_asin = (parsed_target["asin"] or hero_product.asin).strip()
-        # Website / concept-only brands are not on Amazon. Do not score the
-        # competitor export against the homepage title: a fuzzy or candidate
-        # hit would narrate a competitor as the prospect.
+        # A website with no ASIN is not proof the brand is off Amazon.
+        # Amazon presence is resolved later by search. Still do not score the
+        # competitor export against the homepage title: a fuzzy hit would
+        # narrate a competitor as the prospect.
         launch_source = parsed_target["source_type"] == "website"
         target_match = _find_target_row(
             xray_report,
@@ -997,13 +1043,18 @@ class DeckGenerationService:
             inferred_brand = _infer_brand_from_title(display_title)
             if inferred_brand:
                 target_brand = inferred_brand
+        target_brand = clean_strategy_brand(target_brand) or target_brand
         short_name = _deck_short_name(
             title=display_title or target_title,
             brand=target_brand,
             explicit_brand=explicit_brand,
         )
-        if launch_source and short_name.lower() in {"home", "shop", "store", "welcome", "official", "site", "homepage"}:
+        if launch_source and short_name.lower() in {"home", "shop", "store", "welcome", "official", "site", "homepage", "home page", "contact", "contact us"}:
             short_name = ""
+        short_name = usable_short_name(target_brand, short_name)
+        display_title = scrub_scraped_page_chrome(display_title)
+        if hero_product.description:
+            hero_product = replace(hero_product, description=scrub_scraped_page_chrome(hero_product.description))
         seo_recommendations = _build_seo_recommendations(
             keyword_report,
             cerebro_report,
@@ -1142,7 +1193,43 @@ class DeckGenerationService:
         except Exception:  # noqa: BLE001 - never break deck generation
             pass
 
+        amazon_presence = self._lookup_amazon_presence(
+            brand=target_brand,
+            domain=hero_product.source_url or parsed_target.get("source_url", ""),
+            source_type=parsed_target["source_type"],
+            attached_asin=resolved_target_asin,
+        )
+        copy_status = "" if amazon_presence.source == "attached_listing" else amazon_presence.status
+        if amazon_presence.source != "attached_listing":
+            warnings.append(f"Amazon presence: {amazon_presence.status} ({amazon_presence.source}).")
+        amazon_listings = [dict(item) for item in amazon_presence.listings if item.get("title") or item.get("asin")]
+        primary_listing = next((item for item in amazon_listings if item.get("asin") or item.get("title")), None)
+        if primary_listing and not resolved_target_asin:
+            resolved_target_asin = str(primary_listing.get("asin") or "").strip()
+            if resolved_target_asin:
+                for product in xray_report.products:
+                    if product.asin.upper() == resolved_target_asin.upper():
+                        target_row = product
+                        break
+                primary_competitors = [
+                    product
+                    for product in primary_competitors
+                    if product.asin.upper() != resolved_target_asin.upper()
+                ]
+        if primary_listing:
+            if not target_rating_label and isinstance(primary_listing.get("rating"), (int, float)):
+                target_rating_label = f"{float(primary_listing['rating']):.1f}"
+            if not target_review_count and isinstance(primary_listing.get("review_count"), int):
+                target_review_count = int(primary_listing["review_count"])
+            if not target_price_label and str(primary_listing.get("price") or "").strip():
+                target_price_label = str(primary_listing["price"]).strip()
+                price_source = "amazon_listing"
+            listing_title = str(primary_listing.get("title") or "").strip()
+            if listing_title and (not display_title or display_title.lower() == target_brand.lower()):
+                display_title = listing_title
         target_state = _resolve_target_state(parsed_target["source_type"], target_row=target_row, hero_product=hero_product)
+        if copy_status == "present" and target_state == "concept_only":
+            target_state = "matched_market" if target_row is not None else "existing_seller"
         launch_mode = target_state == "concept_only"
         target_strengths, target_gaps = _build_target_opportunities(
             comparison_mode=target_state,
@@ -1156,6 +1243,8 @@ class DeckGenerationService:
             dtc_price=price_source == "operator_price" and parsed_target["source_type"] == "website",
             image_supported=image_supported,
             reviews_supported=reviews_supported,
+            amazon_status=copy_status,
+            amazon_listings=amazon_listings,
         )
         effective_date = datetime.now(timezone.utc).date()
 
@@ -1178,19 +1267,31 @@ class DeckGenerationService:
                 target_row,
                 comparison_mode=target_state,
                 hero_product=hero_product,
+                amazon_status=copy_status,
+                amazon_listings=amazon_listings,
             ),
             "report_generated_date": _format_display_date(effective_date),
             "reporting_period": _format_display_date(effective_date),
             "market_summary": _build_market_summary(target_brand, xray_report, keyword_report),
             "executive_summary": _build_executive_summary(
-                display_title, target_brand, xray_report, keyword_report,
-                launch_mode=launch_mode, market_mode=market_mode,
+                display_title,
+                target_brand,
+                xray_report,
+                keyword_report,
+                launch_mode=launch_mode,
+                market_mode=market_mode,
+                amazon_status=copy_status,
+                amazon_listings=amazon_listings,
             ),
             "cro_summary": " ".join(cro_recommendations[:2]),
             "seo_summary": " ".join(seo_recommendations[:2]),
             "creative_summary": " ".join(creative_recommendations[:2]),
             "advertising_summary": _build_advertising_summary(
-                xray_report, keyword_report, launch_mode=launch_mode, market_mode=market_mode,
+                xray_report,
+                keyword_report,
+                launch_mode=launch_mode,
+                market_mode=market_mode,
+                amazon_status=copy_status,
             ),
             "recommended_plan_summary": _build_plan_summary(offer_cards, channels, launch_mode=launch_mode),
             "expected_impact_summary": _build_expected_impact_summary(xray_report, market_mode=market_mode),
@@ -1198,11 +1299,7 @@ class DeckGenerationService:
             # PR49: include the variant short-name (e.g. "Black", "Skinnystix")
             # alongside the brand so decks generated for different SKUs of the
             # same brand are distinguishable from the title alone.
-            "deck_title": (
-                f"{target_brand} {short_name} x anata strategy deck"
-                .replace("  ", " ")
-                .strip(" -")
-            ),
+            "deck_title": strategy_deck_title(target_brand, short_name),
             "deck_short_name": short_name,
             "target_asin": resolved_target_asin,
             "target_rating": target_rating_label,
@@ -1382,6 +1479,8 @@ class DeckGenerationService:
                 "search_insights": search_insights,
                 "target_strengths": target_strengths,
                 "target_gaps": target_gaps,
+                "amazon_presence": amazon_presence.status,
+                "amazon_listings": amazon_listings,
                 "creative_mockup_url": creative_mockup_url,
                 "case_study_url": case_study_url or DEFAULT_CASE_STUDY_URL,
                 "offer_cards": offer_cards,
@@ -1494,6 +1593,7 @@ class DeckGenerationService:
                     target_brand=str(payload.get("target", {}).get("brand_name") or "the prospect"),
                     target_aov=_target_aov,
                     launch_mode=launch_mode,
+                    amazon_status=str(payload.get("amazon_presence") or ""),
                 )
             else:
                 growth_plan_html = ""
@@ -1583,7 +1683,17 @@ class DeckGenerationService:
             f'<p>{html.escape(evidence_reason or _evidence_fallback)}</p>'
             f'</div>'
         )
-        if market_mode == "dtc":
+        _amazon_presence = str(dataset.deck_payload.get("amazon_presence") or "")
+        if market_mode == "dtc" and _amazon_presence == "present":
+            _evidence_banner = (
+                '<div class="takeaway market-takeaway" role="status" '
+                'data-market-mode="dtc" data-evidence-status="dtc" data-amazon-presence="present">'
+                '<p class="lab">Existing Amazon seller</p>'
+                '<p class="h">Built from the live listings.</p>'
+                '<p>Amazon search confirmed this brand sells there. Category revenue and competitor counts stay out unless a market export is attached.</p>'
+                '</div>'
+            )
+        elif market_mode == "dtc":
             _evidence_banner = (
                 '<div class="takeaway market-takeaway" role="status" '
                 'data-market-mode="dtc" data-evidence-status="dtc">'
@@ -1716,6 +1826,24 @@ class DeckGenerationService:
             _brand_facts.append(
                 f'<li><a href="{html.escape(_brand_source, quote=True)}">Store page</a></li>'
             )
+        for item in dataset.deck_payload.get("amazon_listings") or []:
+            if not isinstance(item, dict):
+                continue
+            bits = [str(item.get("title") or "").strip()]
+            asin = str(item.get("asin") or "").strip()
+            if asin:
+                bits.append(f"ASIN {asin}")
+            if isinstance(item.get("rating"), (int, float)):
+                bits.append(f"{float(item['rating']):.1f} stars")
+            if isinstance(item.get("review_count"), int):
+                bits.append(f"{int(item['review_count']):,} reviews")
+            if str(item.get("price") or "").strip():
+                bits.append(str(item["price"]).strip())
+            if isinstance(item.get("image_count"), int):
+                bits.append(f"{int(item['image_count'])} images")
+            line = ", ".join(bit for bit in bits if bit)
+            if line:
+                _brand_facts.append(f"<li>{html.escape(line)}</li>")
         _brand_copy = (
             f"<p>{html.escape(_brand_description[:900])}</p>"
             if _brand_description
@@ -1829,6 +1957,8 @@ class DeckGenerationService:
             _exec_headline = f"A directional benchmark for &ldquo;{html.escape(_niche_label)}.&rdquo;"
         elif market_ready and evidence_status == "directional":
             _exec_headline = "A directional benchmark from the supplied export."
+        elif market_mode == "dtc" and str(dataset.deck_payload.get("amazon_presence") or "") == "present":
+            _exec_headline = f"{html.escape(target_brand_display)} already sells on Amazon."
         elif market_mode == "dtc":
             _exec_headline = f"An Amazon launch plan for {html.escape(target_brand_display)}."
         else:
@@ -1904,7 +2034,7 @@ class DeckGenerationService:
                 f'<div class="exec-tile">'
                 f'<p class="lab">Sessions today</p>'
                 f'<p class="val">{_count_short(_current_sessions) if getattr(growth_plan_obj, "current_sessions_known", False) else "Unknown"}</p>'
-                f'<p class="delta">{"estimated monthly · target" if getattr(growth_plan_obj, "current_sessions_known", False) else ("Launch baseline — no Amazon sessions yet" if launch_mode else "Seller Central baseline required")}</p>'
+                f'<p class="delta">{"estimated monthly · target" if getattr(growth_plan_obj, "current_sessions_known", False) else ("Launch baseline. No Amazon sessions yet." if launch_mode and str(dataset.deck_payload.get("amazon_presence") or "") == "absent" else ("Seller Central baseline required" if not launch_mode else "Session baseline is not confirmed."))}</p>'
                 f'</div>'
                 f'<div class="exec-tile is-primary">'
                 f'<p class="lab">Sessions · 24mo</p>'
@@ -2571,7 +2701,7 @@ class DeckGenerationService:
       <div class="two-col">
         <div class="takeaway">
           <p class="lab">What this means</p>
-          <p class="h">{'The launch page is still ahead of this brand.' if launch_mode else 'PDP mechanics, not the product, are the unlock.'}</p>
+          <p class="h">{'The launch page is still ahead of this brand.' if launch_mode and str(dataset.deck_payload.get('amazon_presence') or '') == 'absent' else ('The product page is the next build.' if launch_mode else 'PDP mechanics, not the product, are the unlock.')}</p>
           <p>{html.escape((dataset.text_fields.get("expected_impact_summary") or "Closing CRO + creative gaps lifts conversion without changing product, price, or supply chain. The benchmark sets the ceiling — copy what's working.")[:300])}</p>
         </div>
         <div>

@@ -946,6 +946,7 @@ def render_growth_plan_section(
     target_brand: str,
     target_aov: float = 0.0,
     launch_mode: bool = False,
+    amazon_status: str = "",
 ) -> str:
     """Emit the HTML for the single 'Growth plan synopsis' slide."""
     # PR55: shorter caption — the original packed three concepts (units→CVR
@@ -962,10 +963,15 @@ def render_growth_plan_section(
             f"{html.escape(target_brand)} needs +{plan.delta_sessions:,} monthly sessions "
             f"across up to 24 months and 5 channels to reach the competitor benchmark."
         )
-    elif launch_mode:
+    elif launch_mode and amazon_status == "absent":
         gap_caption = (
             f"There is no Amazon session baseline for {html.escape(target_brand)}. "
             "The plan below is a market-entry scenario, not a record of existing marketplace sales."
+        )
+    elif launch_mode:
+        gap_caption = (
+            f"The session baseline for {html.escape(target_brand)} is not confirmed, "
+            "so this plan is a scenario rather than a record of current sales."
         )
     else:
         gap_caption = (
