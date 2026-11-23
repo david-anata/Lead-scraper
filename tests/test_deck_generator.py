@@ -2400,6 +2400,9 @@ class DeckGenerateLaunchFixesTests(unittest.TestCase):
         html = str(_latest_summary(session_factory).get("deck_html") or "")
         self.assertIn("Your listing today", html)
         self.assertIn("Your listing vs. the benchmark", html)
+        self.assertIn('data-niche-view="brand"', html)
+        self.assertIn('data-view="brand"', html)
+        self.assertIn("By Brand", html)
 
     def test_generate_route_accepts_brand_name_and_target_price(self) -> None:
         from unittest import mock

@@ -2228,10 +2228,15 @@ class DeckGenerationService:
       <div class="market-table-full">
         <div class="card-h">
           <h3>Competitor revenue breakdown</h3>
+          <div class="seg niche-toggle" role="tablist" aria-label="Competitor breakdown view">
+            <button type="button" class="niche-toggle-btn active" data-niche-view="asin" aria-pressed="true">By ASIN</button>
+            <button type="button" class="niche-toggle-btn" data-niche-view="brand" aria-pressed="false">By Brand</button>
+          </div>
         </div>
-        <table class="tbl niche-table">
-          <thead><tr><th>Product</th><th class="num-col">Price</th><th class="num-col">Revenue</th><th class="num-col">Est. sessions</th><th class="num-col">Share</th></tr></thead>
-          <tbody>{niche_table_rows}</tbody>
+        <table class="tbl niche-table" data-niche-view-target>
+          <thead><tr><th data-asin-only>Product</th><th data-brand-only hidden>Brand</th><th class="num-col">Price</th><th class="num-col">Revenue</th><th class="num-col">Est. sessions</th><th class="num-col">Share</th></tr></thead>
+          <tbody data-view="asin">{niche_table_rows}</tbody>
+          <tbody data-view="brand" hidden>{niche_table_brand_rows}</tbody>
         </table>
       </div>
       {distribution_block}
