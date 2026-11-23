@@ -664,3 +664,63 @@ def test_yes_holds_when_the_deck_content_gate_fails():
             "SELECT status, detail, deck_url FROM abby_deck_sends"
         )).one()
     assert status == "held" and url == DECK and "$0" in detail
+
+
+def test_yes_holds_when_the_public_page_would_block_an_amazon_gap():
+    engine = create_engine("sqlite://")
+    message = email()
+    client = FakeClient([message], {"t1": [message]})
+    posts = []
+
+    class AmazonGap:
+        view_url = DECK
+        content_gate_passed = True
+        content_gate_findings = ()
+        market_mode = "amazon"
+        evidence_status = "missing"
+        market_evidence_sufficient = False
+        market_evidence_reason = "The market export was expected and is missing."
+
+    out = runner.handle_email(
+        engine, message, client=client, campaign_id="camp", now=NOW, think=abby.think,
+        post_slack=posts.append,
+        lead_info=lambda _e: {"first_name": "Ann", "company": "Huppy", "domain": "huppy.com"},
+        run_mode="live", build_deck=lambda **_kw: AmazonGap(),
+    )
+    assert client.replies == []
+    assert out["held"] == 1 and out["replied"] == 0
+    assert posts and "public page" in posts[0]
+    with engine.connect() as conn:
+        status, detail, url = conn.execute(text(
+            "SELECT status, detail, deck_url FROM abby_deck_sends"
+        )).one()
+    assert status == "held" and url == DECK and "expected" in detail
+
+
+def test_yes_sends_a_dtc_deck_the_public_page_would_serve():
+    engine = create_engine("sqlite://")
+    message = email()
+    client = FakeClient([message], {"t1": [message]})
+
+    class DtcDeck:
+        view_url = DECK
+        content_gate_passed = True
+        content_gate_findings = ()
+        market_mode = "dtc"
+        evidence_status = "missing"
+        market_evidence_sufficient = False
+        market_evidence_reason = "No competitor market export was supplied."
+
+    out = runner.handle_email(
+        engine, message, client=client, campaign_id="camp", now=NOW, think=abby.think,
+        post_slack=lambda _t: None,
+        lead_info=lambda _e: {"first_name": "Ann", "company": "Huppy", "domain": "huppy.com"},
+        run_mode="live", build_deck=lambda **_kw: DtcDeck(),
+    )
+    assert out["replied"] == 1 and out["held"] == 0
+    assert client.replies and DECK in client.replies[0]["body"]
+    with engine.connect() as conn:
+        status, url = conn.execute(text(
+            "SELECT status, deck_url FROM abby_deck_sends"
+        )).one()
+    assert status == "sent" and url == DECK

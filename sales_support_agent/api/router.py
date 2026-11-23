@@ -2017,8 +2017,14 @@ def _render_deck_export(request: Request, run_id: int, token: str) -> Response:
                 status_code=404,
             )
         viewer_type = "internal" if str(request.query_params.get("viewer") or "").strip().lower() == "internal" else "external"
-        if viewer_type == "external" and not bool(summary.get("market_evidence_sufficient", True)):
-            reason = escape(str(summary.get("market_evidence_reason") or "The market comparison needs an internal review."))
+        from sales_support_agent.services.deck.quality import (
+            public_deck_block_reason,
+            public_deck_visitor_message,
+        )
+
+        block_reason = public_deck_block_reason(summary) if viewer_type == "external" else ""
+        if block_reason:
+            reason = escape(public_deck_visitor_message(block_reason))
             return HTMLResponse(
                 "<!doctype html><html lang='en'><meta name='viewport' content='width=device-width,initial-scale=1'>"
                 "<title>Deck under review</title><body style='font-family:system-ui;margin:0;background:#f4f1e8;color:#13271d'>"
@@ -2899,6 +2905,7 @@ async def _run_generate_deck(
             "market_evidence_reason": result.market_evidence_reason,
             "content_gate_passed": result.content_gate_passed,
             "content_gate_findings": list(result.content_gate_findings),
+            "market_mode": result.market_mode,
             "attachment_status": attachment_details.get("attachment_status", ""),
             "attached_deal_id": attachment_details.get("attached_deal_id", ""),
             "deal_match_audit": attachment_details.get("deal_match_audit", []),

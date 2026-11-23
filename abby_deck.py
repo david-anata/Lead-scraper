@@ -20,6 +20,10 @@ class ProspectDeck:
     view_url: str
     content_gate_passed: bool = True
     content_gate_findings: tuple[str, ...] = ()
+    market_mode: str = ""
+    evidence_status: str = "ready"
+    market_evidence_sufficient: bool = True
+    market_evidence_reason: str = ""
 
 
 def _target(domain: str, product: str, asin: str) -> str:
@@ -87,6 +91,10 @@ def build_prospect_deck(*, lead: str = "", company: str = "", domain: str = "",
             view_url=str(getattr(result, "view_url", "") or "").strip(),
             content_gate_passed=bool(getattr(result, "content_gate_passed", True)),
             content_gate_findings=tuple(str(item) for item in findings),
+            market_mode=str(getattr(result, "market_mode", "") or ""),
+            evidence_status=str(getattr(result, "evidence_status", "ready") or "ready"),
+            market_evidence_sufficient=bool(getattr(result, "market_evidence_sufficient", True)),
+            market_evidence_reason=str(getattr(result, "market_evidence_reason", "") or ""),
         )
     except Exception:  # noqa: BLE001 — the reply path records the miss and retries
         logger.exception("[abby] prospect deck was not built")

@@ -984,27 +984,35 @@ def interest_to_confirm(decision: abby.Decision) -> Optional[int]:
     return value
 
 
-def _deck_outcome(value: Any) -> tuple[str, bool, str]:
-    """URL, whether the content gate passed, and the finding summary.
+def _deck_outcome(value: Any) -> tuple[str, str]:
+    """URL and the reason the public page would not return 200.
 
-    A plain URL string is a test double or an older builder. Those decks
-    are treated as already checked.
+    An empty reason means the page would serve the deck. A plain URL string
+    is a test double or an older builder. Those decks are treated as already
+    checked. A real deck uses the same predicate as the public page.
     """
 
     if value is None:
-        return "", True, ""
+        return "", ""
     if isinstance(value, str):
-        return value.strip(), True, ""
+        return value.strip(), ""
+    from sales_support_agent.services.deck.quality import public_deck_block_reason
+
     url = str(getattr(value, "view_url", "") or getattr(value, "url", "") or "").strip()
-    passed = bool(getattr(value, "content_gate_passed", True))
-    findings = getattr(value, "content_gate_findings", ()) or ()
-    detail = ", ".join(str(item) for item in findings if str(item).strip())
-    return url, passed, detail
+    reason = public_deck_block_reason({
+        "content_gate_passed": bool(getattr(value, "content_gate_passed", True)),
+        "content_gate_findings": getattr(value, "content_gate_findings", ()) or (),
+        "market_mode": getattr(value, "market_mode", "") or "",
+        "evidence_status": getattr(value, "evidence_status", "ready") or "ready",
+        "market_evidence_sufficient": bool(getattr(value, "market_evidence_sufficient", True)),
+        "market_evidence_reason": getattr(value, "market_evidence_reason", "") or "",
+    })
+    return url, reason
 
 
 def _build_deck_url(build_deck: Optional[Callable[..., Any]], *, lead: str,
-                    company: str, domain: str, first_name: str) -> tuple[str, bool, str]:
-    """The prospect plan URL, the content gate, and the finding summary."""
+                    company: str, domain: str, first_name: str) -> tuple[str, str]:
+    """The prospect plan URL and why the public page would withhold it."""
 
     builder = build_deck
     if builder is None:
@@ -1014,18 +1022,18 @@ def _build_deck_url(build_deck: Optional[Callable[..., Any]], *, lead: str,
             builder = build_prospect_deck
         except Exception:  # noqa: BLE001
             logger.exception("[abby] deck builder is not available")
-            return "", True, ""
+            return "", ""
     try:
         raw = builder(lead=lead, company=company, domain=domain, first_name=first_name)
     except Exception:  # noqa: BLE001
         logger.exception("[abby] deck generation failed")
-        return "", True, ""
-    url, passed, detail = _deck_outcome(raw)
+        return "", ""
+    url, block_reason = _deck_outcome(raw)
     if url.startswith("/"):
         url = "https://agent.anatainc.com" + url
     if url and not url.startswith("https://"):
-        return "", passed, detail
-    return url, passed, detail
+        return "", block_reason
+    return url, block_reason
 
 
 def _record_deck_send(engine, *, lead: str, campaign_id: str, thread_id: str,
@@ -1180,7 +1188,7 @@ def _handle_claimed(engine, email: dict, *, client: Instantly, campaign_id: str,
         if run_mode != "live":
             detail = "shadow: deck"
         else:
-            url, gate_passed, gate_detail = _build_deck_url(
+            url, block_reason = _build_deck_url(
                 build_deck, lead=lead, company=info.get("company", ""),
                 domain=str(info.get("domain") or ""),
                 first_name=info.get("first_name", ""),
@@ -1197,21 +1205,28 @@ def _handle_claimed(engine, email: dict, *, client: Instantly, campaign_id: str,
                     cc_address=cc_address, deck_url="", status="failed",
                     sent_at=now, detail="deck generation failed",
                 )
-            elif not gate_passed:
+            elif block_reason:
+                logger.info("[abby] deck held for %s: %s", lead, block_reason)
+                gate_failure = block_reason.lower().startswith("content gate")
                 decision = abby.Decision(
-                    decision.category, "hold", reason="deck content gate failed",
-                    note=gate_detail or "deck",
+                    decision.category, "hold",
+                    reason="deck content gate failed" if gate_failure else "deck withheld from the public page",
+                    note=block_reason,
                     send_deck=False,
                     slack=(
                         f"Abby held the deck for {lead}. "
-                        f"The content gate failed ({gate_detail or 'unspecified'})."
+                        + (
+                            f"The content gate failed ({block_reason})."
+                            if gate_failure
+                            else f"The public page would not serve it ({block_reason})."
+                        )
                     ),
                 )
                 _record_deck_send(
                     engine, lead=lead, campaign_id=campaign_id, thread_id=str(email.get("thread_id") or ""),
                     source_email_id=str(email.get("id") or ""), reply_id="",
                     cc_address=cc_address, deck_url=url, status="held",
-                    sent_at=now, detail=f"content gate failed: {gate_detail}"[:500],
+                    sent_at=now, detail=block_reason[:500],
                 )
             else:
                 deck_url = url

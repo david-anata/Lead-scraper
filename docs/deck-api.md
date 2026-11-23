@@ -63,9 +63,18 @@ Errors: `404` route disabled, `401` missing/wrong key (constant-time compare),
 ## Content gate
 
 `details.content_gate_passed` is false when the HTML still contains a zero
-dollar amount, the placeholder "this category", "Top 0", a zero market
-metric, or a retired client name. `details.evidence_status` is `missing`
-when no usable competitor export was supplied. Those decks omit category
-revenue, unit, and competitor tables and quote the store page instead.
-Abby's automatic deck send holds, and does not email the link, when the
-gate fails.
+dollar amount, the placeholder "this category", "Top 0", a zero or empty
+metric, a coverage row of "0 covered" or "0 missing", product advice from
+the wrong category, a claim about an image, review, or price the scrape
+did not support, or a retired client name. `details.market_mode` is `dtc`
+when the target is a store URL and no Amazon market export was supplied.
+That deck is an Amazon launch plan from the store: products, positioning,
+a channel plan, how the software and Agency team would launch and run ads,
+and case studies. Competitor and market metrics are left out.
+
+`details.evidence_status` is `missing` when no usable competitor export was
+supplied. The public page returns 200 for a DTC deck that passes the content
+gate. It returns 409 when the market export was expected and is missing, or
+when the content gate fails. Abby's yes path uses that same rule and holds
+the send, with the reason logged, whenever the public page would not return
+200.
