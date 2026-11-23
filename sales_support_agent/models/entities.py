@@ -1863,6 +1863,32 @@ class BuildingInquiry(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
 
 
+class BuildingVisitorReview(Base):
+    """One front-desk star tap, plus a private note when the visitor leaves one.
+
+    Four- and five-star taps are stored so the rating mix includes people sent
+    to Google. Lower scores can be updated with the private note on this row.
+    """
+
+    __tablename__ = "building_visitor_reviews"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    stars: Mapped[int] = mapped_column(Integer, index=True)
+    comment: Mapped[str] = mapped_column(Text, default="")
+    visitor_name: Mapped[str] = mapped_column(String(120), default="")
+    contact: Mapped[str] = mapped_column(String(160), default="")
+    visit_reasons_json: Mapped[list] = mapped_column(JSON, default=list)
+    feedback_submitted: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
+    notification_status: Mapped[str] = mapped_column(String(32), default="")
+    notification_json: Mapped[dict] = mapped_column(JSON, default=dict)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=datetime.utcnow, index=True
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=datetime.utcnow
+    )
+
+
 class BuildingInquiryReceipt(Base):
     """One idempotent transactional receipt for a Building inquiry."""
 
