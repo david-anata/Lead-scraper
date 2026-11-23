@@ -110,6 +110,24 @@ class ArenaRatePlanSeedTests(unittest.TestCase):
                 row.commercial_terms_json["security_deposit"]["amount_cents"],
                 0,
             )
+            weekday = row.commercial_terms_json["weekday_business"]
+            self.assertFalse(weekday["auto_quote"])
+            self.assertIn("business events", weekday["message"])
+            self.assertEqual(
+                row.commercial_terms_json["party_hours"],
+                {
+                    "saturday": "08:00-24:00",
+                    "sunday": "08:00-22:00",
+                    "new_years_eve_any_day": False,
+                },
+            )
+            evidence_terms = [
+                term
+                for item in row.source_evidence_json
+                for term in item["terms"]
+            ]
+            self.assertIn("new_years_eve_closed", evidence_terms)
+            self.assertNotIn("new_years_eve_any_day", evidence_terms)
             self.assertIsNone(row.commercial_terms_json["overtime"]["amount_cents"])
             self.assertEqual(row.tax_status, "taxable")
             self.assertEqual(row.tax_rate_bps, 745)
@@ -223,6 +241,13 @@ class ArenaRatePlanSeedTests(unittest.TestCase):
             )
             self.assertEqual(
                 plan.commercial_terms_json["security_deposit"]["amount_cents"], 0
+            )
+            self.assertEqual(
+                plan.commercial_terms_json["party_hours"]["new_years_eve_any_day"],
+                False,
+            )
+            self.assertFalse(
+                plan.commercial_terms_json["weekday_business"]["auto_quote"]
             )
             self.assertEqual(
                 plan.conflicts_json[0]["status"], "provider_remediated"
