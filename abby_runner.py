@@ -984,9 +984,27 @@ def interest_to_confirm(decision: abby.Decision) -> Optional[int]:
     return value
 
 
-def _build_deck_url(build_deck: Optional[Callable[..., str]], *, lead: str,
-                    company: str, domain: str, first_name: str) -> str:
-    """The prospect plan URL, or '' when the generator cannot build one."""
+def _deck_outcome(value: Any) -> tuple[str, bool, str]:
+    """URL, whether the content gate passed, and the finding summary.
+
+    A plain URL string is a test double or an older builder. Those decks
+    are treated as already checked.
+    """
+
+    if value is None:
+        return "", True, ""
+    if isinstance(value, str):
+        return value.strip(), True, ""
+    url = str(getattr(value, "view_url", "") or getattr(value, "url", "") or "").strip()
+    passed = bool(getattr(value, "content_gate_passed", True))
+    findings = getattr(value, "content_gate_findings", ()) or ()
+    detail = ", ".join(str(item) for item in findings if str(item).strip())
+    return url, passed, detail
+
+
+def _build_deck_url(build_deck: Optional[Callable[..., Any]], *, lead: str,
+                    company: str, domain: str, first_name: str) -> tuple[str, bool, str]:
+    """The prospect plan URL, the content gate, and the finding summary."""
 
     builder = build_deck
     if builder is None:
@@ -996,17 +1014,18 @@ def _build_deck_url(build_deck: Optional[Callable[..., str]], *, lead: str,
             builder = build_prospect_deck
         except Exception:  # noqa: BLE001
             logger.exception("[abby] deck builder is not available")
-            return ""
+            return "", True, ""
     try:
-        url = str(builder(lead=lead, company=company, domain=domain, first_name=first_name) or "").strip()
+        raw = builder(lead=lead, company=company, domain=domain, first_name=first_name)
     except Exception:  # noqa: BLE001
         logger.exception("[abby] deck generation failed")
-        return ""
+        return "", True, ""
+    url, passed, detail = _deck_outcome(raw)
     if url.startswith("/"):
         url = "https://agent.anatainc.com" + url
-    if not url.startswith("https://"):
-        return ""
-    return url
+    if url and not url.startswith("https://"):
+        return "", passed, detail
+    return url, passed, detail
 
 
 def _record_deck_send(engine, *, lead: str, campaign_id: str, thread_id: str,
@@ -1161,13 +1180,13 @@ def _handle_claimed(engine, email: dict, *, client: Instantly, campaign_id: str,
         if run_mode != "live":
             detail = "shadow: deck"
         else:
-            url = _build_deck_url(
+            url, gate_passed, gate_detail = _build_deck_url(
                 build_deck, lead=lead, company=info.get("company", ""),
                 domain=str(info.get("domain") or ""),
                 first_name=info.get("first_name", ""),
             )
+            cc_address = ",".join(decision.cc)
             if not url:
-                cc_address = ",".join(decision.cc)
                 decision = abby.Decision(
                     decision.category, "hold", reason="deck generation failed",
                     note="deck", send_deck=False,
@@ -1177,6 +1196,22 @@ def _handle_claimed(engine, email: dict, *, client: Instantly, campaign_id: str,
                     source_email_id=str(email.get("id") or ""), reply_id="",
                     cc_address=cc_address, deck_url="", status="failed",
                     sent_at=now, detail="deck generation failed",
+                )
+            elif not gate_passed:
+                decision = abby.Decision(
+                    decision.category, "hold", reason="deck content gate failed",
+                    note=gate_detail or "deck",
+                    send_deck=False,
+                    slack=(
+                        f"Abby held the deck for {lead}. "
+                        f"The content gate failed ({gate_detail or 'unspecified'})."
+                    ),
+                )
+                _record_deck_send(
+                    engine, lead=lead, campaign_id=campaign_id, thread_id=str(email.get("thread_id") or ""),
+                    source_email_id=str(email.get("id") or ""), reply_id="",
+                    cc_address=cc_address, deck_url=url, status="held",
+                    sent_at=now, detail=f"content gate failed: {gate_detail}"[:500],
                 )
             else:
                 deck_url = url

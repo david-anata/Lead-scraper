@@ -2897,6 +2897,8 @@ async def _run_generate_deck(
             "evidence_status": result.evidence_status,
             "market_evidence_sufficient": result.market_evidence_sufficient,
             "market_evidence_reason": result.market_evidence_reason,
+            "content_gate_passed": result.content_gate_passed,
+            "content_gate_findings": list(result.content_gate_findings),
             "attachment_status": attachment_details.get("attachment_status", ""),
             "attached_deal_id": attachment_details.get("attached_deal_id", ""),
             "deal_match_audit": attachment_details.get("deal_match_audit", []),

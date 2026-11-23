@@ -118,6 +118,12 @@ def empty_xray_report(*, warning: str = "") -> Helium10XrayReport:
         size_tier_distribution=[],
         fulfillment_distribution=[],
         warnings=[warning] if warning else [],
+        evidence_status="missing",
+        market_evidence_sufficient=False,
+        market_evidence_reason=(
+            "No competitor market export was supplied, so category revenue, "
+            "units, and brand counts are withheld."
+        ),
     )
 
 
