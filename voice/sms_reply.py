@@ -28,7 +28,7 @@ HOURS = (
     "Large events and parties are weekends only. "
     "Saturday events may run 8:00 a.m. to midnight. "
     "Sunday events may run 8:00 a.m. to 10:00 p.m. "
-    "New Year's Eve is allowed on a weekday. "
+    "The building is closed on New Year's Eve. "
     "You set up and clean up inside the booked time. "
     "There are no complimentary hours and no free teardown after close."
 )

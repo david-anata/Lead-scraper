@@ -176,7 +176,7 @@ def building_facts() -> dict[str, object]:
             ],
             "included": "Secure access for offices, internet, utilities, mail, common areas, and on-site parking.",
             "bullpen_coworking": (
-                "From $150 per month for a desk in the shared open-plan office. Internet, "
+                "$150 per desk per month (published price) in the shared open-plan office. Internet, "
                 "utilities, parking, mail room, and shared conference and call rooms included."
             ),
             "private_offices": (
@@ -286,15 +286,15 @@ def hours_guidance(on: date, style: str) -> str:
 
     kind = (style or "unsure").strip().casefold()
     weekday = on.weekday()
+    if _new_years_eve(on):
+        # David, November 23, 2026: the building is closed on New Year's Eve.
+        return (
+            "The Anata Building is closed on New Year's Eve. Do not offer or confirm this date. "
+            "Offer a weekend date with the normal hours and still take their details for the team."
+        )
     if kind == "business":
         return _BUSINESS_HOURS
     if kind in {"party", "large"}:
-        if _new_years_eve(on):
-            return (
-                "New Year's Eve is allowed even on a weekday. Do not invent the hours; "
-                "the team confirms them. Use the published party rates and take the lead "
-                "for team review."
-            )
         if weekday == 5:
             return (
                 "Saturday fits a large event. Guest events may run 8:00 a.m. to midnight. "
@@ -317,7 +317,7 @@ def hours_guidance(on: date, style: str) -> str:
             )
         return (
             _WEEKEND_LARGE
-            + " This date is a weekday and is not New Year's Eve, so offer Saturday or "
+            + " This date is a weekday, so offer Saturday or "
             "Sunday and still take the lead."
         )
     if weekday == 5:

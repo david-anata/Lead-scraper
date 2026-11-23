@@ -33,7 +33,7 @@ HEARD_ABOUT_SOURCES = (
 )
 
 # Indexed callers already know us. Family is stored as vip.
-SKIP_KNOWN_CATEGORIES = frozenset({"tenant", "client", "landlord_legal", "vip"})
+SKIP_KNOWN_CATEGORIES = frozenset({"tenant", "client", "landlord_legal", "vip", "vendor", "spam"})
 
 _ASK_RE = re.compile(
     r"how(?:'|’)?d you hear|how did you hear|where did you (?:hear|find)|"
@@ -282,7 +282,7 @@ def should_ask_how_heard(session: CallSession) -> bool:
         return False
     if (session.known_caller_category or "").strip().casefold() in SKIP_KNOWN_CATEGORIES:
         return False
-    if session.category in {"spam", "urgent"}:
+    if session.category in {"spam", "urgent", "vendor"}:
         return False
     blob = " ".join(
         (

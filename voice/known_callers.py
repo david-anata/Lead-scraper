@@ -10,7 +10,7 @@ from __future__ import annotations
 from voice.lines import normalize_phone
 from voice.session import CallSession
 
-CATEGORIES = frozenset({"tenant", "client", "landlord_legal", "vendor", "vip", "unknown"})
+CATEGORIES = frozenset({"tenant", "client", "landlord_legal", "vendor", "vip", "spam", "unknown"})
 RING_POLICIES = frozenset({"always", "urgent_only", "never"})
 
 # Defaults when the row does not set ring_policy. Unknown stays on screening.
@@ -20,6 +20,7 @@ _CATEGORY_RING = {
     "landlord_legal": "always",
     "vendor": "never",
     "vip": "always",
+    "spam": "never",
 }
 
 # Tenant issues that may ring David. Anything else is a callback.
@@ -83,6 +84,8 @@ def apply_known_caller(session: CallSession, row: dict[str, str] | None) -> None
         session.category = "tenant"
     elif category == "vendor" and session.category in {"", "other"}:
         session.category = "vendor"
+    elif category == "spam":
+        session.category = "spam"
     if session.known_caller_name and not session.caller_name:
         session.caller_name = session.known_caller_name
     if session.known_caller_company and not session.company:
@@ -151,9 +154,16 @@ def known_caller_instructions(session: CallSession) -> str:
         )
     elif category == "vip":
         body = "Ring David right away."
+    elif category == "spam":
+        body = (
+            "This number is tagged as spam, for example Truework or another employment "
+            "verification service. Never transfer and never ring David, even if they ask for him by name. "
+            "Be polite and brief: say you can't help with that by phone, offer to note a short message, "
+            "and call finish_call with category spam. Do not share an email or any employee details."
+        )
     else:
         body = "This number is not tagged yet. Use the normal discovery and screening."
-    if category in {"tenant", "client", "landlord_legal", "vip"}:
+    if category in {"tenant", "client", "landlord_legal", "vip", "vendor", "spam"}:
         body += " Do not ask how they heard about us."
     return header + "\n" + body
 

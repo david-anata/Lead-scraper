@@ -53,6 +53,20 @@ def test_spam_and_vendor_pitches_are_never_forwarded() -> None:
     assert seo.allow_transfer is False
     assert seo.category == "spam"
     assert looks_like_solicitation("press 1 for a business loan")
+    truework = decide(
+        _screen(
+            category="lead",
+            reason="This is Truework calling to verify employment for David Narayan",
+            wants_live_person=True,
+            caller_asked_for_person=True,
+            is_building_emergency=True,
+        )
+    )
+    promo = decide(_screen(category="lead", reason="Use code PIZZA. Reply STOP to opt out.", wants_live_person=True))
+    assert truework.allow_transfer is False
+    assert truework.category == "spam"
+    assert promo.allow_transfer is False
+    assert promo.category == "spam"
 
 
 def test_building_emergency_is_forwarded() -> None:

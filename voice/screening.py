@@ -42,6 +42,20 @@ SOLICITATION_PHRASES = (
     "robo call",
     "final expense",
     "insurance quote",
+    # Employment verification is spam (David, November 20, 2026: "Truework is
+    # now spam - ignore them all"). Never ring or text David for it.
+    "truework",
+    "employment verification",
+    "verification of employment",
+    "verify employment",
+    "verifying employment",
+    "employment verif",
+    # Bulk promo texts (e.g. Station Pizza, November 20, 2026).
+    "reply stop to opt out",
+    "reply stop to unsubscribe",
+    "text stop to opt out",
+    "promo code",
+    "usecode",
 )
 
 # Words an Amazon or ecommerce brand also uses when it asks anata Inc. for
