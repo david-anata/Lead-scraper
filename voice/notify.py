@@ -261,6 +261,17 @@ def _fit(who_part: str, reason: str, tail: str, limit: int = SMS_SEGMENT) -> str
     return fitted[: limit - 1].rstrip() + "…"
 
 
+def ai_down_callback_text(session: CallSession) -> str:
+    """One plain sentence when the assistant is down and David did not pick up."""
+
+    name = session.known_caller_name or session.caller_name
+    number = session.caller_number or session.phone
+    reason = plain_reason(session)
+    if reason == "No details were captured":
+        reason = "The assistant was down"
+    return _fit(f"Missed call: {_who(name, number)}. ", reason, "Call back.")
+
+
 def call_summary_text(session: CallSession) -> str:
     """One plain sentence for David. No labels, source codes, or repeated facts."""
 

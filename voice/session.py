@@ -62,6 +62,8 @@ class CallSession:
     finalizing: bool = False
     inquiry_id: str = ""
     sms_notified: bool = False
+    ai_fallback: bool = False
+    fallback_sms_queued: bool = False
     channel: str = "voice"
     time_window: str = ""
     # Conversation bookkeeping for an SMS thread. Voice calls leave this empty.

@@ -108,6 +108,7 @@ _MONTH_DAY = re.compile(
 )
 _NUMERIC_DATE = re.compile(r"\b(\d{1,2})[/-](\d{1,2})(?:[/-](\d{2,4}))?\b")
 _ISO_DATE = re.compile(r"\b(20\d{2})-(\d{2})-(\d{2})\b")
+_CLOCK = re.compile(r"\b(\d{1,2})(?::(\d{2}))?\s*(a\.?m\.?|p\.?m\.?)\b", re.I)
 _TIME = re.compile(
     r"\b(\d{1,2}(?::\d{2})?\s*(?:a\.?m\.?|p\.?m\.?)?)\s*(?:to|-|–|—|until)\s*"
     r"(\d{1,2}(?::\d{2})?\s*(?:a\.?m\.?|p\.?m\.?)?|midnight|noon)\b",
@@ -540,6 +541,8 @@ def _next_agency(session: CallSession, state: dict[str, Any]) -> str | None:
 
 
 def _next_workspace(session: CallSession, state: dict[str, Any]) -> str | None:
+    if _mentions_tour(session) and not session.time_window and not state.get("timing_skipped"):
+        return "timing"
     if not session.event_or_interest_type:
         return "space"
     if not session.time_window and not state.get("timing_skipped"):
@@ -594,6 +597,10 @@ def _question_text(session: CallSession, state: dict[str, Any], key: str) -> str
     }
     if spanish and key in spanish_text:
         return spanish_text[key]
+    if key == "timing" and _mentions_tour(session):
+        if spanish:
+            return "¿A qué hora les queda bien un tour? Los tours se agendan para que haya alguien."
+        return "What time works for a tour? Tours are scheduled so someone is there."
     if key == "date" and session.event_or_interest_type and not state.get("continued"):
         kind = session.event_or_interest_type
         if spanish:
@@ -683,8 +690,19 @@ def _capture(session: CallSession, state: dict[str, Any], text: str, today: date
     if found_date:
         session.event_date = found_date
     found_time = _extract_time(text)
-    if found_time:
+    if not found_time:
+        found_time = _extract_clock(text) if _time_reply_counts(session, state) else ""
+    if found_time and (not session.time_window or _time_reply_counts(session, state)):
         session.time_window = found_time
+    if _assistant_offered_tour(session) and (found_time or _accepts_offer(text)):
+        state["mode"] = "workspace"
+        if not session.business_line:
+            session.business_line = "workspace"
+        if session.event_or_interest_type in {"", "event"}:
+            session.event_or_interest_type = "tour"
+        note = f"Tour time: {_clip(text, 80)}"
+        if note not in session.notes:
+            session.notes = f"{session.notes} {note}".strip()
     guests = _extract_guests(text, state.get("expecting") or "")
     if guests:
         session.guest_count = guests
@@ -1133,6 +1151,58 @@ def _safe_date(year: int, month: int, day: int) -> date | None:
         return date(year, month, day)
     except ValueError:
         return None
+
+
+def _mentions_tour(session: CallSession) -> bool:
+    blob = " ".join(
+        (
+            session.reason,
+            session.notes,
+            session.event_or_interest_type,
+            session.summary,
+        )
+    ).casefold()
+    return "tour" in blob
+
+
+def _assistant_offered_tour(session: CallSession) -> bool:
+    """True when the last thing we texted offered a tour or asked for a tour time."""
+
+    for line in reversed(session.turns):
+        speaker, _, text = line.partition(":")
+        if speaker.strip().casefold() != "anata":
+            continue
+        folded = text.casefold()
+        return "tour" in folded or "what time works" in folded
+    return False
+
+
+def _accepts_offer(text: str) -> bool:
+    folded = " ".join(text.casefold().split())
+    return any(
+        phrase in folded
+        for phrase in ("works", "that works", "sounds good", "perfect", "works great", "that's fine", "thats fine")
+    )
+
+
+def _time_reply_counts(session: CallSession, state: dict[str, Any]) -> bool:
+    expecting = state.get("expecting") or ""
+    if expecting in {"time", "timing"}:
+        return True
+    if state.get("mode") == "workspace" and not session.time_window:
+        return True
+    return _assistant_offered_tour(session)
+
+
+def _extract_clock(text: str) -> str:
+    match = _CLOCK.search(text)
+    if not match:
+        return ""
+    hour = str(int(match.group(1)))
+    minutes = match.group(2) or ""
+    suffix = re.sub(r"[^apm]", "", match.group(3).casefold())
+    clock = f"{hour}:{minutes}{suffix}" if minutes else f"{hour}{suffix}"
+    return clock
 
 
 def _extract_time(text: str) -> str:

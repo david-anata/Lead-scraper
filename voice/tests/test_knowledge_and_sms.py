@@ -132,7 +132,11 @@ def test_prompt_names_both_businesses_and_the_line_id() -> None:
     assert "rental agreement" in KNOWLEDGE_PATH.read_text(encoding="utf-8").casefold()
     assert PUBLISHED_PHONE == "(385) 336-3562"
     assert "(385) 336-3562" in anata_inc_facts()["contact"]
-    assert "(385) 336-3562" in FRONT_DESK_PATH.read_text(encoding="utf-8")
+    front_desk = FRONT_DESK_PATH.read_text(encoding="utf-8")
+    assert "(385) 336-3562" in front_desk
+    assert "(385) 336-3455" in front_desk
+    assert "210-0894" not in front_desk
+    assert "2100894" not in front_desk
     assert "(385) 336-3562" in INC_KNOWLEDGE_PATH.read_text(encoding="utf-8")
     saturday = hours_guidance(date(2026, 12, 5), "party")
     assert "2:00 a.m." not in saturday

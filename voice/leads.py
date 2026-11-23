@@ -216,9 +216,44 @@ def _summary_with_source(session: CallSession) -> str:
     return f"{base.rstrip('. ')}. Heard about us: {raw}."
 
 
+def caller_transcript_text(session: CallSession) -> str:
+    """What the caller actually said, in order. Assistant lines are left out."""
+
+    spoken: list[str] = []
+    for line in session.transcript().splitlines():
+        speaker, sep, text = line.partition(":")
+        if not sep or speaker.strip().casefold() != "caller":
+            continue
+        cleaned = " ".join(text.split())
+        if cleaned:
+            spoken.append(cleaned)
+    return " ".join(spoken)[:500]
+
+
+def ensure_call_summary(session: CallSession) -> None:
+    """Fill an empty summary from the transcript when the caller hangs up early."""
+
+    if session.summary.strip():
+        return
+    spoken = caller_transcript_text(session)
+    if spoken:
+        session.summary = spoken
+        return
+    if session.ai_fallback:
+        session.summary = "The assistant was down"
+
+
 def _fallback_summary(session: CallSession) -> str:
     who = session.caller_name or session.caller_number or "Unknown caller"
-    reason = session.reason or session.notes or session.category or "no reason captured"
+    reason = (session.reason or session.notes or "").strip()
+    if reason.casefold() in {"", "other", "no reason captured"}:
+        reason = ""
+    if not reason:
+        reason = caller_transcript_text(session)
+    if not reason:
+        reason = "The assistant was down" if session.ai_fallback else "Hung up before saying why"
+    if reason == caller_transcript_text(session):
+        return reason
     return f"{who}: {reason}"
 
 

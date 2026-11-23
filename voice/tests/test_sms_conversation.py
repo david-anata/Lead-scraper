@@ -357,3 +357,30 @@ def test_saved_thread_reloads_after_the_process_forgets_it() -> None:
     assert "Thanks for texting" not in reply
     assert "time" in reply.casefold()
     assert saved["session"].event_or_interest_type == "VELORA event"  # type: ignore[attr-defined]
+
+
+def test_a_time_after_a_tour_offer_stays_on_the_same_thread() -> None:
+    client, app, sent = _app()
+    settings = app.state.settings
+    first = _post(
+        client,
+        settings,
+        {"MessageSid": "SM1", "From": SENDER, "To": EVENT_LINE, "Body": "Can I tour the office?"},
+    )
+    assert first.status_code == 200
+    offer = _texts_to(sent, SENDER)[0]["Body"]
+    assert "tour" in offer.casefold()
+    assert "time" in offer.casefold()
+    second = _post(
+        client,
+        settings,
+        {"MessageSid": "SM2", "From": SENDER, "To": EVENT_LINE, "Body": "1pm works great"},
+    )
+    assert second.status_code == 200
+    follow = _texts_to(sent, SENDER)[1]["Body"]
+    assert "Thanks for texting" not in follow
+    assert "What kind of event" not in follow
+    logs = [body for url, body in app.state.store.http.calls if "/call_log" in url and isinstance(body, dict)]
+    assert len({row["call_sid"] for row in logs}) == 1
+    assert logs[-1]["lead_fields"]["time_window"] == "1pm"
+    assert "1pm works great" in logs[-1]["lead_fields"]["notes"]

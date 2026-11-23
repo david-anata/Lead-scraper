@@ -14,7 +14,7 @@ import asyncio
 import logging
 from urllib.parse import quote
 
-from voice.leads import SupabaseStore
+from voice.leads import SupabaseStore, ensure_call_summary
 from voice.notify import TwilioRest, call_summary_text, should_text_about_call
 from voice.session import CallSession
 from voice.settings import Settings
@@ -90,10 +90,16 @@ async def finalize_call(
         if session.category == "spam":
             session.callback_needed = False
             session.action = "logged_only"
+        ensure_call_summary(session)
         # Delivery is unknown until the status callback. Never store a 2xx as delivered.
-        session.sms_notified = False
-        await asyncio.to_thread(store.save_call, session, sms_notified=False)
-        if should_text_about_call(session.category) and settings.notify_sms_number:
+        if not session.fallback_sms_queued:
+            session.sms_notified = False
+        await asyncio.to_thread(store.save_call, session, sms_notified=session.sms_notified)
+        if (
+            not session.fallback_sms_queued
+            and should_text_about_call(session.category)
+            and settings.notify_sms_number
+        ):
             callback = _status_callback(settings, session.call_sid)
             accepted = await asyncio.to_thread(
                 twilio.send_sms,

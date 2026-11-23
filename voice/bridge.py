@@ -27,9 +27,16 @@ from voice.prompts import build_instructions
 from voice.session import CallSession
 from voice.settings import Settings
 from voice.tools import execute_tool, session_update_event
-from voice.twiml import RING_TIMEOUT_SECONDS, apology_twiml, caller_hold_twiml, resume_twiml
-from voice.notify import TwilioRest
-from voice.leads import SupabaseStore
+from voice.twiml import (
+    RING_TIMEOUT_SECONDS,
+    ai_fallback_dial_twiml,
+    ai_fallback_record_twiml,
+    apology_twiml,
+    caller_hold_twiml,
+    resume_twiml,
+)
+from voice.notify import TwilioRest, ai_down_callback_text
+from voice.leads import SupabaseStore, ensure_call_summary
 from voice.screening import one_line
 
 logger = logging.getLogger(__name__)
@@ -146,10 +153,8 @@ class CallBridge:
             raise
         except Exception:
             logger.exception("xAI realtime session failed")
-            if not self.session.transfer_started:
-                await asyncio.to_thread(
-                    self.twilio.update_call, self.session.call_sid, apology_twiml()
-                )
+            if not self._stop.is_set() and not self.session.transfer_started and not self.session.ai_fallback:
+                await self._forward_when_ai_down()
         finally:
             self._stop.set()
 
@@ -183,6 +188,9 @@ class CallBridge:
                 asyncio.create_task(self._dial_after_pause())
         elif kind == "error":
             logger.warning("xAI returned an error event type")
+            if not self._greeted and not self.session.transfer_started and not self.session.ai_fallback:
+                await self._forward_when_ai_down()
+                self._stop.set()
 
     async def _greet(self) -> None:
         if self._greeted or self.xai is None:
@@ -355,6 +363,72 @@ class CallBridge:
             parent,
             resume_twiml(self.settings, http_base=http_base, call_sid=parent),
         )
+
+    async def _forward_when_ai_down(self) -> None:
+        """The realtime session did not start. Ring David, then take a recording if he misses."""
+
+        self.session.ai_fallback = True
+        self.session.asked_for_david = True
+        self.session.callback_needed = True
+        self.session.action = "ai_fallback"
+        self.session.holding_for_transfer = True
+        self.session.transfer_started = True
+        self.session.transfer_state = "dialing"
+        if not self.session.reason:
+            self.session.reason = "The assistant was unavailable"
+        http_base = self.settings.http_base()
+        forward = self.settings.forward_to_number
+        if http_base and forward:
+            twiml = ai_fallback_dial_twiml(
+                http_base=http_base,
+                call_sid=self.session.call_sid,
+                forward_to=forward,
+            )
+            ok = await asyncio.to_thread(self.twilio.update_call, self.session.call_sid, twiml)
+            if ok:
+                return
+            logger.warning("AI-down forward was not accepted for %s", self.session.call_sid)
+        await self._record_after_failed_forward()
+
+    async def _record_after_failed_forward(self) -> None:
+        """Voicemail plus one text when David cannot be dialed."""
+
+        self.session.holding_for_transfer = False
+        self.session.transfer_state = "voicemail"
+        self.session.transfer_outcome = "no_answer"
+        self.session.action = "needs_callback"
+        self.session.callback_needed = True
+        http_base = self.settings.http_base()
+        if http_base:
+            recorded = await asyncio.to_thread(
+                self.twilio.update_call,
+                self.session.call_sid,
+                ai_fallback_record_twiml(http_base=http_base, call_sid=self.session.call_sid),
+            )
+            if not recorded:
+                await asyncio.to_thread(
+                    self.twilio.update_call, self.session.call_sid, apology_twiml()
+                )
+        await self._text_missed_fallback()
+
+    async def _text_missed_fallback(self) -> None:
+        if self.session.fallback_sms_queued or not self.settings.notify_sms_number:
+            return
+        ensure_call_summary(self.session)
+        self.session.fallback_sms_queued = True
+        callback = ""
+        base = self.settings.http_base()
+        if base and self.session.call_sid:
+            callback = f"{base}/voice/sms-status?call_sid={quote(self.session.call_sid, safe='')}"
+        accepted = await asyncio.to_thread(
+            self.twilio.send_sms,
+            from_number=self.session.dialed_number,
+            to_number=self.settings.notify_sms_number,
+            body=ai_down_callback_text(self.session),
+            status_callback=callback,
+        )
+        if not accepted:
+            logger.warning("AI-down text was not accepted for %s", self.session.call_sid)
 
     async def _ask_for_message(self, text: str) -> None:
         await self._xai_send(

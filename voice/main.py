@@ -8,6 +8,8 @@ Webhook paths, all POST unless noted:
 - `POST /voice/accept` — on-call phone pressed 1 and joins the conference
 - `POST /voice/agent-status` — on-call leg ended without a press 1
 - `POST /voice/agent-amd` — voicemail detection on the on-call leg
+- `POST /voice/ai-fallback` — David did not answer an AI-down forward
+- `POST /voice/ai-fallback-recording` — voicemail left after that forward
 - `POST /voice/sms-status` — delivery receipt for a summary text
 - `GET  /voice/media` — Twilio Media Stream websocket
 - `POST /voice/sms` — Twilio Messaging webhook
@@ -31,8 +33,9 @@ from voice.known_callers import apply_known_caller
 from voice.calendar_availability import CalendarAvailability
 from voice.logging_store import LoggingStore
 from voice.lifecycle import accept_transfer, fail_transfer, finalize_call
+from voice.leads import ensure_call_summary
 from voice.lines import LineContext, normalize_phone, resolve_line
-from voice.notify import TwilioRest, sms_attention_text, sms_forward_text
+from voice.notify import TwilioRest, ai_down_callback_text, sms_attention_text, sms_forward_text
 from voice.security import public_request_url, valid_signature, valid_stream_token
 from voice.session import CallSession, SessionStore
 from voice.settings import Settings
@@ -40,6 +43,7 @@ from voice.sms_conversation import SmsThreadStore, handle_inbound_sms
 from voice.sms_reply import classify_sms
 from voice.twiml import (
     empty_twiml,
+    ai_fallback_record_twiml,
     goodbye_twiml,
     hangup,
     inbound_twiml,
@@ -196,6 +200,63 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             call_sid=session.call_sid,
         )
         return Response(xml, media_type=XML)
+
+    @app.api_route("/voice/ai-fallback", methods=["GET", "POST"])
+    async def ai_fallback(request: Request) -> Response:
+        form, ok = await _signed_form(request)
+        if not ok:
+            return Response(status_code=403)
+        session = _fallback_session(request, form)
+        status = form.get("DialCallStatus", "").strip().casefold()
+        if session is not None and status in {"completed", "answered"}:
+            session.transfer_accepted = True
+            session.transfer_outcome = "answered"
+            session.transfer_state = "done"
+            session.holding_for_transfer = False
+            session.action = "transferred"
+            session.callback_needed = False
+            session.fallback_sms_queued = True
+            await _finish(request, session)
+            if form.get("CallStatus", "").strip().casefold() == "completed":
+                return Response(empty_twiml(), media_type=XML)
+            return Response(goodbye_twiml(), media_type=XML)
+        if session is not None:
+            session.transfer_accepted = False
+            session.transfer_outcome = status or "no_answer"
+            session.transfer_state = "voicemail"
+            session.holding_for_transfer = False
+            session.action = "needs_callback"
+            session.callback_needed = True
+            session.asked_for_david = True
+            await _text_ai_fallback(request, session)
+            await _finish(request, session)
+        base = _base(request)
+        call_sid = _fallback_sid(request, form)
+        if not base or not call_sid:
+            return Response(goodbye_twiml(), media_type=XML)
+        return Response(
+            ai_fallback_record_twiml(http_base=base, call_sid=call_sid),
+            media_type=XML,
+        )
+
+    @app.api_route("/voice/ai-fallback-recording", methods=["GET", "POST"])
+    async def ai_fallback_recording(request: Request) -> Response:
+        form, ok = await _signed_form(request)
+        if not ok:
+            return Response(status_code=403)
+        session = _fallback_session(request, form)
+        recording = form.get("RecordingUrl", "").strip()
+        if session is not None and recording:
+            note = f"Voicemail: {recording}"
+            if note not in session.notes:
+                session.notes = f"{session.notes} {note}".strip()[:2000]
+            await asyncio.to_thread(
+                request.app.state.store.save_call,
+                session,
+                sms_notified=session.sms_notified,
+                create_inquiry=False,
+            )
+        return Response(empty_twiml(), media_type=XML)
 
     @app.api_route("/voice/whisper", methods=["GET", "POST"])
     async def whisper(request: Request) -> Response:
@@ -555,6 +616,42 @@ async def _finish(request: Request, session: CallSession) -> None:
         store=request.app.state.store,
         twilio=request.app.state.twilio,
     )
+
+
+def _fallback_sid(request: Request, form: dict[str, str]) -> str:
+    return (request.query_params.get("parent") or form.get("CallSid") or "").strip()
+
+
+def _fallback_session(request: Request, form: dict[str, str]) -> CallSession | None:
+    call_sid = _fallback_sid(request, form)
+    if not call_sid:
+        return None
+    return request.app.state.sessions.get(call_sid)
+
+
+async def _text_ai_fallback(request: Request, session: CallSession) -> None:
+    """One callback text. A second miss must not text David again."""
+
+    if session.fallback_sms_queued:
+        return
+    settings = request.app.state.settings
+    if not settings.notify_sms_number:
+        return
+    ensure_call_summary(session)
+    session.fallback_sms_queued = True
+    callback = ""
+    base = _base(request)
+    if base and session.call_sid:
+        callback = f"{base}/voice/sms-status?call_sid={quote(session.call_sid, safe='')}"
+    accepted = await asyncio.to_thread(
+        request.app.state.twilio.send_sms,
+        from_number=session.dialed_number,
+        to_number=settings.notify_sms_number,
+        body=ai_down_callback_text(session),
+        status_callback=callback,
+    )
+    if not accepted:
+        logger.warning("AI-down text was not accepted for %s", session.call_sid)
 
 
 app = create_app()

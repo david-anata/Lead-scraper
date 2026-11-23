@@ -29,8 +29,15 @@ websocket for the whole conversation.
    to leave a message. Voicemail is never a successful transfer, and
    `callback_needed` is set. Screening in `voice/screening.py` still decides
    whether a transfer is allowed.
-6. When the call ends, a non-spam call is summarized by SMS to
+6. If the realtime session cannot start (HTTP 402, a timeout, or any other
+   connection error), the caller is forwarded to `FORWARD_TO_NUMBER` instead of
+   hearing an apology and a hangup. If that forward fails or goes unanswered,
+   the caller can leave a recording and David gets one text: who called, their
+   number, and to call back.
+7. When the call ends, a non-spam call is summarized by SMS to
    `NOTIFY_SMS_NUMBER` and every call is written to Supabase `call_log`.
+   If the caller hangs up before the assistant saves a summary, the summary
+   is what the caller said, not a placeholder like the number and "other".
    Event and tour leads are also inserted into `building_inquiries`, which is
    the table the building admin already lists.
 
@@ -40,8 +47,10 @@ websocket for the whole conversation.
 2. With `SMS_AUTOREPLY` on, the service replies from that same number and keeps
    the thread for 18 hours. An event line asks for the date, time window,
    guest count, event type, name, email, and, for a party or a late night,
-   whether they want optional security. An anatainc.com line asks for the
+   whether they want optional security.    An anatainc.com line asks for the
    service, brand, where they sell, a revenue range, timing, name, and email.
+   A time after a tour offer, such as "1pm works great", stays on that thread
+   and is saved as the tour time.
 3. Known tenants are greeted by name. A lockout, flood, no heat, or security
    problem texts David immediately. Clients, VIPs, family, and landlord or
    legal senders (including Fondell, Boulder Ranch, and McKay) do too. The

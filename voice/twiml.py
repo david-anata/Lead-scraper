@@ -156,6 +156,49 @@ def apology_twiml() -> str:
     return xml_response(say(APOLOGY), hangup())
 
 
+AI_FALLBACK_HOLD = "Please hold. I'm going to try David."
+AI_FALLBACK_VOICEMAIL = (
+    "Sorry, David couldn't pick up just now. "
+    "Please leave your name and number after the tone, and he will call you back."
+)
+
+
+def ai_fallback_dial_twiml(*, http_base: str, call_sid: str, forward_to: str) -> str:
+    """Ring David's existing transfer number. The action URL handles no-answer."""
+
+    action = _attr(f"{http_base}/voice/ai-fallback?parent={quote_path(call_sid)}")
+    number = escape(forward_to)
+    return xml_response(
+        say(AI_FALLBACK_HOLD),
+        (
+            f'<Dial timeout="20" action="{action}" method="POST">'
+            f"<Number>{number}</Number>"
+            "</Dial>"
+        ),
+    )
+
+
+def ai_fallback_record_twiml(*, http_base: str, call_sid: str) -> str:
+    """Record a message after the forward fails or goes unanswered."""
+
+    action = _attr(f"{http_base}/voice/ai-fallback-recording?parent={quote_path(call_sid)}")
+    return xml_response(
+        say(AI_FALLBACK_VOICEMAIL),
+        (
+            f'<Record maxLength="120" playBeep="true" timeout="5" '
+            f'action="{action}" method="POST"/>'
+        ),
+        say("Thanks. He will call you back."),
+        hangup(),
+    )
+
+
+def quote_path(value: str) -> str:
+    from urllib.parse import quote
+
+    return quote(value, safe="")
+
+
 def goodbye_twiml() -> str:
     return xml_response(say(GOODBYE), hangup())
 
