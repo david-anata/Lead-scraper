@@ -15,8 +15,11 @@ Delays 3, 4, 4, 5 send on days 0, 3, 7, 11, and 16.
 from __future__ import annotations
 
 import re
+from dataclasses import dataclass
 from html import unescape
 from typing import Any, Optional
+
+from outbound_cold_sequence import OPT_OUT_LINE, POSTAL_ADDRESS
 
 # campaign key, Instantly campaign id. Names in Instantly still say "v2".
 CAMPAIGNS: tuple[tuple[str, str], ...] = (
@@ -36,6 +39,12 @@ STEP1_SUBJECTS = (
     "idea for {{companyName | your brand}}",
 )
 SIGNATURE = "Abby\nAccount Specialist, Anata"
+
+# Step 1 variant numbers (1-based) that are paused in Instantly. Default is live.
+_PAUSED_STEP1: dict[str, frozenset[int]] = {
+    "amz_off": frozenset({2}),
+    "plan_upgrade": frozenset({2}),
+}
 
 # Worst-case opener the word budget must still clear. The report also
 # quotes the midpoint of the 12 to 24 word opener range.
@@ -76,11 +85,40 @@ _PITCHES: dict[str, tuple[str, str]] = {
     ),
 }
 
-# Follow-ups, two variants each: proof, Amazon opportunity, less effort, breakup.
-_FOLLOWUPS: dict[str, tuple[tuple[str, str], ...]] = {
+# Step 1 variant 3. No personalization line. Subject, then the pitch.
+_STEP1_DECKS: dict[str, tuple[str, str]] = {
+    "amz_off": (
+        "{{companyName | your brand}} on Amazon",
+        "Ocean Rx started on Amazon as a new brand and reached the top 5 in its category with us.\n\n"
+        "{{companyName | your brand}} already sells its products direct on its own site. "
+        "I put together a free strategy deck on what a first Amazon launch could look like for you: "
+        "the searches, the listings, and the first ads.",
+    ),
+    "amz_on": (
+        "{{companyName | your brand}} on Amazon",
+        "Shadyvue cut its Amazon ad cost from 49.0% of sales to 40.4% with us, with 61% more search terms converting.\n\n"
+        "I put together a free strategy deck for {{companyName | your brand}}'s Amazon listings: "
+        "the searches to win, and where the ad spend can work harder.",
+    ),
+    "plan_upgrade": (
+        "{{companyName | your brand}} on Amazon too",
+        "SeroVital's Amazon sales went from $12K a day to $33K a day with us, with margins preserved.\n\n"
+        "I put together a free strategy deck on how the products on {{companyName | your brand}}'s Shopify store "
+        "could sell on Amazon as well: the searches, the listings, and the ad plan.",
+    ),
+    "replatform": (
+        "{{companyName | your brand}}'s catalog on Amazon",
+        "Harvest & Home grew its Amazon revenue 104% year over year with us, while it added a new product line.\n\n"
+        "I put together a free strategy deck that maps the products in {{companyName | your brand}}'s store catalog "
+        "to Amazon: the searches, the listings, and the first ads.",
+    ),
+}
+
+# Follow-ups: proof, Amazon opportunity, less effort, breakup.
+# amz_on proof is the Shadyvue line only.
+_FOLLOWUPS: dict[str, tuple[tuple[str, ...], ...]] = {
     "amz_on": (
         (
-            "Zantrex grew revenue 40% within 30 days on our platform. That was one account. I can put a short plan together for {{companyName | your brand}}.",
             "Shadyvue lowered Amazon ad cost from 49.0% of sales to 40.4%, with 61% more search terms converting. I can put a short plan together for {{companyName | your brand}}.",
         ),
         (
@@ -153,6 +191,19 @@ _FOLLOWUPS: dict[str, tuple[tuple[str, str], ...]] = {
 }
 
 
+@dataclass(frozen=True)
+class Variant:
+    """One plain-text variant.
+
+    ``paused`` is false unless Instantly has this variant turned off.
+    The apply sends that as ``v_disabled``.
+    """
+
+    text: str
+    subject: str = ""
+    paused: bool = False
+
+
 def send_days(delays: tuple[int, ...] = STEP_DELAYS) -> tuple[int, ...]:
     """Calendar day of each step when ``delay`` waits before the next email."""
 
@@ -168,18 +219,24 @@ def _wrap(middle: str, *, opener: bool) -> str:
     parts = ["Hi {{firstName | there}},", ""]
     if opener:
         parts.extend(["{{personalization}}", ""])
-    parts.extend([middle.strip(), "", ASK, "", SIGNATURE])
+    parts.extend([middle.strip(), "", ASK, "", SIGNATURE, "", OPT_OUT_LINE, POSTAL_ADDRESS])
     return "\n".join(parts)
 
 
-def plain_emails(campaign: str) -> tuple[tuple[str, str], ...]:
-    """Five steps, two plain-text variants each. Step 1 includes the opener line."""
+def plain_emails(campaign: str) -> tuple[tuple[Variant, ...], ...]:
+    """Five steps. Step 1 has three variants. The deck variant has no opener line."""
 
     pitches = _PITCHES[campaign]
-    followups = _FOLLOWUPS[campaign]
-    steps = [(_wrap(pitches[0], opener=True), _wrap(pitches[1], opener=True))]
-    for pair in followups:
-        steps.append((_wrap(pair[0], opener=False), _wrap(pair[1], opener=False)))
+    paused = _PAUSED_STEP1.get(campaign, frozenset())
+    deck_subject, deck = _STEP1_DECKS[campaign]
+    step1 = (
+        Variant(_wrap(pitches[0], opener=True), STEP1_SUBJECTS[0], 1 in paused),
+        Variant(_wrap(pitches[1], opener=True), STEP1_SUBJECTS[1], 2 in paused),
+        Variant(_wrap(deck, opener=False), deck_subject, 3 in paused),
+    )
+    steps: list[tuple[Variant, ...]] = [step1]
+    for pair in _FOLLOWUPS[campaign]:
+        steps.append(tuple(Variant(_wrap(line, opener=False)) for line in pair))
     return tuple(steps)
 
 
@@ -214,22 +271,29 @@ def to_html(text: str, *, opener: bool) -> str:
     return "".join(parts)
 
 
+def _variant_payload(variant: Variant) -> dict[str, Any]:
+    """Instantly variant. ``v_disabled`` is the v2 field that pauses one variant."""
+
+    return {
+        "subject": variant.subject,
+        "body": to_html(variant.text, opener="{{personalization}}" in variant.text),
+        "v_disabled": variant.paused,
+    }
+
+
 def steps_for(campaign: str) -> list[dict[str, Any]]:
     """Instantly sequence steps for one signal campaign."""
 
-    emails = plain_emails(campaign)
     built: list[dict[str, Any]] = []
-    for index, variants in enumerate(emails):
-        subjects = STEP1_SUBJECTS if index == 0 else ("", "")
+    for index, variants in enumerate(plain_emails(campaign)):
         built.append({
             "type": "email",
             "delay": STEP_DELAYS[index],
             "delay_unit": "days",
-            "variants": [
-                {"subject": subjects[variant_index], "body": to_html(body, opener=index == 0)}
-                for variant_index, body in enumerate(variants)
-            ],
+            "variants": [_variant_payload(variant) for variant in variants],
         })
+        if index == 0 and len(built[-1]["variants"]) != 3:
+            raise ValueError(f"{campaign} step 1 needs 3 variants")
     return built
 
 
@@ -262,10 +326,12 @@ def visible_text(value: str) -> str:
     return _fill(unescape(_TAG_RE.sub(" ", value or "")), opener_words=0)
 
 
-def word_count(text: str, *, opener_words: int) -> int:
-    """Words after fallbacks render. ``opener_words`` stands in for personalization."""
+def word_count(text: str, *, opener_words: int, include_footer: bool = False) -> int:
+    """Words after fallbacks render. The CAN-SPAM footer is not part of the limit."""
 
     rendered = _fill(unescape(_TAG_RE.sub(" ", text or "")), opener_words=opener_words)
+    if not include_footer:
+        rendered = rendered.replace(OPT_OUT_LINE, " ").replace(POSTAL_ADDRESS, " ")
     return len(rendered.split())
 
 
@@ -288,9 +354,11 @@ def validate_steps(steps: list[dict[str, Any]], *, campaign: str = "") -> list[s
         problems.append(f"{label}: delays must send on days {SEND_DAYS}")
     for index, step in enumerate(steps):
         bodies = _bodies(step)
-        if len(bodies) != 2:
-            problems.append(f"{label} step {index + 1}: expected 2 variants")
+        expected = 3 if index == 0 else (1 if campaign == "amz_on" and index == 1 else 2)
+        if len(bodies) != expected:
+            problems.append(f"{label} step {index + 1}: expected {expected} variants")
             continue
+        raw_variants = [item for item in (step.get("variants") or []) if isinstance(item, dict)]
         for variant_index, (subject, body) in enumerate(bodies):
             where = f"{label} step {index + 1} variant {variant_index + 1}"
             raw = f"{subject}\n{body}"
@@ -301,17 +369,28 @@ def validate_steps(steps: list[dict[str, Any]], *, campaign: str = "") -> list[s
             if _BANNED_RE.search(visible_text(raw)):
                 problems.append(f"{where}: contains a disallowed ask")
             shown = visible_text(body)
-            questions = shown.count("?")
-            if questions != 1 or ASK not in shown:
+            if OPT_OUT_LINE not in body or POSTAL_ADDRESS not in body:
+                problems.append(f"{where}: missing the CAN-SPAM footer")
+            message = shown.replace(OPT_OUT_LINE, " ")
+            if message.count("?") != 1 or ASK not in message:
                 problems.append(f"{where}: the only ask must be '{ASK}'")
+            should_pause = index == 0 and (variant_index + 1) in _PAUSED_STEP1.get(campaign, frozenset())
+            paused = bool(raw_variants[variant_index].get("v_disabled")) if variant_index < len(raw_variants) else False
+            if paused != should_pause:
+                problems.append(f"{where}: paused state does not match the copy model")
             if index == 0:
                 if not subject.strip():
                     problems.append(f"{where}: step 1 needs a subject")
-                if "{{personalization}}" not in body or "{{firstName | there}}" not in body:
+                if "{{firstName | there}}" not in body:
                     problems.append(f"{where}: step 1 is missing a safe first name or opener")
+                if variant_index < 2 and "{{personalization}}" not in body:
+                    problems.append(f"{where}: step 1 is missing a safe first name or opener")
+                if variant_index >= 2 and "{{personalization}}" in body:
+                    problems.append(f"{where}: step 1 deck variant must not include the opener")
                 if "{{companyName | your brand}}" not in body:
                     problems.append(f"{where}: step 1 is missing a company fallback")
-                count = word_count(body, opener_words=OPENER_MAX_WORDS)
+                opener_words = OPENER_MAX_WORDS if "{{personalization}}" in body else 0
+                count = word_count(body, opener_words=opener_words)
                 if count > STEP1_WORD_LIMIT:
                     problems.append(f"{where}: {count} words with a {OPENER_MAX_WORDS}-word opener")
             else:
@@ -339,7 +418,8 @@ def audit_rows() -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     for key, _campaign_id in CAMPAIGNS:
         for index, variants in enumerate(plain_emails(key)):
-            for variant_index, body in enumerate(variants):
+            for variant_index, variant in enumerate(variants):
+                body = variant.text
                 if index == 0:
                     words = word_count(body, opener_words=OPENER_AVG_WORDS)
                     ceiling = word_count(body, opener_words=OPENER_MAX_WORDS)

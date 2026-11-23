@@ -309,14 +309,18 @@ reply on the thread.
 
 Cold steps ask for a small yes instead of a call. The four signal campaigns
 take their steps from `outbound_signal_copy.py`: five emails in one thread,
-sent on days 0, 3, 7, 11, and 16. Trial Offer and `abby_reengage` are not
-rewritten. The five-minute Abby job (`/api/jobs/abby/run`, `*/5 * * * *`)
-applies that copy once and pauses subsequence
-`0c2f113f-ebed-4890-92df-c241d925dcdf`. The before/after report is stored on
-`abby_copy_applies` (`apply_key = yes-cta-v4`). A later tick does not call
-Instantly again. `POST /api/jobs/abby/apply-yes-cta` is the same once-only
-apply. Instantly's own AI interest label can still enroll that subsequence
-until the pause has run.
+sent on days 0, 3, 7, 11, and 16. Step 1 has a third variant with no
+personalization line. On `amz_off v2` and `plan_upgrade`, step 1 variant 2
+stays disabled (`v_disabled`) so a later apply does not turn it back on.
+Each of those steps, and each live `abby_reengage` step, ends with a plain
+opt-out line and the postal address.
+Trial Offer is not rewritten. The five-minute Abby job
+(`/api/jobs/abby/run`, `*/5 * * * *`) applies that copy once and pauses
+subsequence `0c2f113f-ebed-4890-92df-c241d925dcdf`. The before/after report
+is stored on `abby_copy_applies` (`apply_key = yes-cta-v5`). A later tick
+does not call Instantly again. `POST /api/jobs/abby/apply-yes-cta` is the
+same once-only apply. Instantly's own AI interest label can still enroll
+that subsequence until the pause has run.
 
 `GET /api/jobs/abby/missed-replies` runs hourly. It sends the reply for a
 human message Abby missed, ignored, or held, except a send-info hold and a
@@ -325,16 +329,25 @@ to Slack. Each fix is one row in `abby_missed_reply_fixes`.
 
 A reply with no auto-reply header is still that notice when the subject
 starts with Automatic reply, Out of Office, Autoreply, or OOO, or when the
-body has parental, maternity, or paternity leave, or at least two absence
-phrases, and it does not ask a question, say a plain yes, opt out, or show
-interest. The hourly fixer
+body has parental, maternity, or paternity leave, or says someone is
+traveling until a date, or has at least two absence phrases, and it does not
+ask a question, say a plain yes, opt out, or show interest. The hourly fixer
 uses the same check. A hold that now matches is recorded as the ignore, the
 same way a header-detected auto-reply is, and nothing is sent. A human note
 that mentions time off and also answers or asks us something stays held.
 
+Someone who has left is marked with the workspace Left company label when
+Instantly has one, removed from any subsequence, and kept off later pushes.
+The company is not blocklisted. A named replacement gets one note, and that
+note is not copied back to the departed address. A dead inbox that points at
+another address is asked once who handles ecommerce or growth, then stopped.
+
 Out-of-office replies schedule one follow-up for the day after the parsed
-return date, or 7 days when no date is present. Not-now replies schedule
-check-ins at 30 and 75 days. A lead who already has a solution gets one later
+return date, or 7 days when no date is present. A new out-of-office replaces
+a follow-up that has not been sent. If the stated return date has already
+passed, the wait starts over instead of assuming they are back. The line
+"Hope your time away went well" is sent only after the return date. Not-now
+replies schedule check-ins at 30 and 75 days. A lead who already has a solution gets one later
 note, 7 days out, about running the free trial alongside their current tool.
 Wrong-person and referral replies use the approved templates. Hostile replies
 blocklist that lead and stop further sends. Opt-outs still block the company
