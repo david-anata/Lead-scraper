@@ -66,12 +66,20 @@ async def read_public_json_object(
     return body, None
 
 
-def _client_key(request: Request) -> str:
-    provided = str(
-        request.headers.get("X-Marketing-Client-Key", "") or ""
-    ).strip().lower()
-    if _CLIENT_KEY_RE.fullmatch(provided):
-        return provided
+def _client_key(request: Request, *, trust_supplied_client_key: bool = True) -> str:
+    """Anonymize the caller without storing a raw address.
+
+    Marketing routes may trust ``X-Marketing-Client-Key`` because those callers
+    already present the shared intake secret. A public browser route must not:
+    any visitor can rotate that header and receive a fresh limit bucket.
+    """
+
+    if trust_supplied_client_key:
+        provided = str(
+            request.headers.get("X-Marketing-Client-Key", "") or ""
+        ).strip().lower()
+        if _CLIENT_KEY_RE.fullmatch(provided):
+            return provided
 
     settings = request.app.state.settings
     salt = str(
@@ -87,6 +95,7 @@ def durable_rate_limited(
     scope: str,
     limit: int,
     window_seconds: int = 600,
+    trust_supplied_client_key: bool = True,
 ) -> bool:
     """Cross-instance, fixed-query limiter with no raw visitor IP storage."""
 
@@ -95,7 +104,7 @@ def durable_rate_limited(
     # Keep one durable row per scope and anonymized client. The active window
     # belongs in metadata so normal traffic does not create a permanent audit
     # row every ten minutes forever.
-    material = f"{scope}|{_client_key(request)}"
+    material = f"{scope}|{_client_key(request, trust_supplied_client_key=trust_supplied_client_key)}"
     digest = hashlib.sha256(material.encode("utf-8")).hexdigest()
     run_type = f"{RATE_LIMIT_RUN_TYPE_PREFIX}{digest[:40]}"
 
@@ -151,12 +160,14 @@ def durable_rate_limit_response(
     scope: str,
     limit: int,
     window_seconds: int = 600,
+    trust_supplied_client_key: bool = True,
 ) -> Optional[JSONResponse]:
     if not durable_rate_limited(
         request,
         scope=scope,
         limit=limit,
         window_seconds=window_seconds,
+        trust_supplied_client_key=trust_supplied_client_key,
     ):
         return None
     return JSONResponse(

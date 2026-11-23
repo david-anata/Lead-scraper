@@ -314,6 +314,25 @@ class BuildingVisitorReviewTests(unittest.TestCase):
         self.assertIn("Please wait a moment.", second.text)
         self.assertEqual([row["stars"] for row in self._rows()], [5])
 
+    def test_rotating_the_marketing_client_key_does_not_reset_the_limit(self) -> None:
+        with patch(
+            "sales_support_agent.services.building_visitor_reviews.STAR_RATE_LIMIT",
+            1,
+        ):
+            first = self.client.post(
+                "/review",
+                data={"stars": "4"},
+                headers={"X-Marketing-Client-Key": "a" * 64},
+            )
+            second = self.client.post(
+                "/review",
+                data={"stars": "4"},
+                headers={"X-Marketing-Client-Key": "b" * 64},
+            )
+        self.assertEqual(first.status_code, 200, first.text)
+        self.assertEqual(second.status_code, 429, second.text)
+        self.assertEqual([row["stars"] for row in self._rows()], [4])
+
     def test_private_note_also_emails_the_building_inbox_when_resend_is_configured(self) -> None:
         original = app.state.settings
         app.state.settings = dataclasses.replace(

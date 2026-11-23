@@ -7,6 +7,7 @@ from typing import Any
 
 from fastapi import APIRouter, Request
 from fastapi.responses import HTMLResponse
+from starlette.concurrency import run_in_threadpool
 
 from sales_support_agent.models.database import session_scope
 from sales_support_agent.models.entities import BuildingVisitorReview
@@ -83,6 +84,7 @@ async def submit_review(request: Request) -> HTMLResponse:
         scope=scope,
         limit=limit,
         window_seconds=reviews.RATE_WINDOW_SECONDS,
+        trust_supplied_client_key=False,
     ):
         return _html(
             render_limited(),
@@ -91,9 +93,11 @@ async def submit_review(request: Request) -> HTMLResponse:
         )
     if _honeypot(form):
         return _html(render_thanks())
+    # Slack and email use blocking HTTP. Keep that off the event loop, and
+    # only after the note itself has been committed.
     if feedback:
-        return _save_feedback(request, form)
-    return _save_star(request, form)
+        return await run_in_threadpool(_save_feedback, request, form)
+    return await run_in_threadpool(_save_star, request, form)
 
 
 def _save_star(request: Request, form: Any) -> HTMLResponse:
@@ -125,6 +129,36 @@ def _form_values(form: Any) -> dict[str, Any]:
         "contact": _text(form, "contact"),
         "reasons": reviews.clean_reasons(reasons),
     }
+
+
+def _deliver_feedback_alert(request: Request, review_id: str) -> None:
+    """Send the staff alert after the note is committed.
+
+    The provider calls block. They run in a worker thread, and they no longer
+    hold the database transaction open while Slack or email responds.
+    """
+
+    failed = {
+        "slack": "failed",
+        "email": "failed",
+        "slack_reference": "",
+        "email_reference": "",
+    }
+    try:
+        with session_scope(request.app.state.session_factory) as session:
+            alert_row = session.get(BuildingVisitorReview, review_id)
+            if alert_row is None:
+                return
+            session.expunge(alert_row)
+        result = reviews.notify_visitor_feedback(request.app.state.settings, alert_row)
+    except Exception:
+        logger.exception("Front desk review alert failed for %s", review_id)
+        result = failed
+    try:
+        with session_scope(request.app.state.session_factory) as session:
+            reviews.record_notification(session, review_id, result)
+    except Exception:
+        logger.exception("Front desk review alert status was not saved for %s", review_id)
 
 
 def _save_feedback(request: Request, form: Any) -> HTMLResponse:
@@ -183,7 +217,6 @@ def _save_feedback(request: Request, form: Any) -> HTMLResponse:
         row = reviews.load_review(session, review_id)
         if row is None:
             row = reviews.record_star(session, int(stars))
-            review_id = row.id
         should_alert = reviews.save_private_feedback(
             session,
             row,
@@ -193,25 +226,9 @@ def _save_feedback(request: Request, form: Any) -> HTMLResponse:
             contact=contact,
             reasons=list(values["reasons"]),
         )
-        if should_alert:
-            session.flush()
-            alert_row = session.get(BuildingVisitorReview, review_id)
-        else:
-            alert_row = None
-        if should_alert and alert_row is not None:
-            try:
-                result = reviews.notify_visitor_feedback(
-                    request.app.state.settings, alert_row
-                )
-            except Exception:
-                logger.exception("Front desk review alert failed for %s", review_id)
-                result = {
-                    "slack": "failed",
-                    "email": "failed",
-                    "slack_reference": "",
-                    "email_reference": "",
-                }
-            reviews.record_notification(session, review_id, result)
+        review_id = row.id
+    if should_alert:
+        _deliver_feedback_alert(request, review_id)
     if reviews.is_public_google_score(int(stars)):
         return _html(render_google())
     return _html(render_thanks())
