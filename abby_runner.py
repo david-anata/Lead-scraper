@@ -1907,20 +1907,48 @@ NUDGE_GAPS_DAYS = (3, 4, 7)
 MAX_NUDGES_PER_RUN = 4
 
 
+def _possessive(name: str) -> str:
+    """English possessive. A name that already ends in s takes one apostrophe."""
+
+    cleaned = " ".join(str(name or "").split())
+    if cleaned.lower().endswith("s"):
+        return f"{cleaned}'"
+    return f"{cleaned}'s"
+
+
 def nudge_text(n: int, first_name: str, company: str) -> tuple[str, list[str]]:
-    hi = f"Hi {first_name}," if first_name else "Hi there,"
+    """Quiet-thread nudge. No generic name or brand stand-in.
+
+    A missing first name drops the greeting. A missing company is written
+    around, not replaced with "your brand". Names ending in s use an
+    apostrophe only, so "CMY Cubes" stays "CMY Cubes'".
+    """
+
+    first = " ".join(str(first_name or "").split())
+    brand = " ".join(str(company or "").split())
     sign = abby.SIGNATURE
-    who = company or "your brand"
     if n == 1:
-        body = (f"{hi}\n\nQuick nudge in case this got buried. "
-                f"I found something that could help {who}'s Amazon growth. Can I send it to you?\n\n{sign}")
-        return body, []
-    if n == 2:
-        body = (f"{hi}\n\nStill happy to put a short Amazon plan together for {who}. "
-                f"Mind if I send it?\n\n{sign}")
-        return body, []
-    body = (f"{hi}\n\nLast note from me. If the timing is off, no worries at all. "
-            f"If you want the short Amazon plan for {who}, I can send it.\n\n{sign}")
+        growth = f"{_possessive(brand)} Amazon growth" if brand else "your Amazon growth"
+        sentence = (
+            "Quick nudge in case this got buried. "
+            f"I found something that could help {growth}. Can I send it to you?"
+        )
+    elif n == 2:
+        target = brand if brand else "you"
+        sentence = (
+            f"Still happy to put a short Amazon plan together for {target}. "
+            "Mind if I send it?"
+        )
+    else:
+        offer = f"the short Amazon plan for {brand}" if brand else "the short Amazon plan"
+        sentence = (
+            "Last note from me. If the timing is off, no worries at all. "
+            f"If you want {offer}, I can send it."
+        )
+    if first:
+        body = f"Hi {first},\n\n{sentence}\n\n{sign}"
+    else:
+        body = f"{sentence}\n\n{sign}"
     return body, []
 
 

@@ -294,9 +294,14 @@ reply on the thread.
 
 Cold steps ask for a small yes instead of a call. The four signal campaigns
 take their steps from `outbound_signal_copy.py`: five emails in one thread,
-sent on days 0, 3, 7, 11, and 16. Step 1 has a third variant with no
-personalization line. On `amz_off v2` and `plan_upgrade`, step 1 variant 2
-stays disabled (`v_disabled`) so a later apply does not turn it back on.
+sent on days 0, 3, 7, 11, and 16. Step 1 variant 2, subject
+`idea for {{companyName | your brand}}`, stays disabled (`v_disabled`) on
+`amz_on`, `amz_off v2`, `plan_upgrade`, and `replatform v2`. The apply reads
+the live sequence, keeps every variant that is already paused, and does not
+add a variant that is not already in Instantly unless that variant sets
+`restore_if_removed`. The repo still has a third step 1 variant with no
+personalization line. The apply leaves that variant out while it is not live.
+`amz_on` step 2 is the Shadyvue line only.
 Each of those steps, and each live `abby_reengage` step, ends with a plain
 opt-out line and the postal address.
 Trial Offer is not rewritten. The five-minute Abby job
