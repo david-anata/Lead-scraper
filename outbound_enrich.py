@@ -542,6 +542,73 @@ def _order_leads_for_enrich(engine, general: list[dict[str, Any]], *, since_utc)
     return ordered
 
 
+def _catalog_hosts(lead: dict[str, Any], domain: str) -> list[str]:
+    """Storefront host first, then the company domain we store the row under.
+
+    shop.brand.com and brand.com are one company. The public catalog is on
+    the storefront, so that host is fetched before the apex.
+    """
+
+    from outbound_pipeline import _catalog_host
+
+    profile = lead.get("store_profile") if isinstance(lead.get("store_profile"), dict) else {}
+    hosts: list[str] = []
+    for raw in (
+        lead.get("catalog_host"),
+        lead.get("website"),
+        profile.get("name"),
+        lead.get("domain"),
+        lead.get("name"),
+        domain,
+    ):
+        host = _catalog_host(str(raw or ""))
+        if host and host not in hosts:
+            hosts.append(host)
+    return hosts
+
+
+def _read_catalog(domain: str, catalog_for: Optional[Callable[[str], Any]],
+                  lead: Optional[dict[str, Any]] = None) -> Any:
+    """A product list, or None when every host's catalog cannot be read."""
+
+    reader = catalog_for
+    if reader is None:
+        from outbound_pipeline import fetch_public_catalog
+
+        reader = fetch_public_catalog
+    hosts = _catalog_hosts(lead or {}, domain)
+    if not hosts and domain:
+        hosts = [domain]
+    empty = False
+    for host in hosts:
+        try:
+            found = reader(host)
+        except Exception:  # noqa: BLE001 — timeout, DNS, or a non-Shopify store
+            logger.info("[outbound-enrich] catalog unreadable for %s", host)
+            continue
+        if isinstance(found, dict) and isinstance(found.get("products"), list):
+            found = found["products"]
+        if isinstance(found, list):
+            if found:
+                return found
+            empty = True
+    return [] if empty else None
+
+
+def _ship_gate(lead: dict[str, Any], domain: str,
+               catalog_for: Optional[Callable[[str], Any]]) -> str:
+    """``digital`` or ``no_shippable_goods`` before any contact credit is spent."""
+
+    from outbound_pipeline import digital_product_reason
+
+    profile = lead.get("store_profile") if isinstance(lead.get("store_profile"), dict) else {}
+    store = {**profile, **lead, "domain": domain}
+    catalog = _read_catalog(domain, catalog_for, lead)
+    if catalog is not None:
+        store["catalog"] = catalog
+    return digital_product_reason(store, catalog)
+
+
 def run_enrichment(
     engine,
     leads: list[dict[str, Any]],
@@ -564,6 +631,7 @@ def run_enrichment(
     apollo_find: Optional[Callable[..., _contacts.FindResult]] = None,
     apollo_api_key: Optional[str] = None,
     apollo_credit_budget: Optional[int] = None,
+    catalog_for: Optional[Callable[[str], Any]] = None,
 ) -> EnrichReport:
     import time as _time
     import outbound_apollo as _apollo
@@ -690,6 +758,15 @@ def run_enrichment(
                     engine, domain, "platform", 0, 0,
                     "Platform subdomain is not searchable.",
                 )
+            except Exception:  # noqa: BLE001
+                logger.exception("[outbound-enrich] could not mark %s", domain)
+            continue
+        ship = _ship_gate(lead, domain, catalog_for)
+        if ship:
+            report.skip_reasons[ship] = report.skip_reasons.get(ship, 0) + 1
+            logger.info("[outbound-enrich] skipping %s before contact lookup: %s", domain, ship)
+            try:
+                _record_domain(engine, domain, "skipped", 0, 0, ship)
             except Exception:  # noqa: BLE001
                 logger.exception("[outbound-enrich] could not mark %s", domain)
             continue
@@ -904,6 +981,18 @@ def _count_opener_holds(engine) -> int:
     except Exception:  # noqa: BLE001
         return 0
     return int(found or 0)
+
+
+def _set_ship_skip(engine, email: str, reason: str) -> None:
+    """Leave the contact unpushed. This is not a suppression-list row."""
+
+    stored = (reason or "")[:200]
+    if not stored or not email:
+        return
+    with engine.begin() as conn:
+        conn.execute(text(
+            f"UPDATE {_PEOPLE} SET skip_reason = :r WHERE email = :e AND pushed_at IS NULL"
+        ), {"r": stored, "e": email})
 
 
 def _set_opener_hold(engine, email: str, reason: str) -> None:
@@ -1168,8 +1257,37 @@ def push_pending(engine, campaign_id: str, *, dry_run: bool = True, limit: int =
         profiles = {}
     held = 0
     held_copy = 0
+    held_ship = 0
     queued = 0
+    ship_catalogs: dict[str, Any] = {}
     for person in allowed:
+        domain_key = str(person.get("domain") or "").strip().lower()
+        profile = profiles.get(domain_key) or {}
+        if domain_key not in ship_catalogs:
+            ship_catalogs[domain_key] = _read_catalog(
+                domain_key, None, {**profile, "domain": domain_key},
+            )
+        catalog = ship_catalogs[domain_key]
+        ship_store = {
+            **profile,
+            "domain": domain_key,
+            "merchant_name": person.get("brand") or profile.get("merchant_name"),
+            "categories": person.get("category") or profile.get("categories"),
+        }
+        if catalog is not None:
+            ship_store["catalog"] = catalog
+        from outbound_pipeline import digital_product_reason
+
+        ship = digital_product_reason(ship_store, catalog)
+        if ship:
+            held_ship += 1
+            logger.info(
+                "[outbound-enrich] holding %s: %s",
+                person.get("email"), ship,
+            )
+            if not dry_run:
+                _set_ship_skip(engine, str(person.get("email") or ""), ship)
+            continue
         domain_key = str(person.get("domain") or "").strip().lower()
         profile = profiles.get(domain_key) or {}
         copy_lead = {
@@ -1237,9 +1355,11 @@ def push_pending(engine, campaign_id: str, *, dry_run: bool = True, limit: int =
         waiting = max(held_copy, _count_opener_holds(engine))
         if waiting:
             bits.append(f"Held {waiting} contacts with no shopper-visible opener.")
+        if held_ship:
+            bits.append(f"Held {held_ship} contacts whose products do not ship.")
         return _empty_push(
             dry_run=dry_run, suppressed=len(blocked), excluded=excluded,
-            held=held + waiting,
+            held=held + waiting + held_ship,
             queued=queued, note=" ".join(bits) or "Nothing to push.",
         )
 
@@ -1289,11 +1409,13 @@ def push_pending(engine, campaign_id: str, *, dry_run: bool = True, limit: int =
     waiting = max(held_copy, _count_opener_holds(engine))
     if waiting:
         note = f"{note} Held {waiting} contacts with no shopper-visible opener.".strip()
+    if held_ship:
+        note = f"{note} Held {held_ship} contacts whose products do not ship.".strip()
     return {
         "pending": sum(len(items) for items in groups.values()),
         "pushed": pushed, "created": created, "skipped": skipped,
         "suppressed": len(blocked), "excluded_recipes": excluded,
-        "held": held + waiting,
+        "held": held + waiting + held_ship,
         "queued": queued, "dry_run": stayed_dry, "errors": errors, "note": note,
         "preview": preview, "campaigns": campaigns,
     }
@@ -1346,6 +1468,28 @@ def coerce_dry_run(value: Any) -> bool:
     return str(value).strip().lower() not in {"0", "false", "no", "off"}
 
 
+def _storefront_hosts(raw: Any) -> dict[str, str]:
+    """Registrable domain to the storefront host, when they differ."""
+
+    from outbound_pipeline import _catalog_host
+
+    if isinstance(raw, str):
+        parts = [part.strip() for part in raw.replace(",", "\n").splitlines()]
+    elif isinstance(raw, (list, tuple)):
+        parts = []
+        for item in raw:
+            parts.extend(part.strip() for part in str(item).replace(",", "\n").splitlines())
+    else:
+        parts = []
+    found: dict[str, str] = {}
+    for part in parts:
+        host = _catalog_host(part)
+        domain = _contacts.normalize_domain(part)
+        if domain and host and host != domain:
+            found.setdefault(domain, host)
+    return found
+
+
 def domain_list_from(raw: Any) -> list[str]:
     """Normalize a domain list from a JSON array or a comma/newline string.
 
@@ -1386,7 +1530,10 @@ def enrich_domain_list(
     ``dry_run`` defaults to true and does not call the contact finder or write
     rows. A live run stores contacts and does not push them. It also does not
     flush the regular unpushed queue: ``redo_partner`` is excluded from
-    ``push_pending``, and this call leaves Instantly alone.
+    ``push_pending``, and this call leaves Instantly alone. Future loads use
+    the same ship gate as enrichment: a digital or non-shipping catalog is
+    stored as ``skipped`` and is not searched. Leads already in Instantly
+    are not paused or removed.
     """
     cleaned = domain_list_from(domains)
     base = {
@@ -1405,12 +1552,14 @@ def enrich_domain_list(
     if dry_run:
         return {**base, "ok": True, "contacts_found": 0,
                 "note": "Dry run: nothing enriched and nothing sent to Instantly."}
+    storefronts = _storefront_hosts(domains)
     leads = [{
         "domain": domain,
         "brand": domain.split(".")[0],
         "recipe": _push.REDO_PARTNER_RECIPE,
         "tier": "",
         "categories": "",
+        **({"catalog_host": storefronts[domain]} if domain in storefronts else {}),
     } for domain in cleaned]
     # Instantly stays off even on a live enrich. Passing dry_run through to
     # run_enrichment would also push every other waiting contact.
