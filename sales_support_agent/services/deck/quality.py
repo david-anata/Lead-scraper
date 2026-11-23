@@ -135,7 +135,7 @@ _INGREDIENT_ADVICE_RE = re.compile(
 )
 _IMAGE_CLAIM_RE = re.compile(r"usable primary image", re.IGNORECASE)
 _REVIEW_CLAIM_RE = re.compile(
-    r"review signal|review base|review moat|lighter review",
+    r"credible review signal|lighter review base|review moat is still light",
     re.IGNORECASE,
 )
 _PRICE_CLAIM_RE = re.compile(

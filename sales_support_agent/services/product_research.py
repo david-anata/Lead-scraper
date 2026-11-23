@@ -1099,9 +1099,7 @@ def _fetch_generic_page_data(source_url: str) -> dict[str, Any]:
             r"<h1[^>]*>\s*(.*?)\s*</h1>",
         )
     )
-    product_image = ""
-    if re.search(r'"@type"\s*:\s*"Product"', content, flags=re.IGNORECASE):
-        product_image = _extract_first(content, r'"image"\s*:\s*"([^"]+)"')
+    product_image = _product_jsonld_image(content)
     image_url = (product_image or _extract_first(
         content,
         r'<meta\s+property="og:image"\s+content="([^"]+)"',
@@ -1147,6 +1145,81 @@ def _fetch_generic_page_data(source_url: str) -> dict[str, Any]:
         "image_supported": image_supported,
         "price_supported": price_supported,
     }
+
+
+def _is_product_type(value: Any) -> bool:
+    """True when a JSON-LD @type is Product, including a schema.org URL."""
+
+    if isinstance(value, list):
+        return any(_is_product_type(item) for item in value)
+    if not isinstance(value, str):
+        return False
+    token = value.strip().rstrip("/").rsplit("/", 1)[-1].lower()
+    return token == "product"
+
+
+def _image_url_from_value(value: Any) -> str:
+    """First http(s) image URL from a JSON-LD image string, list, or ImageObject."""
+
+    if isinstance(value, str):
+        cleaned = value.strip()
+        if cleaned.startswith("http://") or cleaned.startswith("https://"):
+            return cleaned
+        return ""
+    if isinstance(value, list):
+        for item in value:
+            found = _image_url_from_value(item)
+            if found:
+                return found
+        return ""
+    if isinstance(value, dict):
+        for key in ("url", "contentUrl"):
+            found = _image_url_from_value(value.get(key))
+            if found:
+                return found
+    return ""
+
+
+def _product_image_from_node(node: Any) -> str:
+    """Image on a Product node. Organization and other types are skipped."""
+
+    if isinstance(node, list):
+        for item in node:
+            found = _product_image_from_node(item)
+            if found:
+                return found
+        return ""
+    if not isinstance(node, dict):
+        return ""
+    if _is_product_type(node.get("@type")):
+        return _image_url_from_value(node.get("image"))
+    for key in ("@graph", "mainEntity"):
+        if key in node:
+            found = _product_image_from_node(node.get(key))
+            if found:
+                return found
+    return ""
+
+
+def _product_jsonld_image(content: str) -> str:
+    """Product image from JSON-LD. The first image on the page is not used."""
+
+    for match in re.finditer(
+        r'<script[^>]*type=["\']application/ld\+json["\'][^>]*>(.*?)</script>',
+        content or "",
+        flags=re.IGNORECASE | re.DOTALL,
+    ):
+        raw = html_lib.unescape(match.group(1)).strip()
+        if not raw:
+            continue
+        try:
+            parsed = json.loads(raw)
+        except (json.JSONDecodeError, ValueError):
+            continue
+        found = _product_image_from_node(parsed)
+        if found:
+            return found.replace("\\u0026", "&").replace("\\/", "/")
+    return ""
 
 
 def _extract_first(content: str, *patterns: str) -> str:

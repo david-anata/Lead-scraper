@@ -95,6 +95,16 @@ class ContentGateTests(unittest.TestCase):
         for item in ("coverage zero", "zero metric", "category mismatch", "unsupported image", "unsupported price"):
             self.assertIn(item, findings)
 
+    def test_competitor_average_rating_is_not_a_target_review_claim(self) -> None:
+        html = (
+            '<meta name="anata-scraped-support" content="description">'
+            '<span class="sub">Competitive review signal</span>'
+            "<p>direct target data fills identity, BSR, rating, and review signals where available.</p>"
+        )
+        self.assertNotIn("unsupported review", assess_deck_content(html))
+        claim = "<p>The listing already carries a credible review signal at 4.6.</p>"
+        self.assertIn("unsupported review", assess_deck_content(claim))
+
     def test_allows_matching_category_advice_and_supported_claims(self) -> None:
         html = (
             "<meta name=\"anata-store-category\" content=\"Merino socks\">"
@@ -256,3 +266,42 @@ class EmptyMarketDeckTests(unittest.TestCase):
         self.assertEqual(blocked_page.status_code, 409, blocked_page.text)
         self.assertIn("still under review", blocked_page.text.lower())
         self.assertIn("market export was expected", blocked_page.text.lower())
+
+
+class ProductJsonLdImageTests(unittest.TestCase):
+    def test_product_image_is_not_the_organization_logo(self) -> None:
+        from sales_support_agent.services.product_research import _product_jsonld_image
+
+        html = """
+        <script type="application/ld+json">
+        {"@type":"Organization","image":"https://cdn.example/logo.png"}
+        </script>
+        <script type="application/ld+json">
+        {"@type":"Product","name":"Cargo Lock","image":{"@type":"ImageObject","url":"https://cdn.example/lock.jpg"}}
+        </script>
+        <meta property="og:image" content="https://cdn.example/og.jpg">
+        """
+        self.assertEqual(_product_jsonld_image(html), "https://cdn.example/lock.jpg")
+
+    def test_graph_uses_the_product_image(self) -> None:
+        from sales_support_agent.services.product_research import _product_jsonld_image
+
+        html = """
+        <script type="application/ld+json">
+        {"@graph":[
+          {"@type":"Organization","image":"https://cdn.example/logo.png"},
+          {"@type":"https://schema.org/Product","image":["https://cdn.example/lock.jpg","https://cdn.example/lock-2.jpg"]}
+        ]}
+        </script>
+        """
+        self.assertEqual(_product_jsonld_image(html), "https://cdn.example/lock.jpg")
+
+    def test_organization_alone_does_not_count_as_a_product_image(self) -> None:
+        from sales_support_agent.services.product_research import _product_jsonld_image
+
+        html = """
+        <script type="application/ld+json">
+        {"@type":"Organization","image":"https://cdn.example/logo.png"}
+        </script>
+        """
+        self.assertEqual(_product_jsonld_image(html), "")
