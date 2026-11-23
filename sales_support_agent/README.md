@@ -690,6 +690,22 @@ migration is additive: it creates `building_tenant_directory_contacts` and does
 not change existing tables. Apply it before using the page on a database that
 skips boot-time schema changes.
 
+### Front desk reviews
+
+`/review` (and `/building/review`) is the public page behind the front-desk QR
+code at 1657 N State Street. There is no login. A visitor taps 1–5 stars. Four
+and five stars show a short thank-you and open the Google review link. One to
+three stars keep that star selection and ask for a private note. Every star
+tap is stored in `building_visitor_reviews`, including people sent to Google.
+Private notes alert the same Slack channel as new Building inquiries and, when
+Resend is configured, email `building@anatainc.com`. Recent taps are listed on
+`/admin/building/operations`.
+
+Vercel does not create tables at boot. Apply
+`supabase/migrations/20261123193000_building_visitor_reviews.sql` before the
+page is used in production. The migration is additive and idempotent. Local
+SQLite and the Render pre-deploy command create the same table from the model.
+
 ### Building public content and publication readiness
 
 `/admin/building/content` is the review workspace for lifestyle media, tenant

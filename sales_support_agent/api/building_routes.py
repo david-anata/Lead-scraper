@@ -54,6 +54,9 @@ from sales_support_agent.api.building_privacy_router import (
     admin_router as building_privacy_admin_router,
     internal_router as building_privacy_internal_router,
 )
+from sales_support_agent.api.building_review_router import (
+    router as building_review_router,
+)
 from sales_support_agent.api.building_router import (
     internal_router as building_internal_router,
     public_router as building_public_router,
@@ -71,6 +74,7 @@ from sales_support_agent.api.building_tenant_directory_router import (
 
 
 BUILDING_ROUTERS = (
+    building_review_router,
     building_public_router,
     building_internal_router,
     building_crm_public_router,

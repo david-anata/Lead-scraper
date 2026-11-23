@@ -5347,6 +5347,11 @@ def building_control_room(
             page_path="/admin/building/bookings",
             anchor="arena-month-bookings",
         )
+        from sales_support_agent.services.building_visitor_reviews import (
+            admin_review_snapshot,
+        )
+
+        visitor_reviews = admin_review_snapshot(session)
         html_body = render_building_page(
             user=user,
             view=view,
@@ -5808,6 +5813,7 @@ def building_control_room(
             error=error[:300],
             arena_calendar_today=arena_calendar_today,
             arena_calendar_bookings=arena_calendar_bookings,
+            visitor_reviews=visitor_reviews,
         )
         return HTMLResponse(html_body)
 

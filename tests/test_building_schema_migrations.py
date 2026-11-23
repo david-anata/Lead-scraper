@@ -42,6 +42,7 @@ def test_building_table_bootstrap_uses_complete_model_registry() -> None:
     table_names = set(inspect(engine).get_table_names())
 
     assert "building_billing_adjustments" in table_names
+    assert "building_visitor_reviews" in table_names
     assert {
         name for name in Base.metadata.tables if name.startswith("building_")
     } <= table_names

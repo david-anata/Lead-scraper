@@ -220,6 +220,47 @@ def render_customer_status_link_result(
     return _with_accessible_control_names(document)
 
 
+def _front_desk_review_panel(snapshot: dict[str, Any] | None) -> str:
+    """Recent front-desk star taps and private notes."""
+
+    payload = dict(snapshot or {})
+    by_stars = dict(payload.get("by_stars") or {})
+    mix = " · ".join(
+        f"{star}★ {int(by_stars.get(star, by_stars.get(str(star), 0)) or 0)}"
+        for star in range(1, 6)
+    )
+    total = int(payload.get("total") or 0)
+    private_notes = int(payload.get("private_notes") or 0)
+    average = str(payload.get("average") or "")
+    note_word = "private note" if private_notes == 1 else "private notes"
+    summary = (
+        f"{total} ratings"
+        + (f" · average {_esc(average)}" if average else "")
+        + f" · {private_notes} {note_word} · {mix}"
+        if total
+        else "No front-desk ratings yet."
+    )
+    rows = "".join(
+        f"""<tr>
+          <td>{_esc(item.get("when") or "—")}</td>
+          <td>{_esc(item.get("stars"))}★</td>
+          <td>{_esc(item.get("kind") or "Star only")}</td>
+          <td>{_esc(item.get("comment") or "—")}</td>
+          <td>{_esc(item.get("name") or "—")}<span class="sub">{_esc(item.get("contact"))}</span></td>
+          <td>{_esc(item.get("visit_reasons") or "—")}</td>
+        </tr>"""
+        for item in list(payload.get("rows") or [])
+    ) or (
+        '<tr><td colspan="6"><div class="empty"><strong>No front-desk ratings yet.</strong>'
+        '<br>The QR page is <a href="/review">/review</a>.</div></td></tr>'
+    )
+    return f"""
+      <section class="panel panel--wide building-view view-operations" id="front-desk-reviews">
+        <div class="panel-head"><div><h2>Front desk reviews</h2><p>Star taps from the public QR page at <a href="/review">/review</a>, including people sent to Google. Private notes are the 1–3 star messages.</p></div><span class="count">{_esc(summary)}</span></div>
+        <div class="table-wrap"><table><thead><tr><th>When</th><th>Stars</th><th>Kind</th><th>Note</th><th>From</th><th>Here for</th></tr></thead><tbody>{rows}</tbody></table></div>
+      </section>"""
+
+
 def render_building_page(
     *,
     user: dict,
@@ -254,6 +295,7 @@ def render_building_page(
     error: str = "",
     arena_calendar_today: str = "",
     arena_calendar_bookings: str = "",
+    visitor_reviews: dict[str, Any] | None = None,
 ) -> str:
     view = view if view in BUILDING_VIEWS else "today"
     page_title, page_purpose = BUILDING_VIEWS[view]
@@ -1669,6 +1711,7 @@ def render_building_page(
             else ""
         )
     )
+    visitor_review_html = _front_desk_review_panel(visitor_reviews)
 
     document = f"""<!doctype html>
 <html lang="en">
@@ -2143,6 +2186,7 @@ def render_building_page(
         </form>
         </details>
       </section>
+      {visitor_review_html}
       <section class="panel panel--wide building-view view-operations" id="service-requests">
         <div class="panel-head"><div><h2>Building service</h2><p>Maintenance and tenant requests stay owned, due, auditable, and separate from commercial booking state.</p></div><span class="count">{open_service_requests} open</span></div>
         <details class="task-creator"><summary>Add a service request</summary>
