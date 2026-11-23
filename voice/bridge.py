@@ -27,6 +27,7 @@ from voice.prompts import build_instructions
 from voice.session import CallSession
 from voice.settings import Settings
 from voice.tools import execute_tool, session_update_event
+from voice.transfer_brief import missing_transfer_facts, transfer_announcement, whisper_sentence
 from voice.twiml import (
     RING_TIMEOUT_SECONDS,
     ai_fallback_dial_twiml,
@@ -37,8 +38,6 @@ from voice.twiml import (
 )
 from voice.notify import TwilioRest, ai_down_callback_text
 from voice.leads import SupabaseStore, ensure_call_summary
-from voice.screening import one_line
-
 logger = logging.getLogger(__name__)
 
 
@@ -302,10 +301,10 @@ class CallBridge:
         await asyncio.sleep(5)
         if self._stop.is_set() or self.session.transfer_started:
             return
+        if missing_transfer_facts(self.session):
+            return
         self.session.asked_for_david = True
         self.session.transfer_requested = True
-        if not self.session.reason:
-            self.session.reason = f"Known {self.session.known_caller_category} caller"
         await self._start_dial()
 
     async def _dial_after_pause(self) -> None:
@@ -346,6 +345,7 @@ class CallBridge:
         if agent_sid:
             self.session.agent_call_sid = agent_sid
             logger.info("transfer dial started call=%s", parent)
+            await self._text_transfer_brief()
             return
         logger.info("transfer dial failed call=%s", parent)
         # The caller is already in the conference. Bring them back here rather
@@ -363,6 +363,26 @@ class CallBridge:
             parent,
             resume_twiml(self.settings, http_base=http_base, call_sid=parent),
         )
+
+    async def _text_transfer_brief(self) -> None:
+        """One plain line to David while his phone is ringing."""
+
+        if self.session.transfer_sms_sent or self.session.ai_fallback or not self.settings.notify_sms_number:
+            return
+        self.session.transfer_sms_sent = True
+        callback = ""
+        base = self.settings.http_base()
+        if base and self.session.call_sid:
+            callback = f"{base}/voice/sms-status?call_sid={quote(self.session.call_sid, safe='')}"
+        accepted = await asyncio.to_thread(
+            self.twilio.send_sms,
+            from_number=self.session.dialed_number,
+            to_number=self.settings.notify_sms_number,
+            body=transfer_announcement(self.session),
+            status_callback=callback,
+        )
+        if not accepted:
+            logger.warning("Transfer text was not accepted for %s", self.session.call_sid)
 
     async def _forward_when_ai_down(self) -> None:
         """The realtime session did not start. Ring David, then take a recording if he misses."""
@@ -499,7 +519,4 @@ def missed_transfer_line(session: CallSession) -> str:
 
 
 def whisper_line(session: CallSession) -> str:
-    name = session.caller_name or "A caller"
-    reason = one_line(session.reason or session.summary or "needs a person", 120)
-    number = session.caller_number or "an unknown number"
-    return f"Anata transfer. {name}, calling from {number}. {reason}. Press 1 to accept."
+    return whisper_sentence(session)

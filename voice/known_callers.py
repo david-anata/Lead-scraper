@@ -10,7 +10,9 @@ from __future__ import annotations
 from voice.lines import normalize_phone
 from voice.session import CallSession
 
-CATEGORIES = frozenset({"tenant", "client", "landlord_legal", "vendor", "vip", "spam", "unknown"})
+CATEGORIES = frozenset(
+    {"tenant", "client", "landlord_legal", "vendor", "vip", "spam", "lead", "unknown"}
+)
 RING_POLICIES = frozenset({"always", "urgent_only", "never"})
 
 # Defaults when the row does not set ring_policy. Unknown stays on screening.
@@ -114,6 +116,9 @@ def known_greeting(session: CallSession) -> str:
     if category == "vendor":
         who = name or "there"
         return f"Hi {who}. I can take a message."
+    if category == "lead":
+        who = first or "there"
+        return f"Hi {who}. What can I help you with?"
     return ""
 
 
@@ -133,27 +138,42 @@ def known_caller_instructions(session: CallSession) -> str:
     )
     if category == "tenant":
         body = (
-            "Greet them by first name. Help with maintenance and access. "
-            "Ring David only for a lockout, flood, fire or alarm, no heat or AC, or a security problem. "
+            "Greet them by first name. You already know their name and that they are a tenant. "
+            "Do not ask who they are or what company they are with. "
+            "Help with maintenance and access. "
+            "Ring David only for a lockout, flood, fire or alarm, no heat or AC, or a security problem, "
+            "and only after you know the reason. If they will not say, transfer with what you know. "
             "Anything else is needs_callback. Do not ring for a routine question."
         )
     elif category == "client":
         body = (
-            "Greet them by name and ring David right away. "
-            "No screening and no discovery questions."
+            "Greet them by name. You already know their name and organization. "
+            "Ask only what this call is about, then ring David. "
+            "If they will not say, transfer with what you know. "
+            "Do not ask their name or company again."
         )
     elif category == "landlord_legal":
         body = (
-            "Be polite and brief. Ring David right away. If he misses, take a message only and say he will call back. "
+            "Be polite and brief. You already know who they are. Ask only the reason, then ring David. "
+            "If he misses, take a message only and say he will call back. "
             "Never discuss the building, rent, money, leases, legal matters, or any case."
         )
     elif category == "vendor":
         body = (
             "Greet them by name and take the message. Do not ring. "
+            "Do not ask their name or company again. "
             "The call is logged for David to handle."
         )
     elif category == "vip":
-        body = "Ring David right away."
+        body = (
+            "You already know their name. Ask only the reason, then ring David. "
+            "If they will not say, transfer with what you know."
+        )
+    elif category == "lead":
+        body = (
+            "Greet them by name. You already know who they are and their organization. "
+            "Ask what they need today. Do not ask their name or company again."
+        )
     elif category == "spam":
         body = (
             "This number is tagged as spam, for example Truework or another employment "
@@ -163,7 +183,7 @@ def known_caller_instructions(session: CallSession) -> str:
         )
     else:
         body = "This number is not tagged yet. Use the normal discovery and screening."
-    if category in {"tenant", "client", "landlord_legal", "vip", "vendor", "spam"}:
+    if category in {"tenant", "client", "landlord_legal", "vip", "vendor", "spam", "lead"}:
         body += " Do not ask how they heard about us."
     return header + "\n" + body
 

@@ -148,6 +148,21 @@ _KNOWN_INSERT = (
     "VALUES (%s, %s, 'unknown', 'inbound_call') "
     "ON CONFLICT (phone_e164) DO NOTHING RETURNING id::text"
 )
+_KNOWN_DIRECTORY = (
+    "SELECT name, company, category, source FROM public.known_callers "
+    "WHERE phone_e164 = %s"
+)
+_KNOWN_AUTO_INSERT = (
+    "INSERT INTO public.known_callers "
+    "(phone_e164, name, company, category, source, last_reason, last_called_at) "
+    "VALUES (%s, %s, %s, %s, %s, %s, %s) "
+    "ON CONFLICT (phone_e164) DO NOTHING"
+)
+_KNOWN_AUTO_UPDATE = (
+    "UPDATE public.known_callers SET name = %s, company = %s, category = %s, "
+    "source = %s, last_reason = %s, last_called_at = %s, updated_at = now() "
+    "WHERE phone_e164 = %s"
+)
 _KNOWN_PROBE = """
 SELECT
   has_table_privilege(current_user, 'public.known_callers', 'SELECT')
@@ -363,6 +378,64 @@ class PostgresLog:
             "category": str(found[3] or "unknown"),
             "ring_policy": str(found[4] or ""),
         }
+
+    def remember_caller(self, session: CallSession, *, skip_numbers: frozenset[str] = frozenset()) -> None:
+        """Upsert a learned caller. Manual directory rows keep their name and category."""
+
+        from voice.caller_index import build_directory_record, merge_learned
+        from voice.lines import normalize_phone
+
+        learned = build_directory_record(session)
+        if learned is None or not self.configured:
+            return
+        skipped = {normalize_phone(number) for number in skip_numbers}
+        skipped.discard("")
+        if learned["phone"] in skipped:
+            return
+        try:
+            with self._connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(_KNOWN_DIRECTORY, (learned["phone"],))
+                    found = cur.fetchone()
+                    existing = None
+                    if found:
+                        existing = {
+                            "phone": learned["phone"],
+                            "name": str(found[0] or ""),
+                            "company": str(found[1] or ""),
+                            "category": str(found[2] or "unknown"),
+                            "source": str(found[3] or ""),
+                        }
+                    merged = merge_learned(existing, learned)
+                    if existing is None:
+                        cur.execute(
+                            _KNOWN_AUTO_INSERT,
+                            (
+                                merged["phone"],
+                                merged["name"],
+                                merged["company"],
+                                merged["category"],
+                                merged["source"],
+                                merged["last_reason"],
+                                merged["last_called_at"],
+                            ),
+                        )
+                    else:
+                        cur.execute(
+                            _KNOWN_AUTO_UPDATE,
+                            (
+                                merged["name"],
+                                merged["company"],
+                                merged["category"],
+                                merged["source"],
+                                merged["last_reason"],
+                                merged["last_called_at"],
+                                merged["phone"],
+                            ),
+                        )
+                conn.commit()
+        except Exception:
+            logger.exception("Could not remember caller %s", learned["phone"])
 
     def save_sms(
         self,

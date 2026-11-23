@@ -91,6 +91,13 @@ class LoggingStore:
         if self.rest is not None:
             self.rest.set_sms_notified(call_sid, notified)
 
+    def remember_caller(self, session: CallSession, *, skip_numbers: frozenset[str] = frozenset()) -> None:
+        """Learn a caller into the directory when Postgres is the writer."""
+
+        if self.postgres is None:
+            return
+        self.postgres.remember_caller(session, skip_numbers=skip_numbers)
+
     def resolve_caller(self, phone: str) -> dict[str, str]:
         if self.postgres is None:
             return {}

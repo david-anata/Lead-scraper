@@ -29,12 +29,13 @@ websocket for the whole conversation.
    to leave a message. Voicemail is never a successful transfer, and
    `callback_needed` is set. Screening in `voice/screening.py` still decides
    whether a transfer is allowed.
-6. If the realtime session cannot start (HTTP 402, a timeout, or any other
+6. Before a transfer, the line confirms the caller's name, who they are with, and why. A known caller is only asked for the reason. David hears that as one sentence and must press 1, and the same sentence is texted to him while the phone rings. If he declines or does not answer, the caller leaves a message.
+7. If the realtime session cannot start (HTTP 402, a timeout, or any other
    connection error), the caller is forwarded to `FORWARD_TO_NUMBER` instead of
    hearing an apology and a hangup. If that forward fails or goes unanswered,
    the caller can leave a recording and David gets one text: who called, their
    number, and to call back.
-7. When the call ends, a non-spam call is summarized by SMS to
+8. When the call ends, a non-spam call is summarized by SMS to
    `NOTIFY_SMS_NUMBER` and every call is written to Supabase `call_log`.
    If the caller hangs up before the assistant saves a summary, the summary
    is what the caller said, not a placeholder like the number and "other".
@@ -263,6 +264,8 @@ level security that command needs table `SELECT` or Postgres denies the
 table. `building_inquiries` is not granted `UPDATE`. Its `SELECT` is only
 `id` and `idempotency_key`, so a repeated call can find the inquiry id after
 `ON CONFLICT DO NOTHING`.
+
+When a call identifies someone, the service upserts that number into `known_callers` with `source = auto`, including `last_reason` and `last_called_at`. A row David entered (any source other than `auto`) keeps its name, company, and category. The next call from that number is greeted by name and is not asked again who they are.
 
 `known_callers` is the directory for the live line. `voice_logger` can
 `SELECT` the whole table. It can `INSERT` only `name`, `phone_e164`,

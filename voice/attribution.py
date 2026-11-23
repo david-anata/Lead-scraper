@@ -33,7 +33,9 @@ HEARD_ABOUT_SOURCES = (
 )
 
 # Indexed callers already know us. Family is stored as vip.
-SKIP_KNOWN_CATEGORIES = frozenset({"tenant", "client", "landlord_legal", "vip", "vendor", "spam"})
+SKIP_KNOWN_CATEGORIES = frozenset(
+    {"tenant", "client", "landlord_legal", "vip", "vendor", "spam", "lead"}
+)
 
 _ASK_RE = re.compile(
     r"how(?:'|’)?d you hear|how did you hear|where did you (?:hear|find)|"

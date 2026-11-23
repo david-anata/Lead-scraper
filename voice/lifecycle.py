@@ -91,6 +91,13 @@ async def finalize_call(
             session.callback_needed = False
             session.action = "logged_only"
         ensure_call_summary(session)
+        skip_numbers = frozenset({settings.notify_sms_number, settings.forward_to_number})
+        remember = getattr(store, "remember_caller", None)
+        if remember is not None:
+            try:
+                await asyncio.to_thread(lambda: remember(session, skip_numbers=skip_numbers))
+            except Exception:
+                logger.exception("Could not index caller for %s", session.call_sid)
         # Delivery is unknown until the status callback. Never store a 2xx as delivered.
         if not session.fallback_sms_queued:
             session.sms_notified = False

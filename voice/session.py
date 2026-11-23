@@ -64,6 +64,10 @@ class CallSession:
     sms_notified: bool = False
     ai_fallback: bool = False
     fallback_sms_queued: bool = False
+    affiliation: str = ""
+    learned_relationship: str = ""
+    transfer_details_asked: bool = False
+    transfer_sms_sent: bool = False
     channel: str = "voice"
     time_window: str = ""
     # Conversation bookkeeping for an SMS thread. Voice calls leave this empty.

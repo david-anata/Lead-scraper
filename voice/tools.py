@@ -13,6 +13,7 @@ from typing import Any
 from voice.attribution import how_heard_nudge
 from voice.calendar_availability import CalendarAvailability
 from voice.knowledge import anata_inc_facts, building_facts, published_addons, published_rates
+from voice.transfer_brief import absorb_details, missing_transfer_facts
 from voice.screening import (
     ScreenInput,
     apply_forward_availability,
@@ -74,6 +75,15 @@ TOOLS: list[dict[str, Any]] = [
                 "phone": {"type": "string"},
                 "email": {"type": "string"},
                 "company": {"type": "string"},
+                "affiliation": {
+                    "type": "string",
+                    "description": "Who they are with: a company or organization, or personal, or tenant.",
+                },
+                "relationship": {
+                    "type": "string",
+                    "enum": ["tenant", "client", "vendor", "lead", "landlord_legal", "vip", "spam"],
+                    "description": "How they relate to Anata. A prospect is lead. Family is vip.",
+                },
                 "event_date": {"type": "string", "description": "YYYY-MM-DD if known"},
                 "guest_count": {"type": "string"},
                 "event_or_interest_type": {"type": "string"},
@@ -101,7 +111,7 @@ TOOLS: list[dict[str, Any]] = [
     {
         "type": "function",
         "name": "request_transfer",
-        "description": "Ask to connect the caller to a person. The server may decline sales pitches. Use when they ask for a person, the owner, or David, when they have a contract or price-exception question you cannot answer, for a building emergency, or when a real prospect wants to talk now.",
+        "description": "Ask to connect the caller to a person. The server may decline sales pitches, and it waits until name, affiliation, and reason are known unless caller_refused_details is true. Use when they ask for a person, the owner, or David, when they have a contract or price-exception question you cannot answer, for a building emergency, or when a real prospect wants to talk now.",
         "parameters": {
             "type": "object",
             "properties": {
@@ -122,6 +132,18 @@ TOOLS: list[dict[str, Any]] = [
                 "qualified_opportunity": {"type": "boolean"},
                 "caller_name": {"type": "string"},
                 "company": {"type": "string"},
+                "affiliation": {
+                    "type": "string",
+                    "description": "Who they are with: a company or organization, or personal, or tenant.",
+                },
+                "relationship": {
+                    "type": "string",
+                    "enum": ["tenant", "client", "vendor", "lead", "landlord_legal", "vip", "spam"],
+                },
+                "caller_refused_details": {
+                    "type": "boolean",
+                    "description": "True when they would not give their name, organization, or reason.",
+                },
                 "event_date": {"type": "string"},
                 "guest_count": {"type": "string"},
                 "event_or_interest_type": {"type": "string"},
@@ -198,6 +220,7 @@ def execute_tool(
 ) -> dict[str, Any]:
     args = parse_arguments(arguments)
     session.remember(args)
+    absorb_details(session, args)
     if name == "get_published_rates":
         return published_rates()
     if name == "get_published_addons":
@@ -265,6 +288,26 @@ def _transfer(
     decision = apply_forward_availability(decision, bool(settings.forward_to_number))
     session.category = decision.category
     session.reason = str(args.get("reason") or session.reason)
+    if decision.allow_transfer:
+        refused = bool(args.get("caller_refused_details")) or session.transfer_details_asked
+        missing = missing_transfer_facts(session)
+        if missing and not refused:
+            session.transfer_details_asked = True
+            session.transfer_requested = False
+            session.action = "message"
+            return {
+                "transfer": "hold",
+                "missing": missing,
+                "category": decision.category,
+                "action": "collect",
+                "instruction": (
+                    "Do not transfer yet. Ask only for: "
+                    + ", ".join(missing)
+                    + ". One question. A known caller already has a name and organization; "
+                    "ask only the reason. If they refuse, call request_transfer again "
+                    "with caller_refused_details true."
+                ),
+            }
     session.action = "transfer" if decision.allow_transfer else "message"
     session.transfer_requested = decision.allow_transfer
     if decision.asked_for_david and decision.allow_transfer:
