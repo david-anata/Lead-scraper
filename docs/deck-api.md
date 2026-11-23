@@ -59,3 +59,13 @@ Response: the same JSON as the Manual upload (`details.run_id`, `details.view_ur
 
 Errors: `404` route disabled, `401` missing/wrong key (constant-time compare),
 `400` no target product, `500` generation failed.
+
+## Content gate
+
+`details.content_gate_passed` is false when the HTML still contains a zero
+dollar amount, the placeholder "this category", "Top 0", a zero market
+metric, or a retired client name. `details.evidence_status` is `missing`
+when no usable competitor export was supplied. Those decks omit category
+revenue, unit, and competitor tables and quote the store page instead.
+Abby's automatic deck send holds, and does not email the link, when the
+gate fails.

@@ -7,9 +7,19 @@ prospect strategy deck. It does not send email and it does not log the send.
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass
 from typing import Any
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class ProspectDeck:
+    """A built deck and whether its content is fit to send."""
+
+    view_url: str
+    content_gate_passed: bool = True
+    content_gate_findings: tuple[str, ...] = ()
 
 
 def _target(domain: str, product: str, asin: str) -> str:
@@ -27,8 +37,8 @@ def _target(domain: str, product: str, asin: str) -> str:
 
 def build_prospect_deck(*, lead: str = "", company: str = "", domain: str = "",
                         first_name: str = "", product: str = "", asin: str = "",
-                        settings: Any = None, session_factory: Any = None) -> str:
-    """Return the public deck URL, or '' when the plan cannot be built.
+                        settings: Any = None, session_factory: Any = None) -> ProspectDeck | str:
+    """Return the deck and its content-gate result, or '' when it cannot be built.
 
     ``lead`` and ``first_name`` are accepted so the runner can pass the same
     keyword arguments it uses for a test double. They are not sent anywhere.
@@ -72,7 +82,12 @@ def build_prospect_deck(*, lead: str = "", company: str = "", domain: str = "",
                 brand_name=(company or "").strip(),
                 brand_website=target if target.startswith("http") else "",
             )
-        return str(getattr(result, "view_url", "") or "").strip()
+        findings = tuple(getattr(result, "content_gate_findings", ()) or ())
+        return ProspectDeck(
+            view_url=str(getattr(result, "view_url", "") or "").strip(),
+            content_gate_passed=bool(getattr(result, "content_gate_passed", True)),
+            content_gate_findings=tuple(str(item) for item in findings),
+        )
     except Exception:  # noqa: BLE001 — the reply path records the miss and retries
         logger.exception("[abby] prospect deck was not built")
         return ""

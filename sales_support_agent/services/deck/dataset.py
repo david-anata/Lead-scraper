@@ -87,6 +87,8 @@ class DeckGenerationResult:
     evidence_status: str = "ready"
     market_evidence_sufficient: bool = True
     market_evidence_reason: str = ""
+    content_gate_passed: bool = True
+    content_gate_findings: tuple[str, ...] = ()
 @dataclass(frozen=True)
 class TargetRowMatch:
     product: XrayProduct | None
@@ -226,8 +228,8 @@ def _build_target_snapshot_text(
             "Use this deck to compare the PDP and offer against page-one leaders while the market benchmark is refined."
         )
     return (
-        f"{_brand_product_reference(brand_name)} is not yet established in the current market set. "
-        "Use this deck to benchmark the product concept against niche leaders and shape the launch page, offer, and positioning. "
+        f"{_brand_product_reference(brand_name)} is described from its own site. "
+        "This deck does not show a category benchmark unless a competitor export supplies one. "
         f"{brand_name} is not an Amazon seller."
     )
 def _build_market_summary(
@@ -543,6 +545,14 @@ def _build_seo_recommendations(
 ) -> list[str]:
     branded_reference = _brand_product_reference(brand_name)
     cleaned_title = _trim_text(_clean_listing_title(target_title), 60) or branded_reference
+    has_keyword_export = bool(
+        (keyword_report and keyword_report.keywords) or (cerebro_report and cerebro_report.keywords)
+    )
+    if not xray_report.market_evidence_sufficient and not has_keyword_export:
+        return [
+            f"Use the words already on the store page in the launch title. Current page title: '{cleaned_title}'.",
+            "Search volume is not in this deck. Do not forecast keyword demand until a keyword export is attached.",
+        ]
     title_misses = list(search_insights.get("title_misses", []))
     copy_misses = list(search_insights.get("copy_misses", []))
     if keyword_report and keyword_report.keywords:
@@ -1148,13 +1158,13 @@ def resolve_category_label(
        smell where the seed search term is one of the competitors), derive a
        broader label from the most common non-brand 2-token phrase across
        keyword phrases.
-    4. Fall back to "this category".
+    4. Otherwise return an empty label. Callers must not print a placeholder category.
     """
     if user_input and user_input.strip():
         return user_input.strip()
     niche_lc = (niche_keyword or "").strip().lower()
     if not niche_lc:
-        return "this category"
+        return ""
     brands_lc = {b.lower() for b in competitor_brands if b}
     if niche_lc not in brands_lc:
         return niche_keyword.strip()
@@ -1176,7 +1186,7 @@ def resolve_category_label(
     if bigram_counts:
         best = max(bigram_counts.items(), key=lambda kv: kv[1])
         return best[0]
-    return "this category"
+    return ""
 
 
 def _phrase_is_category_relevant(phrase: str, category_buckets: list[set[str]]) -> bool:
@@ -1218,7 +1228,7 @@ def _build_search_insights(
     category_buckets = _category_tokens(category_label)
     # When a relevance filter is active, widen the candidate pool so we have
     # enough on-topic terms to surface AFTER filtering out spillover. Without
-    # widening, a target with mostly-spillover top-10 (Zantrex's cerebro is a
+    # widening, a target with mostly-spillover top-10 (one supplement cerebro is a
     # good example: protein/creatine/cortisol/waist-trainer dominate the top
     # by volume) would surface only 1-2 relevant suggestions or none.
     pool_size = 60
@@ -1285,7 +1295,14 @@ def _build_target_opportunities(
     if comparison_mode == "live_unmatched":
         gaps.append("The live Amazon target was not matched in the current niche export, so the benchmark column uses the top page-one competitor while direct target data fills identity, BSR, rating, and review signals where available.")
     elif comparison_mode == "concept_only":
-        gaps.append("The prospect is not currently visible in the Amazon market set, so the benchmark column uses the top page-one competitor instead. This brand does not sell on Amazon yet.")
+        if best_seller is not None:
+            gaps.append(
+                "The prospect is not currently visible in the Amazon market set, so the benchmark column uses the top page-one competitor. This brand does not sell on Amazon yet."
+            )
+        else:
+            gaps.append(
+                "This brand does not sell on Amazon yet, and no competitor export was supplied, so there is no benchmark column."
+            )
     if not hero_product.description:
         if launch_mode:
             gaps.append("The product story does not yet carry enough detail for a launch page; the offer and support content still need to be written.")

@@ -31,22 +31,34 @@ from sales_support_agent.services.deck.intelligence_v2 import case_study_detail,
 
 
 class CaseStudyTrialCopyTests(unittest.TestCase):
-    def test_zantrex_detail_is_trial_neutral_when_no_trial_is_offered(self) -> None:
-        zantrex = next(study for study in load_case_studies() if study["key"] == "zantrex")
-        with_trial = case_study_detail(zantrex, include_trial=True)
-        without_trial = case_study_detail(zantrex, include_trial=False)
-        self.assertIn("the same platform trial users get", with_trial)
-        self.assertNotIn("trial", without_trial.lower())
-        self.assertIn("Connected to Anata Intelligence", without_trial)
-        self.assertIn("first 30 days", without_trial)
+    def test_retired_client_is_absent_and_trial_wording_stays_optional(self) -> None:
+        studies = load_case_studies()
+        names = {str(study.get("name") or "") for study in studies}
+        keys = {str(study.get("key") or "") for study in studies}
+        self.assertNotIn("zantrex", keys)
+        self.assertFalse(any("zantrex" in name.lower() for name in names))
+        self.assertIn("SeroVital", names)
+        self.assertIn("Ocean Rx", names)
+        self.assertIn("Sonrei", names)
+        self.assertIn("Shadyvue", names)
+        self.assertIn("Velrose", names)
+        self.assertIn("Harvest & Home", names)
+        self.assertIn("MyBevi", names)
+        self.assertIn("WAIU", names)
+
+        synthetic = {
+            "name": "Example",
+            "detail": "Measured in Anata Intelligence, the same platform trial users get.",
+            "detail_without_trial": "Measured in Anata Intelligence.",
+        }
+        self.assertIn("trial users", case_study_detail(synthetic, include_trial=True))
+        self.assertNotIn("trial", case_study_detail(synthetic, include_trial=False).lower())
 
         html = render_case_studies_section(include_trial=False)
-        self.assertNotIn("trial users", html.lower())
-        self.assertNotIn("free trial", html.lower())
-        self.assertIn("40% revenue growth within 30 days", html)
-
-        with_trial_html = render_case_studies_section(include_trial=True)
-        self.assertIn("the same platform trial users get", with_trial_html)
+        self.assertNotIn("zantrex", html.lower())
+        self.assertIn("$12K a day", html)
+        self.assertIn("40.4%", html)
+        self.assertIn("+502%", html)
 
 
 class ReferralFeeTests(unittest.TestCase):

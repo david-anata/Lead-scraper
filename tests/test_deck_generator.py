@@ -204,7 +204,7 @@ class DeckGeneratorTests(unittest.TestCase):
         # upload the target would fall back to "Unavailable" everywhere.
         target_xray = (
             "Product Details,ASIN,URL,Image URL,Brand,Price  $,ASIN Revenue,ASIN Sales,BSR,Ratings,Review Count,Category,Seller Country/Region,Size Tier,Fulfillment,Dimensions,Weight\n"
-            "Zantrex Shred GLP Drink,B0FML8PTJH,https://www.amazon.com/dp/B0FML8PTJH,https://example.com/zantrex.jpg,Zantrex,43.64,823.07,18,344373,4.2,25,Health,US,Large,FBA,3.66 x 3.42 x 3.58 in,0.54\n"
+            "Northstar Shred GLP Drink,B0FML8PTJH,https://www.amazon.com/dp/B0FML8PTJH,https://example.com/northstar.jpg,Northstar,43.64,823.07,18,344373,4.2,25,Health,US,Large,FBA,3.66 x 3.42 x 3.58 in,0.54\n"
         ).encode("utf-8")
 
         session_factory = create_session_factory("sqlite:///:memory:")
@@ -230,7 +230,7 @@ class DeckGeneratorTests(unittest.TestCase):
             html = str(dict(run.summary_json or {}).get("deck_html") or "")
 
         # Target metrics from the target-only Xray must appear in the deck.
-        self.assertIn("Zantrex", html)
+        self.assertIn("Northstar", html)
         self.assertIn("$43.64", html)
         # And the deck should NOT render the "Unavailable" placeholder
         # on the target column anywhere — the upload populated everything.
@@ -713,7 +713,7 @@ class GrowthPlanTests(unittest.TestCase):
         # redundant "Activates:" prefix.
         # the ramp tiles above so each card shows WHEN it turns on.
         self.assertNotIn("Activates:", html)
-        self.assertIn("Months 16–24", html)
+        self.assertIn("Months 16 to 24", html)
         self.assertIn("End-of-phase monthly run rate by channel", html)
         # PR55: spend-summary tiles show ABSOLUTE steady-state, not just the
         # incremental delta. The label change + the math change go together:
@@ -769,7 +769,7 @@ class GrowthPlanTests(unittest.TestCase):
         'Total monthly sessions' which read as the absolute end-state and
         understated the steady-state number by current_sessions worth.
 
-        For the Zantrex shape (current=39k, delta=69k, fully delivered): tile
+        For the Northstar shape (current=39k, delta=69k, fully delivered): tile
         should read 108k, not 69k. Same direction on revenue."""
         from sales_support_agent.services.deck.growth_plan import (
             GrowthPlanInputs, build_growth_plan, render_growth_plan_section,
@@ -790,7 +790,7 @@ class GrowthPlanTests(unittest.TestCase):
         self.assertGreater(plan.current_sessions, 35_000)
         self.assertGreater(plan.delta_sessions, 60_000)
 
-        html = render_growth_plan_section(plan, target_brand="Zantrex", target_aov=24.99)
+        html = render_growth_plan_section(plan, target_brand="Northstar", target_aov=24.99)
         # Steady-state tile = current + delivered, comma-formatted.
         expected_steady = plan.current_sessions + plan.total_sessions_delivered
         self.assertIn(f"{expected_steady:,}", html)
@@ -1376,12 +1376,12 @@ class DeckRoutingTests(unittest.TestCase):
             b'Product Details,ASIN,URL,Image URL,Brand,Price  $,'
             b'Parent Level Sales,ASIN Sales,Parent Level Revenue,'
             b'ASIN Revenue,BSR,Ratings,Review Count\n'
-            b'"Zantrex Berry",B0CC6QQGF3,https://amzn.com/dp/B0CC6QQGF3,,'
-            b'Zantrex,24.99,5886,700,191533,29045,8903,4.2,2950\n'
-            b'"Zantrex Tropical",B0CC6QQGF4,https://amzn.com/dp/B0CC6QQGF4,,'
-            b'Zantrex,24.99,5886,1163,191533,46720,8903,4.2,2950\n'
-            b'"Zantrex Citrus",B0CC6QQGF5,https://amzn.com/dp/B0CC6QQGF5,,'
-            b'Zantrex,24.99,5886,4023,191533,115768,8903,4.2,2950\n'
+            b'"Northstar Berry",B0CC6QQGF3,https://amzn.com/dp/B0CC6QQGF3,,'
+            b'Northstar,24.99,5886,700,191533,29045,8903,4.2,2950\n'
+            b'"Northstar Tropical",B0CC6QQGF4,https://amzn.com/dp/B0CC6QQGF4,,'
+            b'Northstar,24.99,5886,1163,191533,46720,8903,4.2,2950\n'
+            b'"Northstar Citrus",B0CC6QQGF5,https://amzn.com/dp/B0CC6QQGF5,,'
+            b'Northstar,24.99,5886,4023,191533,115768,8903,4.2,2950\n'
         )
         # All same brand → target_xray (was misclassified as competitor pre-PR43)
         self.assertEqual(detect_csv_kind(parent_with_variants), "target_xray")
@@ -1403,7 +1403,7 @@ class DeckRoutingTests(unittest.TestCase):
         back to ASIN-level for older Xray exports that don't expose parent
         columns. The 8x undercount on multi-variant brands (5,886 brand-wide
         units read as 700 single-variant units) was the root cause of the
-        '53 sessions today' bug on the Zantrex deck."""
+        '53 sessions today' bug on the Northstar deck."""
         from sales_support_agent.services.helium10 import parse_xray_csv
 
         # New-format Xray with both Parent Level and ASIN Sales columns.
@@ -1411,8 +1411,8 @@ class DeckRoutingTests(unittest.TestCase):
             b'Product Details,ASIN,URL,Image URL,Brand,Price  $,'
             b'Parent Level Sales,ASIN Sales,Parent Level Revenue,'
             b'ASIN Revenue,BSR,Ratings,Review Count\n'
-            b'"Zantrex Berry",B0CC6QQGF3,https://amzn.com/dp/B0CC6QQGF3,,'
-            b'Zantrex,24.99,5886,700,191533,29045,8903,4.2,2950\n'
+            b'"Northstar Berry",B0CC6QQGF3,https://amzn.com/dp/B0CC6QQGF3,,'
+            b'Northstar,24.99,5886,700,191533,29045,8903,4.2,2950\n'
         )
         report = parse_xray_csv(new_format)
         self.assertEqual(report.products[0].units_sold, 5886.0)
@@ -1514,7 +1514,7 @@ class DeckRoutingTests(unittest.TestCase):
         result = resolve_category_label(
             user_input="fat burner supplement",
             niche_keyword="hydroxycut",  # would normally trigger brand fallback
-            competitor_brands={"Hydroxycut", "Zantrex"},
+            competitor_brands={"Hydroxycut", "Northstar"},
             keyword_phrases=["weight loss pills", "fat burner"],
         )
         self.assertEqual(result, "fat burner supplement")
@@ -1527,7 +1527,7 @@ class DeckRoutingTests(unittest.TestCase):
         result = resolve_category_label(
             user_input="",
             niche_keyword="weight loss",
-            competitor_brands={"Hydroxycut", "Zantrex"},
+            competitor_brands={"Hydroxycut", "Northstar"},
             keyword_phrases=["weight loss pills"],
         )
         self.assertEqual(result, "weight loss")
@@ -1540,7 +1540,7 @@ class DeckRoutingTests(unittest.TestCase):
         result = resolve_category_label(
             user_input="",
             niche_keyword="hydroxycut",
-            competitor_brands={"Hydroxycut", "Zantrex", "Animal"},
+            competitor_brands={"Hydroxycut", "Northstar", "Animal"},
             keyword_phrases=[
                 "fat burner pills",
                 "fat burner for women",
@@ -1585,7 +1585,7 @@ class DeckRoutingTests(unittest.TestCase):
         )
 
         insights = _build_search_insights(
-            title="Zantrex Black Naturally Boost GLP-1",
+            title="Northstar Black Naturally Boost GLP-1",
             description="Some bullets and prose.",
             keyword_report=None,
             cerebro_report=cerebro,
@@ -1604,27 +1604,27 @@ class DeckRoutingTests(unittest.TestCase):
         # Relevant keywords still surface.
         self.assertIn("fat burner pills", insights["title_misses"])
 
-    def test_extract_short_product_name_zantrex_black(self) -> None:
-        """PR49: title 'Zantrex Black – Naturally Boost…' → short = 'Black'."""
+    def test_extract_short_product_name_northstar_black(self) -> None:
+        """PR49: title 'Northstar Black – Naturally Boost…' → short = 'Black'."""
         from sales_support_agent.services.deck.formatting import extract_short_product_name
         result = extract_short_product_name(
-            title="Zantrex Black – Naturally Boost GLP-1 & Metabolism Support | Thermogenic Energy",
-            brand="Zantrex",
+            title="Northstar Black – Naturally Boost GLP-1 & Metabolism Support | Thermogenic Energy",
+            brand="Northstar",
         )
         self.assertEqual(result, "Black")
 
     def test_extract_short_product_name_skinnystix(self) -> None:
-        """PR49: title 'Zantrex Skinnystix Mixed Berry Energy Drink Mix' → 'Skinnystix' at default depth."""
+        """PR49: title 'Northstar Skinnystix Mixed Berry Energy Drink Mix' → 'Skinnystix' at default depth."""
         from sales_support_agent.services.deck.formatting import extract_short_product_name
         result = extract_short_product_name(
-            title="Zantrex Skinnystix Mixed Berry Energy Drink Mix Powder Sticks",
-            brand="Zantrex",
+            title="Northstar Skinnystix Mixed Berry Energy Drink Mix Powder Sticks",
+            brand="Northstar",
         )
         self.assertEqual(result, "Skinnystix")
         # Higher max_tokens picks up the variant flavor.
         result_two = extract_short_product_name(
-            title="Zantrex Skinnystix Mixed Berry Energy Drink Mix Powder Sticks",
-            brand="Zantrex",
+            title="Northstar Skinnystix Mixed Berry Energy Drink Mix Powder Sticks",
+            brand="Northstar",
             max_tokens=2,
         )
         self.assertEqual(result_two, "Skinnystix Mixed")
@@ -1635,12 +1635,12 @@ class DeckRoutingTests(unittest.TestCase):
         from sales_support_agent.services.deck.formatting import deck_slug_with_timestamp
 
         fixed_when = datetime(2026, 5, 8, 22, 30, tzinfo=timezone.utc)
-        result = deck_slug_with_timestamp(brand="Zantrex", short_name="Black", when=fixed_when)
-        self.assertEqual(result, "zantrex-black-x-anata-strategy-deck-2026-05-08-2230")
+        result = deck_slug_with_timestamp(brand="Northstar", short_name="Black", when=fixed_when)
+        self.assertEqual(result, "northstar-black-x-anata-strategy-deck-2026-05-08-2230")
 
         # Empty short_name still produces a valid slug.
-        result_no_short = deck_slug_with_timestamp(brand="Zantrex", short_name="", when=fixed_when)
-        self.assertEqual(result_no_short, "zantrex-x-anata-strategy-deck-2026-05-08-2230")
+        result_no_short = deck_slug_with_timestamp(brand="Northstar", short_name="", when=fixed_when)
+        self.assertEqual(result_no_short, "northstar-x-anata-strategy-deck-2026-05-08-2230")
 
     def test_csv_kind_detection_routes_files_to_correct_slot(self) -> None:
         """PR40: header-based detection lets the admin form drop ALL CSVs
@@ -2099,7 +2099,8 @@ class IntelligenceV2TemplateTests(unittest.TestCase):
         self.assertIn("Sonrei", html)
         self.assertIn("SeroVital", html)
         self.assertIn("https://anatainc.com/case-studies/sonrei", html)
-        self.assertNotIn("case-studies/serovital", html)
+        self.assertIn("https://anatainc.com/case-studies/serovital", html)
+        self.assertNotIn("zantrex", html.lower())
 
     def test_run_1607_bugs_share_dedupe_and_category(self) -> None:
         import re as _re
@@ -2399,6 +2400,9 @@ class DeckGenerateLaunchFixesTests(unittest.TestCase):
         html = str(_latest_summary(session_factory).get("deck_html") or "")
         self.assertIn("Your listing today", html)
         self.assertIn("Your listing vs. the benchmark", html)
+        self.assertIn('data-niche-view="brand"', html)
+        self.assertIn('data-view="brand"', html)
+        self.assertIn("By Brand", html)
 
     def test_generate_route_accepts_brand_name_and_target_price(self) -> None:
         from unittest import mock

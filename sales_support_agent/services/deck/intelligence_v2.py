@@ -244,7 +244,7 @@ def build_findings(payload: dict[str, Any]) -> list[dict[str, str]]:
     findings: list[dict[str, str]] = []
     xray = payload.get("xray_report")
     market_ready = bool(getattr(xray, "market_evidence_sufficient", True)) if xray is not None else False
-    category = str(payload.get("category_label") or "").strip() or "this category"
+    category = str(payload.get("category_label") or "").strip()
     if xray is not None and market_ready:
         listings = unique_listings(getattr(xray, "products", []) or [])
         total = sum(float(getattr(p, "revenue", 0) or 0) for p in listings)
@@ -252,7 +252,10 @@ def build_findings(payload: dict[str, Any]) -> list[dict[str, str]]:
         if total > 0 and shares and shares[0].share:
             findings.append(
                 {
-                    "headline": f"{shares[0].brand} holds {shares[0].share:.0f}% of {_money(total)}/mo in {category}",
+                    "headline": (
+                        f"{shares[0].brand} holds {shares[0].share:.0f}% of {_money(total)}/mo"
+                        + (f" in {category}" if category else "")
+                    ),
                     "detail": f"Across {len(listings)} unique listings in the comparison set.",
                     "source": _market_source(payload),
                 }
@@ -658,7 +661,7 @@ def _offer(payload: dict[str, Any], urls: dict[str, str]) -> str:
     )
     body = (
         "<div class='two'><div class='plan-card'><p class='eyebrow'>Free 14-day trial</p>"
-        "<p class='big'>$0 for 14 days</p><p>Then plans from $99/mo.</p>"
+        "<p class='big'>Free for 14 days</p><p>Then plans from $99/mo.</p>"
         f"{included}<a class='cta primary' href='{_e(urls['trial'])}' target='_blank' rel='noreferrer'>{TRIAL_LABEL}</a></div>"
         f"<div>{addon_html}</div></div>"
     )

@@ -1,11 +1,35 @@
 {
-  "_note": "Proof registry for the intelligence_v2 deck. Copy matches anata-website PR #106 (src/components/proof/ProofStories.tsx). Only add numbers a published or approved case study states. Leave a field empty rather than estimate; empty fields are hidden.",
+  "_note": "Proof registry for prospect strategy decks. Figures are the ones published on anatainc.com/case-studies as of 2026-11-23, or already used in outbound_signal_copy.py. Empty fields are hidden. Do not add a client the content gate rejects.",
   "case_studies": [
+    {
+      "key": "serovital",
+      "name": "SeroVital",
+      "headline": "Amazon from an average of $12K a day to $33K a day, margins preserved.",
+      "detail": "A science backed health and beauty brand, with one plan across every channel.",
+      "before": "$12K a day average on Amazon",
+      "after": "$33K a day average on Amazon",
+      "campaign_volume": "",
+      "ad_results": "Margins preserved",
+      "url": "https://anatainc.com/case-studies/serovital",
+      "published": true
+    },
+    {
+      "key": "ocean-rx",
+      "name": "Ocean Rx",
+      "headline": "From a fresh start to top 5 in its category, with ad clicks up 11x.",
+      "detail": "A blue spirulina brand measured from its first recorded advertising campaign.",
+      "before": "27 ad clicks in May",
+      "after": "300 ad clicks in October",
+      "campaign_volume": "49 Sponsored Products campaigns launched",
+      "ad_results": "Ad clicks up 11x",
+      "url": "https://anatainc.com/case-studies/ocean-rx",
+      "published": true
+    },
     {
       "key": "sonrei",
       "name": "Sonrei",
       "headline": "137% year-over-year growth with TACoS at 14%.",
-      "detail": "A long-term client grew profitably through disciplined audience insights, acquisition, retention, and measurement.",
+      "detail": "A long-term skincare client, scaled profitably across every line we run.",
       "before": "",
       "after": "+137% YoY gross ecommerce revenue (2024)",
       "campaign_volume": "",
@@ -14,41 +38,64 @@
       "published": true
     },
     {
-      "key": "serovital",
-      "name": "SeroVital",
-      "headline": "Amazon from an average of $12K/day to $33K/day, margins preserved.",
-      "detail": "Fixed catalog and size-pricing issues, unified the channels under one plan and modernized the ad strategy.",
-      "before": "$12K/day average on Amazon",
-      "after": "$33K/day average on Amazon",
+      "key": "shadyvue",
+      "name": "Shadyvue",
+      "headline": "ACoS down from 49.0% of sales to 40.4%, with 61% more search terms converting.",
+      "detail": "A sunglasses brand whose account recorded lower ACoS and more converting search terms.",
+      "before": "49.0% ACoS",
+      "after": "40.4% ACoS",
       "campaign_volume": "",
-      "ad_results": "",
-      "url": "https://anatainc.com/case-studies/serovital",
-      "published": false
+      "ad_results": "61% more search terms converting",
+      "url": "https://anatainc.com/case-studies/shadyvue",
+      "published": true
     },
     {
-      "key": "zantrex",
-      "name": "Zantrex",
-      "headline": "40% revenue growth within 30 days.",
-      "detail": "Connected to Anata Intelligence, the same platform trial users get, with the first 30 days spent on leaks and quick wins.",
-      "detail_without_trial": "Connected to Anata Intelligence, with the first 30 days spent on leaks and quick wins.",
+      "key": "velrose",
+      "name": "Velrose",
+      "headline": "2.5x the shoppers, twice the conversion, revenue up 502%.",
+      "detail": "A lingerie and intimates brand whose core cotton line took off once shoppers started finding it.",
+      "before": "16,340 sessions",
+      "after": "40,531 sessions",
+      "campaign_volume": "",
+      "ad_results": "+502% Amazon revenue, year over year",
+      "url": "https://anatainc.com/case-studies/velrose-lingerie",
+      "published": true
+    },
+    {
+      "key": "harvest-and-home",
+      "name": "Harvest & Home",
+      "headline": "Amazon revenue up 104% year over year, with units ordered up 157%.",
+      "detail": "A home and garden care brand that added a new product line while traffic and revenue grew.",
       "before": "",
-      "after": "+40% revenue within 30 days",
+      "after": "+104% Amazon revenue, year over year",
       "campaign_volume": "",
-      "ad_results": "",
-      "url": "https://anatainc.com/case-studies/zantrex",
-      "published": false
+      "ad_results": "+157% Amazon units ordered, year over year",
+      "url": "https://anatainc.com/case-studies/harvest-and-home",
+      "published": true
     },
     {
-      "key": "ocean-rx",
-      "name": "Ocean Rx",
-      "headline": "From a fresh start to top 5 in its category.",
-      "detail": "Ran on the Anata stack from day one instead of a patchwork of tools.",
-      "before": "Fresh start (new brand)",
-      "after": "Top 5 in its category",
-      "campaign_volume": "",
+      "key": "mybevi",
+      "name": "MyBevi",
+      "headline": "73 new campaigns in one month, and ad clicks up 30x.",
+      "detail": "An insulated tumbler brand whose account expanded from 103 ad clicks to 3,101 in one month.",
+      "before": "103 ad clicks",
+      "after": "3,101 ad clicks",
+      "campaign_volume": "99 Sponsored Products campaigns launched, 73 in one month",
       "ad_results": "",
-      "url": "https://anatainc.com/case-studies/ocean-rx",
-      "published": false
+      "url": "https://anatainc.com/case-studies/mybevi",
+      "published": true
+    },
+    {
+      "key": "waiu",
+      "name": "WAIU",
+      "headline": "One new product, 2.8x the shoppers, and monthly revenue up 120%.",
+      "detail": "A baby and family brand whose new breast milk cooler appeared as account traffic increased.",
+      "before": "2,196 sessions",
+      "after": "6,243 sessions",
+      "campaign_volume": "",
+      "ad_results": "+120% monthly revenue after the cooler launch",
+      "url": "https://anatainc.com/case-studies/waiu",
+      "published": true
     }
   ]
 }

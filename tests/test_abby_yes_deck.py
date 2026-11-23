@@ -637,3 +637,30 @@ def test_apply_rewrites_the_ask_and_pauses_the_subsequence_once():
     assert fresh == body
     assert second["subsequence"]["action"] == "already paused"
     assert again.paused == []
+
+
+def test_yes_holds_when_the_deck_content_gate_fails():
+    engine = create_engine("sqlite://")
+    message = email()
+    client = FakeClient([message], {"t1": [message]})
+    posts = []
+
+    class Held:
+        view_url = DECK
+        content_gate_passed = False
+        content_gate_findings = ("$0", "Zantrex")
+
+    out = runner.handle_email(
+        engine, message, client=client, campaign_id="camp", now=NOW, think=abby.think,
+        post_slack=posts.append,
+        lead_info=lambda _e: {"first_name": "Ann", "company": "Huppy", "domain": "huppy.com"},
+        run_mode="live", build_deck=lambda **_kw: Held(),
+    )
+    assert client.replies == []
+    assert out["held"] == 1 and out["replied"] == 0
+    assert posts and "content gate failed" in posts[0]
+    with engine.connect() as conn:
+        status, detail, url = conn.execute(text(
+            "SELECT status, detail, deck_url FROM abby_deck_sends"
+        )).one()
+    assert status == "held" and url == DECK and "$0" in detail

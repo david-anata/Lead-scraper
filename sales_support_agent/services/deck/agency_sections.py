@@ -123,7 +123,7 @@ def render_offer_section(
     if include_trial:
         trial_card = (
             '<article class="offer-card featured"><h3>Anata Intelligence · Free 14-day trial</h3>'
-            f'<p class="desc">$0 for 14 days. Then plans from $99/mo. Card on file, cancel anytime.</p>'
+            '<p class="desc">Free for 14 days. Then plans from $99/mo. Card on file, cancel anytime.</p>'
             "<dl>"
             "<div><dt>Trial</dt><dd>14 days free</dd></div>"
             "<div><dt>After trial</dt><dd>From $99/mo</dd></div>"
