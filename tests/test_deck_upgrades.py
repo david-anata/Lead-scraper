@@ -307,22 +307,14 @@ class DeckUpgradeTests(unittest.TestCase):
                 growth_plan_inputs={},
             )
         html = _deck_html(session_factory)
-        self.assertIn("Margin snapshot", html)
-        # 15% referral on $29.99 = $4.50; margin before fulfillment = $25.49.
-        self.assertIn("4.50", html)
-        self.assertIn("25.49", html)
-        # Every derived figure must be visibly labeled estimated.
-        self.assertIn("estimated", html.lower())
-        self.assertIn("15%", html)
+        self.assertNotIn("Margin snapshot", html)
+        self.assertNotIn("Amazon referral fee", html)
+        self.assertNotIn("assumed rate", html.lower())
 
     def test_margin_snapshot_empty_when_no_price(self) -> None:
         self.assertEqual(_build_margin_snapshot_html(""), "")
         self.assertEqual(_build_margin_snapshot_html("Unavailable"), "")
-        block = _build_margin_snapshot_html("$29.99")
-        self.assertIn("Margin snapshot", block)
-        self.assertIn("estimated", block.lower())
-        # No em-dashes in shipped copy (CLAUDE.md voice rule).
-        self.assertNotIn("—", block)
+        self.assertEqual(_build_margin_snapshot_html("$29.99"), "")
 
     # -- Task 4: advisement CTA on the deck page -------------------------
     def test_advisement_cta_present_when_booking_url_set(self) -> None:
@@ -383,7 +375,8 @@ class DeckUpgradeTests(unittest.TestCase):
         html = _deck_html(session_factory)
         # A real deck rendered (not an ack), with the growth plan populated.
         self.assertIn("growth-plan-slide", html)
-        self.assertIn("Margin snapshot", html)
+        self.assertNotIn("Margin snapshot", html)
+        self.assertNotIn("Amazon referral fee", html)
 
 
 if __name__ == "__main__":

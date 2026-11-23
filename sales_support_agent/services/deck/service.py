@@ -1293,8 +1293,17 @@ class DeckGenerationService:
                 market_mode=market_mode,
                 amazon_status=copy_status,
             ),
-            "recommended_plan_summary": _build_plan_summary(offer_cards, channels, launch_mode=launch_mode),
-            "expected_impact_summary": _build_expected_impact_summary(xray_report, market_mode=market_mode),
+            "recommended_plan_summary": _build_plan_summary(
+                offer_cards,
+                channels,
+                launch_mode=launch_mode,
+                existing_seller=copy_status == "present",
+            ),
+            "expected_impact_summary": _build_expected_impact_summary(
+                xray_report,
+                market_mode=market_mode,
+                amazon_status=copy_status,
+            ),
             "why_anata_summary": _build_why_anata_summary(channels),
             # PR49: include the variant short-name (e.g. "Black", "Skinnystix")
             # alongside the brand so decks generated for different SKUs of the
@@ -1684,6 +1693,10 @@ class DeckGenerationService:
             f'</div>'
         )
         _amazon_presence = str(dataset.deck_payload.get("amazon_presence") or "")
+        _existing_seller = market_mode == "dtc" and _amazon_presence == "present"
+        _amazon_listings = [
+            item for item in (dataset.deck_payload.get("amazon_listings") or []) if isinstance(item, dict)
+        ]
         if market_mode == "dtc" and _amazon_presence == "present":
             _evidence_banner = (
                 '<div class="takeaway market-takeaway" role="status" '
@@ -1826,24 +1839,23 @@ class DeckGenerationService:
             _brand_facts.append(
                 f'<li><a href="{html.escape(_brand_source, quote=True)}">Store page</a></li>'
             )
-        for item in dataset.deck_payload.get("amazon_listings") or []:
-            if not isinstance(item, dict):
-                continue
-            bits = [str(item.get("title") or "").strip()]
-            asin = str(item.get("asin") or "").strip()
-            if asin:
-                bits.append(f"ASIN {asin}")
-            if isinstance(item.get("rating"), (int, float)):
-                bits.append(f"{float(item['rating']):.1f} stars")
-            if isinstance(item.get("review_count"), int):
-                bits.append(f"{int(item['review_count']):,} reviews")
-            if str(item.get("price") or "").strip():
-                bits.append(str(item["price"]).strip())
-            if isinstance(item.get("image_count"), int):
-                bits.append(f"{int(item['image_count'])} images")
-            line = ", ".join(bit for bit in bits if bit)
-            if line:
-                _brand_facts.append(f"<li>{html.escape(line)}</li>")
+        if not _existing_seller:
+            for item in _amazon_listings:
+                bits = [str(item.get("title") or "").strip()]
+                asin = str(item.get("asin") or "").strip()
+                if asin:
+                    bits.append(f"ASIN {asin}")
+                if isinstance(item.get("rating"), (int, float)):
+                    bits.append(f"{float(item['rating']):.1f} stars")
+                if isinstance(item.get("review_count"), int):
+                    bits.append(f"{int(item['review_count']):,} reviews")
+                if str(item.get("price") or "").strip():
+                    bits.append(str(item["price"]).strip())
+                if isinstance(item.get("image_count"), int):
+                    bits.append(f"{int(item['image_count'])} images")
+                line = ", ".join(bit for bit in bits if bit)
+                if line:
+                    _brand_facts.append(f"<li>{html.escape(line)}</li>")
         _brand_copy = (
             f"<p>{html.escape(_brand_description[:900])}</p>"
             if _brand_description
@@ -2008,7 +2020,35 @@ class DeckGenerationService:
                 f'<p class="delta">{html.escape(_units_caption)}</p>'
                 f'</div>'
             )
-        if not _exec_tiles_html and market_mode == "dtc":
+        if not _exec_tiles_html and _existing_seller:
+            from sales_support_agent.services.deck.existing_seller import focus_listing
+
+            _focus = focus_listing(_amazon_listings)
+            _focus_asin = str((_focus or {}).get("asin") or "").strip()
+            _exec_tiles_html += (
+                '<div class="exec-tile is-primary"><p class="lab">ASINs to focus</p>'
+                f'<p class="val">{len(_amazon_listings) or 1}</p>'
+                f'<p class="delta">{html.escape(_focus_asin or "matched catalog")}</p></div>'
+            )
+            if _focus and isinstance(_focus.get("rating"), (int, float)):
+                _exec_tiles_html += (
+                    '<div class="exec-tile"><p class="lab">Focus rating</p>'
+                    f'<p class="val">{float(_focus["rating"]):.1f}</p>'
+                    '<p class="delta">stars on the focus ASIN</p></div>'
+                )
+            if _focus and isinstance(_focus.get("review_count"), int):
+                _exec_tiles_html += (
+                    '<div class="exec-tile"><p class="lab">Focus reviews</p>'
+                    f'<p class="val">{int(_focus["review_count"]):,}</p>'
+                    '<p class="delta">review base on the focus ASIN</p></div>'
+                )
+            if _focus and isinstance(_focus.get("image_count"), int):
+                _exec_tiles_html += (
+                    '<div class="exec-tile"><p class="lab">Focus images</p>'
+                    f'<p class="val">{int(_focus["image_count"])}</p>'
+                    '<p class="delta">images on the focus listing</p></div>'
+                )
+        elif not _exec_tiles_html and market_mode == "dtc":
             if _observed_price and target.get("price_on_site"):
                 _exec_tiles_html += (
                     f'<div class="exec-tile is-primary"><p class="lab">Price on the site</p>'
@@ -2164,7 +2204,9 @@ class DeckGenerationService:
             _phase_count = 4
             _channel_count = len(getattr(growth_plan_obj, "channels", []) or [])
             _pills.append(f"{_channel_count} channels mapped · {_phase_count} phases")
-        if not _pills:
+        if _existing_seller:
+            _pills = ["Live Amazon catalog", "Focus the strongest ASINs", "Ads on current listings"]
+        elif not _pills:
             _listing_total = len(getattr(xray_report, "products", []) or [])
             if market_mode == "dtc":
                 _pills = ["Sells on its own site", "Amazon launch plan", "Agency execution"]
@@ -2283,11 +2325,19 @@ class DeckGenerationService:
         _rail_items_html = (
             _rail_item("summary", "★", "Executive summary", summary_class="is-summary", active=True)
             + _rail_item("sec-01", "01", "Market" if market_ready else "Brand")
-            + _rail_item("sec-02", "02", "Market entry" if launch_mode else "Target listing")
+            + _rail_item("sec-02", "02", "Live ASINs" if _existing_seller else ("Market entry" if launch_mode else "Target listing"))
             + _rail_item("sec-03", "03", "Competitors", disabled=not market_ready)
-            + _rail_item("sec-04", "04", "Channel plan" if _dtc_channel_plan else "Search behavior")
+            + _rail_item(
+                "sec-04",
+                "04",
+                "Catalog ads" if _existing_seller else ("Channel plan" if _dtc_channel_plan else "Search behavior"),
+            )
             + _rail_item("sec-05", "05", "Growth plan", optional=True, disabled=not _has_growth)
-            + _rail_item("sec-06", "06", "Launch page" if launch_mode else "Conversion & PDP")
+            + _rail_item(
+                "sec-06",
+                "06",
+                "Listing images" if _existing_seller else ("Launch page" if launch_mode else "Conversion & PDP"),
+            )
             + _rail_item("sec-07", "07", "Service offerings")
             + _rail_item("sec-08", "08", "How it works")
             + _rail_item("sec-09", "09", "Case studies")
@@ -2310,7 +2360,7 @@ class DeckGenerationService:
             )
         # ---- Section dividers ----
         _market_thesis = (
-            _market_sample_note
+            "The totals below are the uploaded Xray sample."
             if _market_sample_note
             else "A snapshot of category economics: who's selling, what they sell for, and how concentrated the revenue actually is."
         )
@@ -2333,7 +2383,15 @@ class DeckGenerationService:
                 "Store copy only. Category revenue, units, and competitor counts stay out until an export supplies them.",
                 ["Store description", "Price when the page states one", "No category totals"],
             )
-        if market_mode == "dtc":
+        if _existing_seller:
+            _div_target = _section_divider(
+                "sec-02", "02",
+                "Section · Live catalog",
+                f"Which ASINs {target_brand_display} should focus on",
+                "Rating and review position for the listings Amazon returned. Category revenue stays out until a market export is attached.",
+                ["Focus ASIN", "Rating and reviews", "Matched listings"],
+            )
+        elif market_mode == "dtc":
             _div_target = _section_divider(
                 "sec-02", "02",
                 "Section · Market entry",
@@ -2359,7 +2417,14 @@ class DeckGenerationService:
             "The top brands competing for the same buyer, by revenue, share, BSR, and review density.",
             ["Top 10 ranked", "Share of category", "Where you fit"],
         ) if market_ready else ""
-        if _dtc_channel_plan:
+        if _existing_seller:
+            _div_search = _section_divider(
+                "sec-04", "04", "Section · Catalog ads",
+                f"How ads work on {target_brand_display}'s live listings",
+                "Sponsored ads sit on the current catalog. Anata's software tracks conversion once the account is connected.",
+                ["Focus ASIN", "Search terms", "Conversion tracking"],
+            )
+        elif _dtc_channel_plan:
             _div_search = _section_divider(
                 "sec-04", "04", "Section · Channel plan",
                 f"How {target_brand_display} would enter Amazon",
@@ -2379,7 +2444,15 @@ class DeckGenerationService:
             "The actions activated in each phase and the monthly traffic each channel must contribute toward the competitor benchmark. These figures are directional estimates.",
             ["4-phase roadmap", "Traffic by channel", "Competitor benchmark"],
         ) if _has_growth else ""
-        if market_mode == "dtc":
+        if _existing_seller:
+            _div_conversion = _section_divider(
+                "sec-06", "06",
+                "Section · Listing and images",
+                "Listing and image improvements on the live ASINs",
+                "Image and listing work is tied to the ASINs above. It is not a page that still has to be created.",
+                ["Image stack", "Live listing", "Proof frames"],
+            )
+        elif market_mode == "dtc":
             _div_conversion = _section_divider(
                 "sec-06", "06",
                 "Section · Launch page",
@@ -2472,7 +2545,19 @@ class DeckGenerationService:
             _coverage_cards += f'<div class="card">{search_title_html}</div>'
         if search_copy_html:
             _coverage_cards += f'<div class="card">{search_copy_html}</div>'
-        if _dtc_channel_plan:
+        from sales_support_agent.services.deck.existing_seller import ads_html, catalog_html, creative_html
+
+        if _existing_seller:
+            _search_slide = (
+                '<section class="slide" data-screen-label="04 Catalog ads">'
+                '<header class="slide-head"><div class="heading-stack">'
+                '<p class="eyebrow">Catalog ads</p>'
+                '<h2 class="slide-title">Ads structure for the live catalog</h2></div>'
+                '<p class="caption">Built from the matched ASINs. No category benchmark is attached.</p></header>'
+                f'{ads_html(_amazon_listings)}'
+                '</section>'
+            )
+        elif _dtc_channel_plan:
             _search_slide = render_dtc_channel_plan(
                 target_brand_display,
                 str(target.get("description") or ""),
@@ -2555,6 +2640,21 @@ class DeckGenerationService:
       {distribution_block}
     </section>
 """
+        if _existing_seller:
+            _target_columns = ""
+        else:
+            _target_columns = f"""
+      <div class="two-col even" style="margin-top:24px">
+        <div>
+          <h3 style="font-size:14px;font-weight:700;margin:0 0 10px;color:#4d7a5d;letter-spacing:-0.01em">{'What the product already signals well' if launch_mode else "What's working"}</h3>
+          <ul class="cklist good">{target_strength_html}</ul>
+        </div>
+        <div>
+          <h3 style="font-size:14px;font-weight:700;margin:0 0 10px;color:#a55c5c;letter-spacing:-0.01em">{'What needs to be built before launch' if launch_mode else "What's missing"}</h3>
+          <ul class="cklist bad">{target_gap_html}</ul>
+        </div>
+      </div>
+"""
         _market_block = _market_summary_html if market_ready else _brand_site_html
         _competitor_block = ""
         if market_ready:
@@ -2635,7 +2735,7 @@ class DeckGenerationService:
       {_evidence_banner}
       <div class="exec-cta-row">
         <span class="next">Start here</span>
-        <span class="target">{"Walk through the launch plan →" if market_mode == "dtc" else "Walk through the category →"}</span>
+        <span class="target">{"Walk through the live catalog →" if _existing_seller else ("Walk through the launch plan →" if market_mode == "dtc" else "Walk through the category →")}</span>
         <span class="spacer"></span>
         <a class="scroll-link" href="#sec-01">Section 01 · {"Brand" if market_mode == "dtc" else "Market"}</a>
         {('<a class="scroll-link" href="#sec-05">Section 05 · Growth plan</a>' if _has_growth else "")}
@@ -2651,27 +2751,20 @@ class DeckGenerationService:
 
     <!-- ===== 02 TARGET LISTING ===== -->
     {_div_target}
-    <section class="slide" data-screen-label="{'02 Market entry' if launch_mode else '02 Target listing'}">
+    <section class="slide" data-screen-label="{'02 Live ASINs' if _existing_seller else ('02 Market entry' if launch_mode else '02 Target listing')}">
       <header class="slide-head">
         <div class="heading-stack">
-          <p class="eyebrow">{'From the site' if not market_ready else ('Market entry benchmark' if launch_mode else 'Target listing opportunities')}</p>
-          <h2 class="slide-title">{'What the site already shows' if not market_ready else ('Launch benchmark opportunities' if launch_mode else 'Your listing vs. the benchmark')}</h2>
+          <p class="eyebrow">{'Live catalog' if _existing_seller else ('From the site' if not market_ready else ('Market entry benchmark' if launch_mode else 'Target listing opportunities'))}</p>
+          <h2 class="slide-title">{'Which ASINs to focus on' if _existing_seller else ('What the site already shows' if not market_ready else ('Launch benchmark opportunities' if launch_mode else 'Your listing vs. the benchmark'))}</h2>
         </div>
         <p class="caption">{html.escape(dataset.text_fields.get("hero_product_snapshot") or "")}</p>
       </header>
 
+      {catalog_html(_amazon_listings) if _existing_seller else ''}
+
       {f'<div class="target-panel target-panel-full">{comparison_table_html}</div>' if market_ready else ''}
 
-      <div class="two-col even" style="margin-top:24px">
-        <div>
-          <h3 style="font-size:14px;font-weight:700;margin:0 0 10px;color:#4d7a5d;letter-spacing:-0.01em">{'What the product already signals well' if launch_mode else "What's working"}</h3>
-          <ul class="cklist good">{target_strength_html}</ul>
-        </div>
-        <div>
-          <h3 style="font-size:14px;font-weight:700;margin:0 0 10px;color:#a55c5c;letter-spacing:-0.01em">{'What needs to be built before launch' if launch_mode else "What's missing"}</h3>
-          <ul class="cklist bad">{target_gap_html}</ul>
-        </div>
-      </div>
+      {_target_columns}
 
       {margin_snapshot_html}
     </section>
@@ -2689,19 +2782,21 @@ class DeckGenerationService:
 
     <!-- ===== 06 CONVERSION ===== -->
     {_div_conversion}
-    <section class="slide slide-conversion" data-screen-label="{'06 Launch page' if launch_mode else '06 Conversion and PDP'}">
+    <section class="slide slide-conversion" data-screen-label="{'06 Listing images' if _existing_seller else ('06 Launch page' if launch_mode else '06 Conversion and PDP')}">
       <header class="slide-head">
         <div class="heading-stack">
-          <p class="eyebrow">{'Launch page' if launch_mode else 'Conversion &amp; PDP'}</p>
-          <h2 class="slide-title">{'What to build before launch' if launch_mode else 'Where the listing needs to improve'}</h2>
+          <p class="eyebrow">{'Listing and images' if _existing_seller else ('Launch page' if launch_mode else 'Conversion &amp; PDP')}</p>
+          <h2 class="slide-title">{'Listing and image improvements' if _existing_seller else ('What to build before launch' if launch_mode else 'Where the listing needs to improve')}</h2>
         </div>
-        <p class="caption">{html.escape(dataset.text_fields.get("cro_summary") or "")}</p>
+        <p class="caption">{html.escape('' if _existing_seller else (dataset.text_fields.get("cro_summary") or ""))}</p>
       </header>
+
+      {creative_html(_amazon_listings) if _existing_seller else ''}
 
       <div class="two-col">
         <div class="takeaway">
           <p class="lab">What this means</p>
-          <p class="h">{'The launch page is still ahead of this brand.' if launch_mode and str(dataset.deck_payload.get('amazon_presence') or '') == 'absent' else ('The product page is the next build.' if launch_mode else 'PDP mechanics, not the product, are the unlock.')}</p>
+          <p class="h">{'Image and listing work stays on the ASINs above.' if _existing_seller else ('The launch page is still ahead of this brand.' if launch_mode and str(dataset.deck_payload.get('amazon_presence') or '') == 'absent' else ('The product page is the next build.' if launch_mode else 'PDP mechanics, not the product, are the unlock.'))}</p>
           <p>{html.escape((dataset.text_fields.get("expected_impact_summary") or "Closing CRO + creative gaps lifts conversion without changing product, price, or supply chain. The benchmark sets the ceiling — copy what's working.")[:300])}</p>
         </div>
         <div>

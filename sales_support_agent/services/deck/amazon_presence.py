@@ -73,7 +73,7 @@ def listing_plan_text(brand: str, listings: list[dict[str, Any]] | tuple[dict[st
     if not rows:
         return (
             f"{name} already sells on Amazon. A brand store or listing match was confirmed, "
-            "and the plan starts from that live presence rather than a first launch."
+            "and the plan starts from that live presence."
         )
     bits: list[str] = []
     for item in rows[:4]:
@@ -101,7 +101,7 @@ def listing_plan_text(brand: str, listings: list[dict[str, Any]] | tuple[dict[st
     roster = "; ".join(bits)
     return (
         f"{name} already sells on Amazon. This existing-seller plan uses the live listings: {roster}. "
-        "Next work is the live PDP, reviews, and offer, not a first launch."
+        "Next work is the live PDP, reviews, and offer."
     )
 
 
@@ -223,11 +223,30 @@ def _lookup(brand: str, *, domain: str, client: Any) -> AmazonPresence:
     return unknown_presence("error", "Amazon search did not answer.")
 
 
+def _core_tokens(tokens: list[str]) -> list[str]:
+    """Drop a trailing generic suffix such as Global or Audio.
+
+    "IChoose Global" searches as IChoose. "Earth Moon Magick" stays intact,
+    because Moon and Magick are not generic suffixes and the first word alone
+    would match a different brand.
+    """
+
+    core = list(tokens)
+    while len(core) > 1 and core[-1] in _GENERIC_BRAND_TOKENS:
+        core.pop()
+    return core
+
+
 def _search_terms(brand: str, domain: str) -> list[str]:
     """Brand-led queries. A domain stem is added only when it agrees with the brand.
 
     fwee on benow.co.kr must search fwee. Searching the registrable domain
     first would look up a different name.
+
+    The full name is searched first. A generic trailing word is then dropped
+    so "IChoose Global" also searches "ichoose". The concatenated domain
+    "ichooseglobal" is not a substitute for that shorter name: Amazon's brand
+    field is "IChoose", and the two-word query does not return those listings.
     """
 
     from outbound_amazon import _TRAILING_TOKENS, _clean_name, _compact, _domain_stem
@@ -238,6 +257,11 @@ def _search_terms(brand: str, domain: str) -> list[str]:
     terms: list[str] = []
     if tokens:
         terms.append(" ".join(tokens))
+    core = _core_tokens(tokens)
+    if core and core != tokens:
+        short = " ".join(core)
+        if short not in terms:
+            terms.append(short)
     stem = _domain_stem(domain)
     compact_brand = _compact(" ".join(tokens))
     if stem and (
@@ -282,12 +306,20 @@ _GENERIC_BRAND_TOKENS = frozenset({
 
 
 def _brand_field_aligns(candidates: list[str], brand_norm: str, title: str) -> bool:
-    """True when the Amazon brand field is this prospect, not a shared first word."""
+    """True when the Amazon brand field is this prospect, not a shared first word.
+
+    Casing is ignored. "IChoose", "ICHOOSE", and "I Choose" compact to the
+    same value. A concatenated candidate such as "ichooseglobal" matches the
+    brand field "IChoose" because the leftover suffix is the generic word
+    "global". "Earth" does not match "Earth Moon Magick": the leftover is not
+    one generic suffix.
+    """
 
     from outbound_amazon import _clean_name, _compact
 
     if len(brand_norm) < 4:
         return False
+    generic_compacts = {_compact(token) for token in _GENERIC_BRAND_TOKENS}
     title_tokens = set(_clean_name(title).split())
     for cand in candidates:
         cleaned = _clean_name(cand)
@@ -296,6 +328,13 @@ def _brand_field_aligns(candidates: list[str], brand_norm: str, title: str) -> b
             continue
         if brand_norm == cand_norm:
             return True
+        core = _core_tokens(cleaned.split())
+        if core and _compact(" ".join(core)) == brand_norm:
+            return True
+        if cand_norm.startswith(brand_norm):
+            leftover = cand_norm[len(brand_norm):]
+            if leftover in generic_compacts:
+                return True
         tokens = cleaned.split()
         if not cand_norm.startswith(brand_norm):
             continue

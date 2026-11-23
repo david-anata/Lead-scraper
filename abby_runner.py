@@ -2198,10 +2198,11 @@ def founder_reply_id(thread: list[dict], sent_at: Optional[datetime], own_reply_
 
 def list_deck_sends_since(engine, since: datetime,
                           thread_lookup: Optional[Callable[[str], list[dict]]] = None) -> list[dict[str, Any]]:
-    """Deck sends at or after ``since`` that still have no founder reply.
+    """Every sent deck at or after ``since``.
 
-    When ``thread_lookup`` is set, a founder message on the thread is stored
-    and that send is left off the list.
+    A later founder message is stored and returned as ``founder_reply_id``.
+    It does not remove the send. Real sent decks stay on this list after the
+    founder writes back.
     """
 
     ensure_tables(engine)
@@ -2209,13 +2210,13 @@ def list_deck_sends_since(engine, since: datetime,
     with engine.connect() as conn:
         rows = conn.execute(text(
             "SELECT lead, campaign_id, thread_id, source_email_id, reply_id, cc_address, "
-            "deck_url, sent_at FROM abby_deck_sends "
-            "WHERE status = 'sent' AND coalesce(founder_reply_id, '') = '' "
-            "AND sent_at >= :since ORDER BY sent_at"
+            "deck_url, sent_at, founder_reply_id FROM abby_deck_sends "
+            "WHERE status = 'sent' AND sent_at >= :since ORDER BY sent_at"
         ), {"since": stamp}).fetchall()
     pending: list[dict[str, Any]] = []
-    for lead, campaign_id, thread_id, source_id, reply_id, cc_address, deck_url, sent_at in rows:
-        if thread_lookup is not None:
+    for lead, campaign_id, thread_id, source_id, reply_id, cc_address, deck_url, sent_at, stored_founder in rows:
+        founder_id = str(stored_founder or "")
+        if thread_lookup is not None and not founder_id:
             try:
                 looked = thread_lookup(str(thread_id or "")) or []
             except Exception:  # noqa: BLE001
@@ -2223,11 +2224,11 @@ def list_deck_sends_since(engine, since: datetime,
                 looked = []
             found = founder_reply_id(looked, sent_at, str(reply_id or ""))
             if found:
+                founder_id = found
                 with engine.begin() as conn:
                     conn.execute(text(
                         "UPDATE abby_deck_sends SET founder_reply_id = :f WHERE source_email_id = :s"
                     ), {"f": found, "s": source_id})
-                continue
         sent_iso = sent_at.isoformat() if hasattr(sent_at, "isoformat") else str(sent_at or "")
         pending.append({
             "lead": lead,
@@ -2238,6 +2239,7 @@ def list_deck_sends_since(engine, since: datetime,
             "cc_address": cc_address,
             "deck_url": deck_url,
             "sent_at": sent_iso,
+            "founder_reply_id": founder_id,
         })
     return pending
 

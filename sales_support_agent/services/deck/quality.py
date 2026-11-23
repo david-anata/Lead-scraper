@@ -7,6 +7,7 @@ gate reports those problems. It does not invent replacement numbers.
 
 from __future__ import annotations
 
+import html
 import re
 from dataclasses import replace
 from typing import Any
@@ -188,15 +189,100 @@ def _support_tokens(html: str) -> set[str]:
     return {part.strip().lower() for part in raw.split() if part.strip()}
 
 
-def assess_deck_content(html: str, *, amazon_presence: str = "") -> list[str]:
+_LAUNCH_ON_SELLER_RE = re.compile(
+    r"(?:"
+    r"sells on its own site"
+    r"|amazon launch"
+    r"|launch plan"
+    r"|launch page"
+    r"|before launch"
+    r"|market entry"
+    r"|can enter"
+    r"|would enter"
+    r"|entry point"
+    r"|amazon entry"
+    r"|first launch"
+    r"|listing is live"
+    r"|walk through the launch"
+    r"|launch benchmark"
+    r"|launch product"
+    r"|launch baseline"
+    r"|what to build before"
+    r")",
+    re.IGNORECASE,
+)
+_ASSUMED_FEE_RE = re.compile(
+    r"amazon referral fee.{0,180}?estimated at\s+\d+(?:\.\d+)?\s*%"
+    r"|assumed rate",
+    re.IGNORECASE | re.DOTALL,
+)
+
+
+def _visible_copy(html_text: str) -> str:
+    """Visible deck text, without style, script, or attribute values."""
+
+    stripped = _STYLE_OR_SCRIPT_RE.sub(" ", html_text or "")
+    stripped = re.sub(r"(?i)<br\s*/?>", "\n", stripped)
+    stripped = re.sub(r"(?i)</(?:p|div|li|h1|h2|h3|h4|tr|section|article|dt|dd)>", "\n", stripped)
+    stripped = re.sub(r"<[^>]+>", " ", stripped)
+    return html.unescape(stripped)
+
+
+def _word_count(text: str) -> int:
+    return len(text.split())
+
+
+def duplicated_copy(visible: str) -> bool:
+    """True when deck copy repeats a sentence or a paragraph.
+
+    A short sentence repeated back to back is the doubled opener
+    ("already sells on Amazon. already sells on Amazon."). A longer sentence
+    or paragraph repeated anywhere is the listing summary pasted into
+    several sections. Short captions that the layout repeats on purpose,
+    such as a section label, are below these lengths.
+    """
+
+    paragraphs: list[str] = []
+    for block in re.split(r"\n+", visible or ""):
+        norm = re.sub(r"\s+", " ", block).strip().casefold()
+        if _word_count(norm) >= 20:
+            paragraphs.append(norm)
+    if len(paragraphs) != len(set(paragraphs)):
+        return True
+    flat = re.sub(r"\s+", " ", visible or "").strip()
+    sentences = [
+        re.sub(r"\s+", " ", sentence).strip().casefold().strip("\"'")
+        for sentence in re.split(r"(?<=[.!?])\s+(?=[A-Z0-9\"'])", flat)
+    ]
+    sentences = [sentence for sentence in sentences if sentence]
+    previous = ""
+    seen_long: set[str] = set()
+    for sentence in sentences:
+        words = _word_count(sentence)
+        if words >= 5 and sentence == previous:
+            return True
+        if words >= 12 and sentence in seen_long:
+            return True
+        if words >= 12:
+            seen_long.add(sentence)
+        previous = sentence
+    return False
+
+
+def assess_deck_content(html_text: str, *, amazon_presence: str = "") -> list[str]:
     """Phrases that make a deck unfit to send, in a stable order.
 
     A claim that the brand is not on Amazon is allowed only after a
     confirmed-negative Amazon check (``amazon_presence="absent"``). Any
     other status, including a missing one, fails the gate.
+
+    A confirmed seller (``amazon_presence="present"``) also fails when the
+    deck still uses launch or entry wording. Every deck fails when a
+    sentence or paragraph is repeated, or when the HTML states an internally
+    assumed referral fee such as "Amazon referral fee $30.00, estimated at 15%".
     """
 
-    text = html or ""
+    text = html_text or ""
     findings: list[str] = []
     if _ZANTREX_RE.search(text):
         findings.append("Zantrex")
@@ -230,6 +316,13 @@ def assess_deck_content(html: str, *, amazon_presence: str = "") -> list[str]:
 
     if asserts_amazon_absence(text) and str(amazon_presence or "") != "absent":
         findings.append("unconfirmed Amazon absence")
+    visible = _visible_copy(text)
+    if str(amazon_presence or "") == "present" and _LAUNCH_ON_SELLER_RE.search(visible):
+        findings.append("launch wording on an Amazon seller")
+    if duplicated_copy(visible):
+        findings.append("duplicated deck copy")
+    if _ASSUMED_FEE_RE.search(visible):
+        findings.append("assumed referral fee")
     return findings
 
 

@@ -486,7 +486,7 @@ def test_fixer_leaves_an_old_or_non_deck_exhausted_failure(monkeypatch):
     assert rows == [("e1", "failed", 3), ("e2", "failed", 3)]
 
 
-def test_list_hides_a_thread_the_founder_already_answered():
+def test_list_keeps_a_sent_deck_after_the_founder_replies():
     engine = create_engine("sqlite://")
     runner.ensure_tables(engine)
     sent = NOW.replace(tzinfo=None)
@@ -505,7 +505,12 @@ def test_list_hides_a_thread_the_founder_already_answered():
         engine, NOW - timedelta(hours=1),
         thread_lookup=lambda tid: [founder_note] if tid == "t1" else [],
     )
-    assert [row["lead"] for row in pending] == ["brad@huppy.com"]
+    by_lead = {row["lead"]: row for row in pending}
+    assert set(by_lead) == {"ann@huppy.com", "brad@huppy.com"}
+    assert by_lead["ann@huppy.com"]["founder_reply_id"] == "david-1"
+    assert by_lead["brad@huppy.com"]["founder_reply_id"] == ""
+    again = runner.list_deck_sends_since(engine, NOW - timedelta(hours=1))
+    assert {row["lead"] for row in again} == {"ann@huppy.com", "brad@huppy.com"}
 
 
 def test_deck_list_requires_the_internal_key(monkeypatch):
@@ -637,6 +642,37 @@ def test_apply_rewrites_the_ask_and_pauses_the_subsequence_once():
     assert fresh == body
     assert second["subsequence"]["action"] == "already paused"
     assert again.paused == []
+
+
+def test_yes_holds_when_an_existing_seller_deck_fails_the_new_checks():
+    engine = create_engine("sqlite://")
+    message = email()
+    client = FakeClient([message], {"t1": [message]})
+    posts = []
+
+    class Held:
+        view_url = DECK
+        content_gate_passed = False
+        content_gate_findings = (
+            "launch wording on an Amazon seller",
+            "duplicated deck copy",
+            "assumed referral fee",
+        )
+
+    out = runner.handle_email(
+        engine, message, client=client, campaign_id="camp", now=NOW, think=abby.think,
+        post_slack=posts.append,
+        lead_info=lambda _e: {"first_name": "Ann", "company": "Huppy", "domain": "huppy.com"},
+        run_mode="live", build_deck=lambda **_kw: Held(),
+    )
+    assert client.replies == []
+    assert out["held"] == 1 and out["replied"] == 0
+    assert posts and "content gate failed" in posts[0]
+    with engine.connect() as conn:
+        detail = conn.execute(text("SELECT detail FROM abby_deck_sends")).scalar()
+    assert "launch wording on an Amazon seller" in detail
+    assert "duplicated deck copy" in detail
+    assert "assumed referral fee" in detail
 
 
 def test_yes_holds_when_the_deck_content_gate_fails():

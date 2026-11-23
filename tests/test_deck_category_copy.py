@@ -73,13 +73,7 @@ class ReferralFeeTests(unittest.TestCase):
         self.assertIn("Clothing & Accessories", caption)
         self.assertIn("over $20", caption)
 
-        block = _build_margin_snapshot_html("$29.95", category="Clothing & Accessories")
-        self.assertIn("5.09", block)
-        self.assertIn("24.86", block)
-        self.assertIn("17%", block)
-        self.assertIn("Clothing &amp; Accessories", block)
-        self.assertNotIn("assumed rate", block)
-        self.assertNotIn("—", block)
+        self.assertEqual(_build_margin_snapshot_html("$29.95", category="Clothing & Accessories"), "")
 
     def test_clothing_price_bands(self) -> None:
         low, _, low_caption = resolve_amazon_referral_fee(14.00, title="wool socks")
@@ -96,10 +90,7 @@ class ReferralFeeTests(unittest.TestCase):
         self.assertIn("assumed rate", caption)
         self.assertIn("Industrial valves", caption)
         self.assertNotIn("Amazon's published rate", caption)
-        block = _build_margin_snapshot_html("$29.95", category="Industrial valves")
-        self.assertIn("4.49", block)
-        self.assertIn("assumed rate", block)
-        self.assertIn("Industrial valves", block)
+        self.assertEqual(_build_margin_snapshot_html("$29.95", category="Industrial valves"), "")
 
     def test_missing_price_renders_nothing(self) -> None:
         self.assertEqual(_build_margin_snapshot_html(""), "")
@@ -231,9 +222,8 @@ class CategoryCopyDeckTests(unittest.TestCase):
                 select(AutomationRun).where(AutomationRun.run_type == "deck_generation")
             ).scalar_one()
             html = str(dict(run.summary_json or {}).get("deck_html") or "")
-        self.assertIn("Clothing &amp; Accessories", html)
-        self.assertIn("17%", html)
-        self.assertIn("for items over $20", html)
+        self.assertNotIn("Amazon referral fee", html)
+        self.assertNotIn("Clothing &amp; Accessories referral fee", html)
         self.assertNotIn("trial users get", html)
         self.assertIn("assumed conversion rate", html)
         self.assertNotIn("supplements typically 7", html)

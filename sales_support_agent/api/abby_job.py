@@ -249,7 +249,7 @@ def list_deck_sends(
     since: str = "",
     x_internal_api_key: str = Header(default=""),
 ) -> dict[str, Any]:
-    """Deck sends since ``since`` that still have no founder reply on the thread."""
+    """Sent decks since ``since``. A founder reply is included, not used to hide the row."""
 
     _require_internal_key(request, x_internal_api_key)
     import abby_runner

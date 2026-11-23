@@ -1,8 +1,11 @@
 """Follow-up dates for prospect decks.
 
-A follow-up is three calendar days out, then the next weekday that is not a
-US federal holiday. Thanksgiving 2026 is Thursday, November 26, so a deck
-generated on Monday, November 23 follows up on Friday, November 27.
+A follow-up is three calendar days out, then the next weekday that is not
+blocked. Blocked days are US federal holidays, the Friday after Thanksgiving,
+and December 24 through January 1.
+
+Thanksgiving 2026 is Thursday, November 26. A deck generated on Monday,
+November 23 follows up on Monday, November 30.
 """
 
 from __future__ import annotations
@@ -70,11 +73,43 @@ def holidays_covering(start: date, end: date) -> set[date]:
     return blocked
 
 
+def _day_after_thanksgiving(year: int) -> date:
+    """Friday after the fourth Thursday in November."""
+
+    return _nth_weekday(year, 11, 3, 4) + timedelta(days=1)
+
+
+def _year_end_break(year: int) -> set[date]:
+    """December 24 of ``year`` through January 1 of the next year, inclusive."""
+
+    days: set[date] = set()
+    cursor = date(year, 12, 24)
+    end = date(year + 1, 1, 1)
+    while cursor <= end:
+        days.add(cursor)
+        cursor += timedelta(days=1)
+    return days
+
+
+def follow_up_blocked_dates(start: date, end: date) -> set[date]:
+    """Federal holidays, the Friday after Thanksgiving, and Dec 24 through Jan 1."""
+
+    blocked = holidays_covering(start, end)
+    for year in range(start.year - 1, end.year + 1):
+        blocked.add(_day_after_thanksgiving(year))
+        blocked.update(_year_end_break(year))
+    return blocked
+
+
 def next_follow_up_date(generated: date, *, offset_days: int = 3) -> date:
-    """The deck follow-up date: offset calendar days, then skip weekends and US holidays."""
+    """The deck follow-up date.
+
+    Offset calendar days, then skip weekends, US federal holidays, the Friday
+    after Thanksgiving, and December 24 through January 1.
+    """
 
     follow_up = generated + timedelta(days=offset_days)
-    blocked = holidays_covering(follow_up, follow_up + timedelta(days=14))
+    blocked = follow_up_blocked_dates(follow_up, follow_up + timedelta(days=21))
     while follow_up.weekday() >= 5 or follow_up in blocked:
         follow_up += timedelta(days=1)
     return follow_up

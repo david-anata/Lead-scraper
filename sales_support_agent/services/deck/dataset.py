@@ -233,9 +233,7 @@ def _build_target_snapshot_text(
             "Use this deck to compare the PDP and offer against page-one leaders while the market benchmark is refined."
         )
     if amazon_status == "present" or comparison_mode == "existing_seller":
-        from sales_support_agent.services.deck.amazon_presence import listing_plan_text
-
-        return listing_plan_text(brand_name, amazon_listings or ())
+        return "Rating, reviews, and image counts are taken from the live Amazon listings."
     site_line = (
         f"{_brand_product_reference(brand_name)} is described from its own site. "
         "This deck does not show a category benchmark unless a competitor export supplies one."
@@ -276,9 +274,9 @@ def _build_executive_summary(
     if keyword_report and keyword_report.keywords:
         keyword_text = f" The leading search objective in the dataset is {keyword_report.keywords[0].phrase}."
     if amazon_status == "present":
-        from sales_support_agent.services.deck.amazon_presence import listing_plan_text
+        from sales_support_agent.services.deck.existing_seller import summary_text
 
-        return listing_plan_text(brand_name, amazon_listings or ()) + keyword_text
+        return summary_text(brand_name) + keyword_text
     if market_mode == "dtc":
         absence = f" {brand_name} is not an Amazon seller." if amazon_status == "absent" else ""
         return (
@@ -323,6 +321,11 @@ def _build_advertising_summary(
     amazon_status: str = "",
 ) -> str:
     top_keyword = keyword_report.keywords[0].phrase if keyword_report and keyword_report.keywords else "the primary search terms"
+    if amazon_status == "present":
+        return (
+            "Sponsored ads stay on the ASINs that are already selling. "
+            "Anata's software tracks conversion for that catalog once Seller Central is connected."
+        )
     if market_mode == "dtc":
         return (
             "The Agency team would launch and run sponsored ads after the Amazon listing is live. "
@@ -349,21 +352,33 @@ def _build_advertising_summary(
     return (
         f"Advertising should follow listing cleanup. Once the PDP is aligned, lean into {top_keyword} and the adjacent high-volume terms while exploiting low-review competitors in the category."
     )
-def _build_plan_summary(offer_cards: list[dict[str, str]], channels: list[str], *, launch_mode: bool = False) -> str:
+def _build_plan_summary(
+    offer_cards: list[dict[str, str]],
+    channels: list[str],
+    *,
+    launch_mode: bool = False,
+    existing_seller: bool = False,
+) -> str:
     if offer_cards:
         return " / ".join(str(card.get("title", "")).strip() for card in offer_cards if str(card.get("title", "")).strip())
     services = []
     if "amazon" in channels:
-        services.append(
-            "prepare the Amazon launch listing, imagery, and search coverage"
-            if launch_mode
-            else "fix the Amazon PDP, imagery, and search coverage"
-        )
+        if existing_seller:
+            services.append("improve the live Amazon listings, images, and ads")
+        elif launch_mode:
+            services.append("prepare the Amazon launch listing, imagery, and search coverage")
+        else:
+            services.append("fix the Amazon PDP, imagery, and search coverage")
     if "shopify" in channels:
         services.append("align the Shopify storefront and conversion flow")
     if "tiktok_shop" in channels:
         services.append("package the TikTok Shop offer and creative")
-    return "Phase 1: " + "; ".join(services[:3]) + ". Phase 2: launch the first measurement sprint and tune against live market response."
+    phase_two = (
+        "measure conversion on the live listings and tune the ads"
+        if existing_seller
+        else "launch the first measurement sprint and tune against live market response"
+    )
+    return "Phase 1: " + "; ".join(services[:3]) + f". Phase 2: {phase_two}."
 def render_dtc_channel_plan(brand_name: str, description: str = "") -> str:
     """Amazon entry plan for a store with no market export. No invented metrics."""
 
@@ -398,7 +413,14 @@ def _build_expected_impact_summary(
     xray_report: Helium10XrayReport,
     *,
     market_mode: str = "amazon",
+    amazon_status: str = "",
 ) -> str:
+    if amazon_status == "present":
+        return (
+            "The first work is the live listings: open image slots, rating and review position, "
+            "and conversion tracking on the ASINs that are already selling. "
+            "No growth figure is shown, because no market export was supplied."
+        )
     if market_mode == "dtc":
         return (
             "The first work is the Amazon listing, the image stack, and the measurement setup. "
@@ -628,7 +650,7 @@ def _build_seo_recommendations(
     )
     if not xray_report.market_evidence_sufficient and not has_keyword_export:
         return [
-            f"Use the words already on the store page in the launch title. Current page title: '{cleaned_title}'.",
+            f"Use the words already on the store page in the listing title. Current page title: '{cleaned_title}'.",
             "Search volume is not in this deck. Do not forecast keyword demand until a keyword export is attached.",
         ]
     title_misses = list(search_insights.get("title_misses", []))
@@ -873,57 +895,15 @@ def _parse_price_value(price_label: str) -> float:
 
 
 def _build_margin_snapshot_html(price_label: str, *, category: str = "", title: str = "") -> str:
-    """Render an honest margin snapshot from the target's list price.
+    """Decks do not render an estimated Amazon referral fee.
 
-    The referral fee uses Amazon's published rate for the listing's fee
-    category when the category or title matches one. Otherwise the 15% figure
-    is labeled as an assumed rate for the category text we have. FBA
-    fulfillment is not estimated. Returns '' when no price.
+    A dollar fee computed inside the deck, including "estimated at 15%", is an
+    internal assumption. Published category rates stay in
+    ``resolve_amazon_referral_fee`` for reference and are not shown.
     """
-    price = _parse_price_value(price_label)
-    if price <= 0:
-        return ""
-    rate, _fee_category, fee_caption = resolve_amazon_referral_fee(price, category=category, title=title)
-    referral_fee = round(price * rate, 2)
-    minimum_applied = referral_fee < _REFERRAL_MINIMUM
-    if minimum_applied:
-        referral_fee = _REFERRAL_MINIMUM
-        fee_caption = f"{fee_caption}. Amazon's $0.30 per-item minimum applies"
-    margin_before_fulfillment = round(price - referral_fee, 2)
 
-    def _tile(lab: str, val: str, sub: str) -> str:
-        return (
-            f'<div class="margin-tile">'
-            f'<p class="lab">{html.escape(lab)}</p>'
-            f'<p class="val">${val}</p>'
-            f'<p class="sub">{html.escape(sub)}</p>'
-            f'</div>'
-        )
-
-    tiles = (
-        _tile("List price", f"{price:,.2f}", "price used on this comparison")
-        + _tile(
-            "Amazon referral fee",
-            f"{referral_fee:,.2f}",
-            fee_caption,
-        )
-        + _tile(
-            "Margin before fulfillment",
-            f"{margin_before_fulfillment:,.2f}",
-            "estimated, before FBA and COGS",
-        )
-    )
-    return (
-        '<div class="margin-snapshot" style="margin-top:24px">'
-        '<div class="card-h"><h3>Margin snapshot</h3>'
-        '<span class="meta">Estimated. Sharpened with your real COGS on a call.</span></div>'
-        f'<div class="margin-grid" style="display:grid;grid-template-columns:repeat(3,1fr);gap:14px">{tiles}</div>'
-        '<p class="margin-note" style="margin-top:10px;font-size:12px;color:#6b7280">'
-        'FBA fulfillment fees vary by size tier and weight, so we estimate those with your real '
-        'dimensions rather than guess here. COGS and shipping come from you.'
-        '</p>'
-        '</div>'
-    )
+    del price_label, category, title
+    return ""
 
 
 # ---------------------------------------------------------------------------
@@ -1402,9 +1382,9 @@ def _build_target_opportunities(
     if search_insights.get("title_hits"):
         strengths.append("The title already captures some high-intent search terms: " + ", ".join(search_insights["title_hits"][:3]) + ".")
     if amazon_status == "present" or comparison_mode == "existing_seller":
-        from sales_support_agent.services.deck.amazon_presence import listing_plan_text
+        from sales_support_agent.services.deck.existing_seller import strength_line
 
-        strengths.insert(0, listing_plan_text(brand_name, amazon_listings or ()))
+        strengths.insert(0, strength_line(amazon_listings or ()))
     if comparison_mode == "live_unmatched":
         gaps.append("The live Amazon target was not matched in the current niche export, so the benchmark column uses the top page-one competitor while direct target data fills identity, BSR, rating, and review signals where available.")
     elif comparison_mode == "concept_only":

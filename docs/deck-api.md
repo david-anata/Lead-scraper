@@ -34,11 +34,11 @@ When `target_product_input` is a website URL rather than an Amazon ASIN or URL:
 - Competitor Xray rows are not candidate-matched or fuzzy-matched to the prospect. A page-one product is never narrated as the brand.
 - A multi-row file sent as `target_xray_csv` uses the row whose ASIN matches `target_product_input`. The first row is used only for a one-row export, or for a multi-row file when no ASIN was provided. If an ASIN was provided and it is not in the file, no row is treated as the prospect.
 - Before any sentence about Amazon, the generator searches Amazon with the Rainforest client (`RAINFOREST_API_KEY`). `details.amazon_presence` is `present`, `absent`, or `unknown`.
-- `present` builds an existing-seller plan from the matched listings (ASIN, title, rating, review count, price, and image count when Amazon returned them). `details.amazon_listings` carries those rows.
+- `present` builds an existing-seller plan from the matched listings (which ASINs to focus on, rating and review position, image work on those listings, ads for the catalog that is already selling, and how Anata's software tracks conversion). The listing summary and the words "already sells on Amazon" each appear once. Launch, entry, and before-launch sections are not used. `details.amazon_listings` carries those rows.
 - `absent` is a completed search with no brand store and no listing. Only then may the deck say the brand is not an Amazon seller.
 - `unknown` (no key, a failed call, or listings that could not be attributed) makes no claim that the brand is on Amazon or off it.
 - The deck title is `{Brand} x anata strategy deck`. A repeated brand token, a trailing product word, a region suffix, "Home Page", and a scraped "Contact Us ..." nav fragment are removed.
-- The follow-up date is three days out, then the next day that is not a weekend or a US federal holiday.
+- The follow-up date is three days out, then the next weekday that is not a US federal holiday, the Friday after Thanksgiving, or a day from December 24 through January 1.
 
 ```bash
 curl -X POST https://agent.anatainc.com/api/decks/generate \
@@ -71,13 +71,15 @@ Errors: `404` route disabled, `401` missing/wrong key (constant-time compare),
 dollar amount, the placeholder "this category", "Top 0", a zero or empty
 metric, a coverage row of "0 covered" or "0 missing", product advice from
 the wrong category, a claim about an image, review, or price the scrape
-did not support, a retired client name, or a claim that the brand is not on
-Amazon without `amazon_presence` of `absent`. `details.market_mode` is `dtc`
-when the target is a store URL and no Amazon market export was supplied.
-That deck is an Amazon launch plan from the store unless Amazon search
-confirms the brand already sells there, in which case the deck uses the
-live listings. Competitor and market metrics are left out when no export
-was supplied.
+did not support, a retired client name, a claim that the brand is not on
+Amazon without `amazon_presence` of `absent`, launch or entry wording on a
+confirmed Amazon seller, a repeated sentence or paragraph, or an internally
+assumed referral fee such as "Amazon referral fee $30.00, estimated at 15%".
+`details.market_mode` is `dtc` when the target is a store URL and no Amazon
+market export was supplied. That deck is an Amazon launch plan from the store
+unless Amazon search confirms the brand already sells there, in which case
+the deck uses the live listings. Competitor and market metrics are left out
+when no export was supplied. Estimated referral-fee dollars are not rendered.
 
 `details.evidence_status` is `missing` when no usable competitor export was
 supplied. The public page returns 200 for a DTC deck that passes the content
