@@ -401,6 +401,36 @@ def test_a_removed_variant_stays_removed_unless_restore_is_flagged(monkeypatch):
     assert "zantrex" not in added[1]["body"].lower()
 
 
+def test_deleting_the_first_followup_keeps_the_surviving_copy():
+    plan = "4dc10f79-f7c9-43c5-9c3e-5e28e9cf4c72"
+    live = signal.steps_for("plan_upgrade")
+    proof = live[1]["variants"]
+    assert "SeroVital" in proof[0]["body"]
+    assert "Sonrei" in proof[1]["body"]
+    live[1]["variants"] = [dict(proof[1], v_disabled=True)]
+    projected = yes.preserve_live_variant_state(signal.steps_for("plan_upgrade"), live)
+    assert len(projected[1]["variants"]) == 1
+    assert "Sonrei" in projected[1]["variants"][0]["body"]
+    assert "SeroVital" not in projected[1]["variants"][0]["body"]
+    assert projected[1]["variants"][0]["v_disabled"] is True
+    client = _Instantly(live)
+    report = yes.apply_yes_cta(client, campaigns=(("plan_upgrade", plan),))
+    assert client.patched == []
+    assert report["campaigns"][0]["changed"] == 0
+
+    model = signal.steps_for("plan_upgrade")
+    model[1]["variants"][1] = dict(
+        model[1]["variants"][1],
+        body=model[1]["variants"][1]["body"].replace("137%", "140%"),
+    )
+    shifted = yes.preserve_live_variant_state(model, live)
+    assert len(shifted[1]["variants"]) == 1
+    assert "Sonrei" in shifted[1]["variants"][0]["body"]
+    assert "140%" in shifted[1]["variants"][0]["body"]
+    assert "SeroVital" not in shifted[1]["variants"][0]["body"]
+    assert shifted[1]["variants"][0]["v_disabled"] is True
+
+
 def test_amz_on_proof_followup_is_shadyvue_only():
     proof = signal.steps_for("amz_on")[1]["variants"]
     assert len(proof) == 1

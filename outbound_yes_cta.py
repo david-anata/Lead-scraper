@@ -284,20 +284,93 @@ def _align_by_subject(model_vars: list[dict[str, Any]], live_vars: list[dict[str
     return chosen
 
 
+# Words every follow-up shares. They are not enough to tell two variants apart.
+_BODY_BOILERPLATE = frozenset({
+    "hi", "i", "a", "an", "the", "and", "or", "to", "of", "for", "in", "on",
+    "with", "your", "you", "it", "is", "we", "can", "if", "not", "me", "my",
+    "from", "that", "this", "be", "at", "by", "as", "do", "our", "us", "put",
+    "short", "plan", "together", "send", "amazon", "growth", "brand", "just",
+    "let", "know", "follow", "up", "abby", "account", "specialist", "anata",
+    "inc", "state", "st", "lehi", "ut",
+})
+
+
+def _body_tokens(value: str) -> tuple[str, ...]:
+    """Words that can identify a variant after tags and tokens are removed."""
+
+    text = unescape(str(value or ""))
+    text = _TAG_RE.sub(" ", text)
+    text = re.sub(r"\{%.*?%\}", " ", text, flags=re.S)
+    text = re.sub(r"\{\{.*?\}\}", " ", text, flags=re.S)
+    text = re.sub(r"[^a-z0-9]+", " ", text.lower())
+    return tuple(tok for tok in text.split() if tok and tok not in _BODY_BOILERPLATE)
+
+
+def _match_followups(
+    model_vars: list[dict[str, Any]], live_vars: list[dict[str, Any]],
+) -> list[Optional[int]]:
+    """Pair each live follow-up with a model variant.
+
+    An unchanged body wins. A shifted survivor still matches on the words
+    that are unique to that variant, such as Sonrei after SeroVital was
+    deleted. Position is only the leftover.
+    """
+
+    model_tokens = [_body_tokens(item.get("body")) for item in model_vars]
+    if len(model_tokens) > 1:
+        common = set.intersection(*(set(tokens) for tokens in model_tokens))
+    else:
+        common = set()
+    distinctive = [set(tokens) - common for tokens in model_tokens]
+    assignment: list[Optional[int]] = [None] * len(live_vars)
+    unused = list(range(len(model_vars)))
+
+    def take(live_index: int, model_index: int) -> None:
+        assignment[live_index] = model_index
+        unused.remove(model_index)
+
+    for live_index, live in enumerate(live_vars):
+        live_key = " ".join(_body_tokens(live.get("body")))
+        if not live_key:
+            continue
+        for model_index in list(unused):
+            if live_key == " ".join(model_tokens[model_index]):
+                take(live_index, model_index)
+                break
+
+    for live_index, live in enumerate(live_vars):
+        if assignment[live_index] is not None or not unused:
+            continue
+        live_fp = set(_body_tokens(live.get("body"))) - common
+        scored = [(len(live_fp & distinctive[model_index]), model_index) for model_index in unused]
+        scored = [item for item in scored if item[0] >= 2]
+        scored.sort(reverse=True)
+        if scored and (len(scored) == 1 or scored[0][0] > scored[1][0]):
+            take(live_index, scored[0][1])
+
+    for live_index in range(len(live_vars)):
+        if assignment[live_index] is None and unused:
+            take(live_index, unused[0])
+    return assignment
+
+
 def _align_by_index(model_vars: list[dict[str, Any]], live_vars: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Follow-ups have an empty subject, so position is the identity."""
+    """Follow-ups have an empty subject. Match the body, then the position."""
 
     chosen: list[dict[str, Any]] = []
-    for index, live in enumerate(live_vars):
-        if index < len(model_vars):
-            model = model_vars[index]
-            chosen.append(_outgoing_variant(
-                model, disabled=_variant_disabled(live) or _variant_disabled(model),
-            ))
-        else:
+    used: set[int] = set()
+    for live_index, model_index in enumerate(_match_followups(model_vars, live_vars)):
+        live = live_vars[live_index]
+        if model_index is None:
             chosen.append(_outgoing_variant(live, disabled=_variant_disabled(live)))
-    for index, model in enumerate(model_vars):
-        if index >= len(live_vars) and model.get("restore_if_removed") is True:
+            continue
+        used.add(model_index)
+        model = model_vars[model_index]
+        chosen.append(_outgoing_variant(
+            model, disabled=_variant_disabled(live) or _variant_disabled(model),
+        ))
+    for model_index, model in enumerate(model_vars):
+        if model_index not in used and model.get("restore_if_removed") is True:
             chosen.append(_outgoing_variant(model, disabled=_variant_disabled(model)))
     return chosen
 
@@ -316,7 +389,9 @@ def preserve_live_variant_state(
     A campaign whose step 1 subjects do not match this copy is a first
     install, so the full model is sent. Once the subjects match, a variant
     that is not in Instantly stays out unless ``restore_if_removed`` is set,
-    and ``v_disabled: true`` on the live variant stays true.
+    and ``v_disabled: true`` on the live variant stays true. A follow-up
+    with an empty subject is matched on its body before its position, so
+    deleting the first variant does not overwrite the one that remains.
     """
 
     model = [step for step in (model_steps or []) if isinstance(step, dict)]
