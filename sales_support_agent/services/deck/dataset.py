@@ -415,11 +415,25 @@ def _build_expected_impact_summary(
     market_mode: str = "amazon",
     amazon_status: str = "",
 ) -> str:
-    if amazon_status == "present":
+    if amazon_status == "present" and market_mode == "dtc":
         return (
             "The first work is the live listings: open image slots, rating and review position, "
             "and conversion tracking on the ASINs that are already selling. "
             "No growth figure is shown, because no market export was supplied."
+        )
+    if amazon_status == "present" and not xray_report.market_evidence_sufficient:
+        return (
+            "The first work is the live listings: open image slots, rating and review position, "
+            "and conversion tracking on the ASINs that are already selling. "
+            "The comparison set still needs review before a growth figure is shown."
+        )
+    if amazon_status == "present":
+        return (
+            "The first work is the live listings: open image slots, rating and review position, "
+            "and conversion tracking on the ASINs that are already selling. "
+            "The niche is large enough to justify a tighter positioning and conversion sprint. "
+            f"{xray_report.under_75_reviews_count} listings are still competing with under 75 reviews, "
+            "which leaves room for differentiated creative and offer design."
         )
     if market_mode == "dtc":
         return (

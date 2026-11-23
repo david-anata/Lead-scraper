@@ -1199,10 +1199,27 @@ class DeckGenerationService:
             source_type=parsed_target["source_type"],
             attached_asin=resolved_target_asin,
         )
-        copy_status = "" if amazon_presence.source == "attached_listing" else amazon_presence.status
+        # An attached ASIN on a full Amazon deck keeps the benchmark narrative.
+        # The same attachment on a store URL with no competitor export is still
+        # a confirmed seller, and the launch template would fail the gate.
+        copy_status = "" if amazon_presence.source == "attached_listing" and market_mode != "dtc" else amazon_presence.status
         if amazon_presence.source != "attached_listing":
             warnings.append(f"Amazon presence: {amazon_presence.status} ({amazon_presence.source}).")
         amazon_listings = [dict(item) for item in amazon_presence.listings if item.get("title") or item.get("asin")]
+        if (
+            not amazon_listings
+            and amazon_presence.source == "attached_listing"
+            and market_mode == "dtc"
+            and resolved_target_asin
+        ):
+            attached_listing: dict[str, Any] = {"asin": resolved_target_asin}
+            if display_title and display_title.lower() != target_brand.lower():
+                attached_listing["title"] = display_title
+            if target_price_label:
+                attached_listing["price"] = target_price_label
+            if isinstance(target_review_count, int):
+                attached_listing["review_count"] = target_review_count
+            amazon_listings = [attached_listing]
         primary_listing = next((item for item in amazon_listings if item.get("asin") or item.get("title")), None)
         if primary_listing and not resolved_target_asin:
             resolved_target_asin = str(primary_listing.get("asin") or "").strip()

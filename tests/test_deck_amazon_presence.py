@@ -359,9 +359,10 @@ def _hero(
     *,
     source_url: str = "https://xviveaudio.com",
     product_type: str = "Wireless audio",
+    asin: str = "",
 ) -> EnrichedHeroProduct:
     return EnrichedHeroProduct(
-        asin="",
+        asin=asin,
         candidate_asin="",
         brand_name=brand,
         title=title,
@@ -473,6 +474,7 @@ class DeckAmazonStatusTests(unittest.TestCase):
         description: str = "We build wireless guitar systems for working players.",
         source_url: str = "https://xviveaudio.com",
         product_type: str = "Wireless audio",
+        asin: str = "",
     ):
         session_factory = create_session_factory("sqlite:///:memory:")
         init_database(session_factory)
@@ -482,6 +484,7 @@ class DeckAmazonStatusTests(unittest.TestCase):
             description,
             source_url=source_url,
             product_type=product_type,
+            asin=asin,
         )
         with session_scope(session_factory) as session:
             service = DeckGenerationService(_build_settings(), session)
@@ -538,6 +541,44 @@ class DeckAmazonStatusTests(unittest.TestCase):
         self.assertEqual(result.design_title, "Xvive Audio x anata strategy deck")
         self.assertNotIn("Home Page", html)
         self.assertNotIn("Contact Us", html)
+
+    def test_attached_asin_on_a_store_url_uses_the_existing_seller_plan(self) -> None:
+        result, html = self._generate(
+            _presence(UNKNOWN),
+            brand="IChoose Global",
+            title="IChoose Global",
+            description="IChoose Global sells daily vitamins on its site.",
+            source_url="https://ichooseglobal.com",
+            product_type="Vitamins",
+            asin="B0DY5F6862",
+        )
+        # The generator replaces the injected lookup when the hero carries an ASIN.
+        self.assertEqual(result.amazon_presence, PRESENT)
+        self.assertTrue(result.content_gate_passed, result.content_gate_findings)
+        self.assertIn("B0DY5F6862", html)
+        self.assertNotIn("amazon launch plan", html.lower())
+        self.assertNotIn("listing is live", html.lower())
+        self.assertNotIn("before launch", html.lower())
+
+    def test_present_seller_with_a_market_export_does_not_deny_the_export(self) -> None:
+        from types import SimpleNamespace
+
+        from sales_support_agent.services.deck.dataset import _build_expected_impact_summary
+
+        supplied = _build_expected_impact_summary(
+            SimpleNamespace(market_evidence_sufficient=True, under_75_reviews_count=4),
+            market_mode="amazon",
+            amazon_status="present",
+        )
+        self.assertNotIn("no market export", supplied.lower())
+        self.assertIn("under 75 reviews", supplied)
+        self.assertIn("live listings", supplied)
+        withheld = _build_expected_impact_summary(
+            SimpleNamespace(market_evidence_sufficient=False, under_75_reviews_count=0),
+            market_mode="dtc",
+            amazon_status="present",
+        )
+        self.assertIn("no market export was supplied", withheld.lower())
 
     def test_confirmed_absence_may_say_so_and_passes_the_gate(self) -> None:
         result, html = self._generate(
