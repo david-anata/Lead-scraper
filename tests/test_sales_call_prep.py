@@ -94,6 +94,7 @@ class FakeSlack:
 class FakeGmail:
     def __init__(self) -> None:
         self.drafts: list[dict] = []
+        self.updates: list[dict] = []
         self.sent: list[dict] = []
 
     def is_configured(self) -> bool:
@@ -102,6 +103,10 @@ class FakeGmail:
     def create_draft(self, *, to, subject, text, cc=()) -> dict:
         self.drafts.append({"to": to, "subject": subject, "text": text})
         return {"id": "draft-1"}
+
+    def update_draft(self, draft_id, *, to, subject, text, cc=()) -> dict:
+        self.updates.append({"id": draft_id, "to": to, "subject": subject, "text": text})
+        return {"id": draft_id}
 
     def send_message(self, **kwargs):
         self.sent.append(kwargs)
@@ -282,7 +287,8 @@ class PrepJobTests(unittest.TestCase):
         self.assertNotIn("—", slack.messages[0]["text"])
         self.assertIn("Free 14-day trial.", slack.messages[0]["text"])
         self.assertIn("Plans from $99/mo.", slack.messages[0]["text"])
-        self.assertIn("grew revenue 40% within 30 days", slack.messages[0]["text"])
+        self.assertIn("$12K/day to $33K/day", slack.messages[0]["text"])
+        self.assertNotIn("zantrex", slack.messages[0]["text"].lower())
         self.assertEqual(gmail.drafts[0]["to"], ("david@anatainc.com",))
         self.assertTrue(gmail.drafts[0]["subject"].startswith("Call prep:"))
         self.assertEqual(gmail.sent, [])
@@ -406,7 +412,8 @@ class PrepJobTests(unittest.TestCase):
         self.assertEqual(seen["caller"], "call_prep")
         self.assertIn("Do not guess", seen["system"])
         self.assertNotIn("—", json.dumps(notes))
-        self.assertTrue(any("grew revenue 40% within 30 days" in point for point in notes["trial_pitch"]))
+        self.assertNotIn("zantrex", json.dumps(notes).lower())
+        self.assertTrue(any("$12K/day to $33K/day" in point for point in notes["trial_pitch"]))
         for point in PITCH_POINTS:
             self.assertIn(point, notes["trial_pitch"])
         self.assertEqual([step["id"] for step in notes["discovery"]], [f"s{i}" for i in range(1, 14)])
@@ -422,7 +429,7 @@ class PrepShapeTests(unittest.TestCase):
     def test_a_paragraph_is_not_split_into_characters(self) -> None:
         paragraph = (
             "Walk the free 14-day trial, then plans from $99/mo, "
-            "then the Zantrex proof."
+            "then the SeroVital proof."
         )
         items = as_list(paragraph)
         self.assertEqual(items, [paragraph])
@@ -446,7 +453,8 @@ class PrepShapeTests(unittest.TestCase):
         )
         self.assertGreater(min(len(point) for point in notes["trial_pitch"]), 1)
         self.assertNotIn("W", notes["trial_pitch"])
-        self.assertTrue(any("grew revenue 40% within 30 days" in point for point in notes["trial_pitch"]))
+        self.assertNotIn("zantrex", json.dumps(notes).lower())
+        self.assertTrue(any("$12K/day to $33K/day" in point for point in notes["trial_pitch"]))
 
     def test_amazon_url_is_included_only_after_it_resolves(self) -> None:
         html = '<a href="https://www.amazon.com/stores/Reincorporated/page/ABC">shop</a> cdn.shopify.com'
@@ -692,6 +700,8 @@ class PrepShapeTests(unittest.TestCase):
         self.assertNotIn("other / skip", text_body)
         self.assertIn("Objections prepared, not raised by them:", text_body)
         self.assertIn("Free 14-day trial.", text_body)
+        self.assertIn("SeroVital: Amazon from $12K/day to $33K/day, margins preserved.", text_body)
+        self.assertNotIn("zantrex", text_body.lower())
         self.assertIn("Next step:", text_body)
         self.assertLess(len(text_body), 2500)
         steps = {step["id"]: step["known"] for step in prep["sections"]["discovery"]}
@@ -744,6 +754,65 @@ class PrepShapeTests(unittest.TestCase):
         self.assertNotIn("Phone", rows[0]["snippet"])
         self.assertNotIn("wrote:", rows[0]["snippet"])
         self.assertNotIn("meet.google.com", rows[0]["snippet"])
+
+    def test_a_stored_zantrex_pitch_is_rebuilt_into_davids_draft_only(self) -> None:
+        slack, gmail = FakeSlack(), FakeGmail()
+        booking = booking_from_event(NICK_EVENT)
+        assert booking is not None
+
+        def context_for(item, tracker=None):
+            return {
+                "company": "Reincorporated",
+                "deck": {
+                    "url": "https://agent.anatainc.com/decks/example/9/token",
+                    "run_id": "9",
+                    "source": "abby_deck_sends",
+                },
+                "links": {
+                    "website": {"verified": True, "url": "https://reincorporated.org/"},
+                    "amazon": {"verified": False, "urls": [], "line": AMAZON_UNVERIFIED},
+                },
+                "abby_handled": {"rows": []},
+                "clickup": {},
+            }
+
+        def notes_for(item, context):
+            from sales_support_agent.services.sales.call_script.prep import fallback_notes
+            return fallback_notes(item, context), "facts"
+
+        with session_scope(app.state.session_factory) as session:
+            run_prep(
+                session, now=NOW, bookings=[booking], source="google_calendar", gap="",
+                context_for=context_for, notes_for=notes_for, slack=slack, gmail=gmail,
+            )
+            tracker = session.query(SalesCallTracker).one()
+            state = dict(tracker.state_json)
+            prep = dict(state["ss-prep"])
+            sections = dict(prep["sections"])
+            sections["trial_pitch"] = [
+                "Zantrex proof: Zantrex grew revenue 40% within 30 days on our platform."
+            ]
+            prep["sections"] = sections
+            state["ss-prep"] = prep
+            tracker.state_json = state
+            session.flush()
+        with session_scope(app.state.session_factory) as session:
+            again = run_prep(
+                session, now=NOW, bookings=[booking], source="google_calendar", gap="",
+                context_for=context_for, notes_for=notes_for, slack=slack, gmail=gmail,
+            )
+        self.assertEqual(again["prepped"], 1)
+        self.assertEqual(len(slack.messages), 1)
+        self.assertEqual(gmail.sent, [])
+        self.assertEqual(len(gmail.drafts), 1)
+        self.assertEqual(len(gmail.updates), 1)
+        updated = gmail.updates[0]
+        self.assertEqual(updated["to"], ("david@anatainc.com",))
+        self.assertEqual(updated["id"], "draft-1")
+        self.assertNotIn("zantrex", updated["text"].lower())
+        self.assertIn("Call script:", updated["text"])
+        self.assertIn("Deck: https://agent.anatainc.com/decks/example/9/token", updated["text"])
+        self.assertIn("$12K/day to $33K/day", updated["text"])
 
 
 class PrepRouteTests(unittest.TestCase):

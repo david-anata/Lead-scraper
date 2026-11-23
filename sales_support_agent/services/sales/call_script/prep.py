@@ -36,11 +36,14 @@ DAVID_EMAIL = "david@anatainc.com"
 DAVID_USER = {"email": DAVID_EMAIL, "name": "David Narayan", "is_superadmin": True}
 SALES_SLACK_CHANNEL = "CQRMXS339"  # #sales
 DENVER = ZoneInfo("America/Denver")
+# Published on https://anatainc.com/case-studies (SeroVital). No other client result.
+PROOF_LINE = "SeroVital: Amazon from $12K/day to $33K/day, margins preserved."
 PITCH_POINTS = (
     "Free 14-day trial.",
     "Plans from $99/mo.",
-    "Zantrex proof: Zantrex grew revenue 40% within 30 days on our platform.",
+    PROOF_LINE,
 )
+_BANNED_PROOF = re.compile(r"\bzantrex\b", re.I)
 DISCOVERY_STEPS = (
     ("s1", "Isolate the problem"),
     ("s2", "Background"),
@@ -1071,7 +1074,9 @@ def fallback_notes(booking: Booking, context: dict) -> dict:
             },
             {
                 "objection": "Prepared, not raised by them: prove it works.",
-                "answer": "Zantrex proof: Zantrex grew revenue 40% within 30 days on our platform. That is one account, not a promise for this prospect.",
+                "answer": (
+                    f"{PROOF_LINE} That is one published account, not a promise for this prospect."
+                ),
             },
         ],
         "next_step": (
@@ -1082,6 +1087,24 @@ def fallback_notes(booking: Booking, context: dict) -> dict:
     }
 
 
+def _strip_banned_proof(value: str) -> str:
+    """Drop any sentence that names a client we no longer use as proof."""
+
+    text = str(value or "")
+    if not _BANNED_PROOF.search(text):
+        return text
+    kept = [
+        part.strip()
+        for part in _SENTENCE.split(text)
+        if part.strip() and not _BANNED_PROOF.search(part)
+    ]
+    return " ".join(kept).strip()
+
+
+def prep_contains_banned_proof(value: Any) -> bool:
+    return bool(_BANNED_PROOF.search(json.dumps(value, default=str)))
+
+
 def _ensure_shape(notes: dict, booking: Booking, context: dict) -> dict:
     base = fallback_notes(booking, context)
     if not isinstance(notes, dict):
@@ -1090,9 +1113,9 @@ def _ensure_shape(notes: dict, booking: Booking, context: dict) -> dict:
     cleaned.pop("discovery_questions", None)
     cleaned["discovery"] = base["discovery"]
     pitch = [
-        no_em_dash(str(item)).strip()
+        no_em_dash(_strip_banned_proof(str(item))).strip()
         for item in as_list(cleaned.get("trial_pitch"))
-        if not isinstance(item, dict) and str(item).strip()
+        if not isinstance(item, dict) and str(item).strip() and not _BANNED_PROOF.search(str(item))
     ]
     blob = " ".join(pitch).lower()
     for point in PITCH_POINTS:
@@ -1104,16 +1127,17 @@ def _ensure_shape(notes: dict, booking: Booking, context: dict) -> dict:
     normalized = []
     for item in objections:
         if isinstance(item, dict):
-            normalized.append({
-                "objection": no_em_dash(str(item.get("objection") or "Unknown")),
-                "answer": no_em_dash(str(item.get("answer") or "Unknown")),
-            })
-        elif str(item).strip():
+            objection = no_em_dash(_strip_banned_proof(str(item.get("objection") or "Unknown")))
+            answer = no_em_dash(_strip_banned_proof(str(item.get("answer") or "Unknown")))
+            if _BANNED_PROOF.search(objection) or _BANNED_PROOF.search(answer) or not objection.strip():
+                continue
+            normalized.append({"objection": objection.strip() or "Unknown", "answer": answer.strip() or "Unknown"})
+        elif str(item).strip() and not _BANNED_PROOF.search(str(item)):
             normalized.append({"objection": no_em_dash(str(item)), "answer": "Unknown"})
     cleaned["objections"] = normalized or base["objections"]
     for key in ("who", "how_they_came_in", "likely_needs", "next_step"):
-        text_value = no_em_dash(str(cleaned.get(key) or "")).strip()
-        if not text_value or text_value.lower().rstrip(".") == "unknown":
+        text_value = no_em_dash(_strip_banned_proof(str(cleaned.get(key) or ""))).strip()
+        if not text_value or text_value.lower().rstrip(".") == "unknown" or _BANNED_PROOF.search(text_value):
             text_value = base[key]
         cleaned[key] = text_value
     unknowns = as_list(cleaned.get("unknowns"))
@@ -1134,8 +1158,9 @@ def generate_notes(booking: Booking, context: dict) -> tuple[dict, str]:
         "You write prep notes for David's Anata sales call. Use only facts in the packet. "
         "If a fact is missing, write Unknown. Do not guess revenue, category, headcount, "
         "ad spend, tools, or pain. Do not use em dashes. "
-        "The trial pitch must include these approved points and no other proof numbers: "
-        "Free 14-day trial. Plans from $99/mo. Zantrex proof: Zantrex grew revenue 40% within 30 days on our platform. "
+        "The trial pitch must include these approved points and no other client or proof number: "
+        f"Free 14-day trial. Plans from $99/mo. {PROOF_LINE} "
+        "Do not name any other client and do not invent a KPI. "
         "Do not write discovery questions. The call script already has sections s1 to s13. "
         "trial_pitch must be a JSON array of strings, never one paragraph. "
         "Do not say the prospect is on Amazon unless the packet's amazon.verified is true, "
@@ -1281,8 +1306,11 @@ def slack_text(tracker: SalesCallTracker, prep: dict, timing_note: str) -> str:
     """Short brief for Slack and the Gmail draft. The call page keeps the full script."""
 
     sections = prep.get("sections") if isinstance(prep.get("sections"), dict) else {}
-    pitch = as_list(sections.get("trial_pitch"))
-    objections = as_list(sections.get("objections"))
+    pitch = [item for item in as_list(sections.get("trial_pitch")) if not _BANNED_PROOF.search(str(item))]
+    objections = [
+        item for item in as_list(sections.get("objections"))
+        if not _BANNED_PROOF.search(json.dumps(item, default=str))
+    ]
     lines = [
         f"Call prep: {prep.get('prospect_name') or tracker.prospect_name or 'Unknown'}",
         f"When: {prep.get('when') or 'Unknown'}",
@@ -1331,7 +1359,9 @@ def slack_text(tracker: SalesCallTracker, prep: dict, timing_note: str) -> str:
     ]
     if unknowns:
         lines += ["", "Unknown: " + ", ".join(unknowns)]
-    return no_em_dash("\n".join(lines))[:3500]
+    text = no_em_dash("\n".join(lines))
+    kept = [line for line in text.split("\n") if not _BANNED_PROOF.search(line)]
+    return "\n".join(kept)[:3500]
 
 
 def _notify(slack: Any, gmail: Any, tracker: SalesCallTracker, prep: dict, now: datetime) -> dict:
@@ -1372,15 +1402,37 @@ def _notify(slack: Any, gmail: Any, tracker: SalesCallTracker, prep: dict, now: 
                 slack_state["error"] = type(exc).__name__
     elif not post:
         slack_state["note"] = timing_note
-    if not draft_state.get("id") and post:
+    replace_id = str(prep.pop("replace_draft_id", "") or "")
+    force_draft = bool(prep.pop("force_draft", False))
+    draft_text = slack_text(tracker, prep, timing_note)
+    draft_subject = f"Call prep: {prep.get('prospect_name') or tracker.prospect_name}"
+    if replace_id and gmail is not None and gmail.is_configured() and getattr(gmail, "update_draft", None):
+        try:
+            result = gmail.update_draft(
+                replace_id,
+                to=(DAVID_EMAIL,),
+                subject=draft_subject,
+                text=draft_text,
+            )
+            if not (isinstance(result, dict) and result.get("skipped")):
+                draft_state["id"] = str((result or {}).get("id") or replace_id)
+                draft_state["to"] = DAVID_EMAIL
+                draft_state["skipped"] = ""
+                draft_state["updated"] = True
+                replace_id = ""
+        except Exception as exc:
+            logger.warning("[call-prep] draft update failed: %s", type(exc).__name__)
+            draft_state["error"] = type(exc).__name__
+            replace_id = ""
+    if not draft_state.get("id") and (post or force_draft):
         if gmail is None or not gmail.is_configured():
             draft_state["skipped"] = "Gmail draft path is not configured."
         else:
             try:
                 result = gmail.create_draft(
                     to=(DAVID_EMAIL,),
-                    subject=f"Call prep: {prep.get('prospect_name') or tracker.prospect_name}",
-                    text=slack_text(tracker, prep, timing_note),
+                    subject=draft_subject,
+                    text=draft_text,
                 )
                 if isinstance(result, dict) and result.get("skipped"):
                     draft_state["skipped"] = str(result.get("reason") or "skipped")
@@ -1407,22 +1459,27 @@ def apply_booking(
     slack: Any,
     gmail: Any,
     now: datetime,
+    force: bool = False,
 ) -> dict:
     """Create or reuse the lead's tracker, store ss-prep, then notify David.
 
     A tracker that already has prep for this event is left as-is, including
-    its draft. New notes are not written over it.
+    its draft. Prep that still names a banned client is rebuilt. The draft
+    is updated for David only. Nothing is sent.
     """
 
     existing = find_tracker(session, booking)
     if existing is not None:
         prior = existing.state_json if isinstance(existing.state_json, dict) else {}
         saved = prior.get("ss-prep") if isinstance(prior.get("ss-prep"), dict) else {}
+        stale = prep_contains_banned_proof(saved)
         finished = (
             saved.get("event_id") == booking.event_id
             and isinstance(saved.get("sections"), dict)
             and (saved.get("slack") or {}).get("posted_at")
             and ((saved.get("draft") or {}).get("id") or (saved.get("draft") or {}).get("skipped"))
+            and not stale
+            and not force
         )
         if finished:
             return {
@@ -1456,7 +1513,8 @@ def apply_booking(
     state = tracker.state_json if isinstance(tracker.state_json, dict) else {}
     current = state.get("ss-prep") if isinstance(state.get("ss-prep"), dict) else {}
     same_event = bool(current.get("event_id") and current.get("event_id") == booking.event_id)
-    if same_event and isinstance(current.get("sections"), dict):
+    refresh = force or prep_contains_banned_proof(current)
+    if same_event and isinstance(current.get("sections"), dict) and not refresh:
         prep = dict(current)
         action = "reused"
     else:
@@ -1486,10 +1544,13 @@ def apply_booking(
                 "source": str((context.get("deck") or {}).get("source") or ""),
             },
             "unknowns": sections.get("unknowns") or [],
-            "slack": {},
+            "slack": dict(current.get("slack") or {}) if refresh and not created else {},
             "draft": {},
         }
-        action = "created" if created else "prepped"
+        if refresh and not created:
+            prep["replace_draft_id"] = str((current.get("draft") or {}).get("id") or "")
+            prep["force_draft"] = True
+        action = "created" if created else ("refreshed" if refresh else "prepped")
     quotes = "" if action == "reused" else prospect_quotes(booking, context)
     prep = _notify(slack, gmail, tracker, prep, now)
     _store(session, tracker, prep, quotes=quotes)
@@ -1502,6 +1563,62 @@ def apply_booking(
         "slack": bool((prep.get("slack") or {}).get("posted_at")),
         "draft": bool((prep.get("draft") or {}).get("id")),
     }
+
+
+def booking_from_tracker(tracker: SalesCallTracker) -> Optional[Booking]:
+    """The booking stored on a tracker, so an existing prep can be rebuilt."""
+
+    state = tracker.state_json if isinstance(tracker.state_json, dict) else {}
+    prep = state.get("ss-prep") if isinstance(state.get("ss-prep"), dict) else {}
+    if not prep:
+        return None
+
+    def parse(raw: Any) -> Optional[datetime]:
+        if not raw:
+            return None
+        try:
+            return datetime.fromisoformat(str(raw))
+        except ValueError:
+            return None
+
+    return Booking(
+        event_id=str(prep.get("event_id") or f"tracker:{tracker.id}"),
+        summary=str(tracker.prospect_name or ""),
+        prospect_name=str(prep.get("prospect_name") or tracker.prospect_name or ""),
+        prospect_email=str(prep.get("prospect_email") or ""),
+        purpose=str(prep.get("purpose") or ""),
+        starts_at=parse(prep.get("starts_at")),
+        ends_at=parse(prep.get("ends_at")),
+        meet_url=str(prep.get("meet_url") or ""),
+        source=str(prep.get("source") or "stored"),
+    )
+
+
+def regenerate_tracker(
+    session: Session,
+    tracker: SalesCallTracker,
+    *,
+    context_for: Callable[..., dict],
+    notes_for: Callable[[Booking, dict], tuple[dict, str]],
+    slack: Any,
+    gmail: Any,
+    now: datetime,
+) -> dict:
+    """Rebuild one tracker's prep and replace David's draft. Does not send mail."""
+
+    booking = booking_from_tracker(tracker)
+    if booking is None:
+        raise ValueError("Tracker has no stored booking to rebuild.")
+    return apply_booking(
+        session,
+        booking,
+        context_for=context_for,
+        notes_for=notes_for,
+        slack=slack,
+        gmail=gmail,
+        now=now,
+        force=True,
+    )
 
 
 def run_prep(
@@ -1542,7 +1659,7 @@ def run_prep(
         "seen": len(chosen),
         "created": sum(1 for row in rows if row["created"]),
         "reused": sum(1 for row in rows if row["action"] == "reused"),
-        "prepped": sum(1 for row in rows if row["action"] == "prepped"),
+        "prepped": sum(1 for row in rows if row["action"] in {"prepped", "refreshed"}),
         "slack": sum(1 for row in rows if row["slack"]),
         "drafts": sum(1 for row in rows if row["draft"]),
         "bookings": rows,

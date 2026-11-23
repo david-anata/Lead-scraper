@@ -34,7 +34,7 @@ PAIN_KEYS = ("acos", "flat", "rank", "ctr", "cvr", "creative", "repeat", "oneasi
 OBJ_KEYS = ("think", "partner", "price", "timing", "diy", "burned", "current", "trial", "proof")
 RES_KEYS = ("fit", "spike", "control", "commit", "ai", "small", "comms")
 SECTION_KEYS = tuple(f"s{i}" for i in range(1, 18))
-CASE_KEYS = ("sonrei", "serovital", "oceanrx", "zantrex", "arcticcool", "novex", "trestique")
+CASE_KEYS = ("sonrei", "serovital", "oceanrx", "shadyvue", "velrose", "harvest", "mybevi", "waiu", "arcticcool", "novex", "trestique")
 NUMBER_KEYS = ("total", "adsales", "spend", "goal", "months", "margin", "target", "asins", "ctr", "cvr", "price", "impr")
 OFFERS = ("starter", "growth", "pro", "full")
 MOVE_KINDS = ("ask", "handle", "tiedown", "moveon", "pitch", "close", "temperature")
@@ -44,7 +44,7 @@ COACH_INSTRUCTIONS = """You are the live sales coach inside Anata's Call Script.
 How Anata sells (one-call close):
 - Main offer: Anata Intelligence from $99/month (Starter), 14-day free trial with a card on file at dashboard.anatainc.com/signup, then Starter at $99/month. Close it on this call by getting them signed up and connecting Seller Central.
 - Offer pick: "starter" by default. "growth" ($199) if they need more than 2 channels or more than 2 seats. "pro" ($399) if more than 4 channels or more than 5 seats. "full" (full service: $3,000/month + 5% of sales above their current baseline, Intelligence and seller support included) only if they have no time or team, want it done for them, or do more than about $80K/month on Amazon and want fast growth.
-- Never invent numbers, clients or results. Proof only from the approved case keys: sonrei, serovital, oceanrx, zantrex, arcticcool, novex, trestique.
+- Never invent numbers, clients or results. Do not cite Zantrex. Proof only from the approved case keys: sonrei, serovital, oceanrx, shadyvue, velrose, harvest, mybevi, waiu, arcticcool, novex, trestique.
 
 Coach rules:
 - Stay in discovery at least 20 of a 45 minute call. Warn if the rep pitches before minute 20 or before the core beliefs (Pain, Cost, Doubt, Desire, Trust; Support too if a partner is involved) are said.
