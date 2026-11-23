@@ -49,7 +49,11 @@ def _settled(email_id: str) -> bool:
 
 def _run_reply(payload: dict[str, Any]) -> None:
     try:
-        process_reply(payload)
+        from sales_support_agent.api.abby_job import lead_info_from_db
+        from sales_support_agent.models.database import get_engine
+
+        engine = get_engine()
+        process_reply(payload, engine=engine, lead_info=lead_info_from_db(engine))
     except Exception:  # noqa: BLE001
         logger.exception("[abby] webhook reply failed")
 

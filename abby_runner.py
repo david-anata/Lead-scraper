@@ -1893,12 +1893,48 @@ def send_due_scheduled(engine, client: Instantly, now: datetime, run_mode: str,
     return sent
 
 
+def _normalized_site(value: Any) -> str:
+    """A website Instantly can use as a deck target, or '' when it is not one.
+
+    The same rules as ``abby_deck._target``: an http(s) URL is kept, and a
+    host with a dot and no spaces becomes ``https://`` plus that host.
+    """
+
+    try:
+        from abby_deck import _target
+    except Exception:  # noqa: BLE001
+        logger.exception("[abby] domain normalizer is not available")
+        return ""
+    site = _target(str(value or ""), "", "")
+    if site.startswith("http://") or site.startswith("https://"):
+        return site
+    return ""
+
+
+def _domain_from_instantly(rec: dict) -> str:
+    """Instantly ``website``, or ``company_domain`` when website is not a host."""
+
+    for key in ("website", "company_domain"):
+        site = _normalized_site(rec.get(key))
+        if site:
+            return site
+    return ""
+
+
 def _instantly_info(client: Instantly, lead: str) -> dict:
+    """Name, company, and domain from the Instantly lead. Empty when the read fails."""
+
     try:
         rec = client.lead(lead) or {}
     except Exception:  # noqa: BLE001
         return {}
-    return {"first_name": str(rec.get("first_name") or ""), "company": str(rec.get("company_name") or "")}
+    if not isinstance(rec, dict):
+        return {}
+    return {
+        "first_name": str(rec.get("first_name") or ""),
+        "company": str(rec.get("company_name") or ""),
+        "domain": _domain_from_instantly(rec),
+    }
 
 
 # Nudges for Interested leads that went quiet: days since OUR last message
@@ -2168,18 +2204,47 @@ def should_reopen_handled(action: str, category: str, reason: str, detail: str) 
     return action in {"hold", "ignore", "skip", ""}
 
 
+def _coerce_utc(stamp: Any) -> Optional[datetime]:
+    if isinstance(stamp, datetime):
+        return stamp if stamp.tzinfo else stamp.replace(tzinfo=timezone.utc)
+    if stamp is None or stamp == "":
+        return None
+    return _parse_ts(str(stamp))
+
+
+def _fix_attempt_limit(detail: str, sent_at: Any, created_at: Any, now: datetime) -> int:
+    """Three tries. A deck-generation miss from the last 14 days gets one more.
+
+    The extra try is how a hold that already used its three tries, and failed
+    only because the domain was missing, is picked up once after a deploy.
+    """
+
+    if "deck generation failed" not in (detail or "").lower():
+        return 3
+    stamp = _coerce_utc(sent_at) or _coerce_utc(created_at)
+    if stamp is None:
+        return 3
+    current = now if now.tzinfo else now.replace(tzinfo=timezone.utc)
+    if current - stamp <= timedelta(days=14):
+        return 4
+    return 3
+
+
 def _claim_fix(engine, email_id: str, *, lead: str, campaign_id: str, previous: str,
-               reclaim_held: bool = False) -> bool:
+               reclaim_held: bool = False, now: Optional[datetime] = None) -> bool:
     """Own this fix. A sent row is not taken again.
 
     A still-held row is taken only when ``reclaim_held`` is set, for a hold
-    the auto-reply check now recognizes. A failed deck build can be retried
-    twice more. Two workers cannot both own it.
+    the auto-reply check now recognizes. A failed send can be retried twice
+    more. A deck generation failure from the last 14 days can be retried once
+    more after that. Two workers cannot both own it.
     """
 
+    now = now or datetime.now(timezone.utc)
     with engine.begin() as conn:
         row = conn.execute(text(
-            "SELECT outcome, attempts FROM abby_missed_reply_fixes WHERE email_id = :i"
+            "SELECT outcome, attempts, detail, sent_at, created_at "
+            "FROM abby_missed_reply_fixes WHERE email_id = :i"
         ), {"i": email_id}).fetchone()
         if row:
             outcome, attempts = str(row[0] or ""), int(row[1] or 0)
@@ -2189,12 +2254,13 @@ def _claim_fix(engine, email_id: str, *, lead: str, campaign_id: str, previous: 
                     "WHERE email_id = :i AND outcome = 'still_held'"
                 ), {"i": email_id}).rowcount
                 return bool(updated)
-            if outcome != "failed" or attempts >= 3:
+            limit = _fix_attempt_limit(str(row[2] or ""), row[3], row[4], now)
+            if outcome != "failed" or attempts >= limit:
                 return False
             updated = conn.execute(text(
                 "UPDATE abby_missed_reply_fixes SET attempts = attempts + 1, outcome = 'pending', "
-                "previous_action = :p WHERE email_id = :i AND outcome = 'failed' AND attempts < 3"
-            ), {"i": email_id, "p": previous[:200]}).rowcount
+                "previous_action = :p WHERE email_id = :i AND outcome = 'failed' AND attempts < :limit"
+            ), {"i": email_id, "p": previous[:200], "limit": limit}).rowcount
             return bool(updated)
         try:
             conn.execute(text(
@@ -2284,7 +2350,7 @@ def run_missed_replies(engine, *, client: Any, campaign_ids: Iterable[str],
                 continue
             if not _claim_fix(
                 engine, email_id, lead=lead, campaign_id=str(campaign_id or ""),
-                previous=previous, reclaim_held=notice is not None,
+                previous=previous, reclaim_held=notice is not None, now=now,
             ):
                 summary["skipped"] += 1
                 continue
