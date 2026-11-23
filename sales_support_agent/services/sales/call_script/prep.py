@@ -659,10 +659,20 @@ def _first_sentences(lines: list[str], limit: int) -> list[str]:
     return chosen
 
 
+def _deck_was_sent(context: dict) -> bool:
+    deck = context.get("deck") if isinstance(context.get("deck"), dict) else {}
+    if not _https_url(deck.get("url") or ""):
+        return False
+    return (
+        str(deck.get("source") or "") == "abby_deck_sends"
+        and str(deck.get("status") or "").lower() == "sent"
+    )
+
+
 def _sent_sentence(context: dict) -> str:
     rows = _abby_rows(context)
     parts = []
-    if _https_url((context.get("deck") or {}).get("url") or ""):
+    if _deck_was_sent(context):
         parts.append("a strategy deck")
     elif _reply_count(rows):
         parts.append("a reply")
@@ -724,6 +734,9 @@ def situation_summary(booking: Booking, context: dict) -> str:
     sentences = list(said)
     if sent:
         sentences.append(sent)
+    deck = context.get("deck") if isinstance(context.get("deck"), dict) else {}
+    if _https_url(deck.get("url") or "") and not _deck_was_sent(context) and len(sentences) < 3:
+        sentences.append("A strategy deck is available.")
     if len(sentences) < 3:
         for note in _clickup_notes(context):
             sentence = note if note[-1:] in ".!?" else note + "."

@@ -624,7 +624,7 @@ class PrepShapeTests(unittest.TestCase):
         )
         context = {
             "company": "Home - Babaco Alarm Systems",
-            "deck": {"url": deck_url, "run_id": "3870", "source": "abby_deck_sends"},
+            "deck": {"url": deck_url, "run_id": "3870", "source": "abby_deck_sends", "status": "sent"},
             "links": {
                 "website": {"verified": True, "url": "https://babaco.com/"},
                 "amazon": {"verified": False, "urls": [], "line": AMAZON_UNVERIFIED},
@@ -813,6 +813,28 @@ class PrepShapeTests(unittest.TestCase):
         self.assertIn("Call script:", updated["text"])
         self.assertIn("Deck: https://agent.anatainc.com/decks/example/9/token", updated["text"])
         self.assertIn("$12K/day to $33K/day", updated["text"])
+
+    def test_an_unsent_deck_is_not_described_as_sent(self) -> None:
+        from sales_support_agent.services.sales.call_script.prep import situation_summary
+
+        booking = Booking(
+            "deck-only", "Call", "GREG HABER", "greg@babaco.com",
+            "Exploring products", None, None, "", "stored",
+        )
+        text = situation_summary(booking, {
+            "deck": {
+                "url": "https://agent.anatainc.com/decks/example/9/token",
+                "source": "deck_generation",
+                "status": "success",
+            },
+            "abby_handled": {"rows": []},
+            "gmail": [],
+            "mailbox": [],
+            "clickup": {"comments": []},
+            "instantly": {"emails": []},
+        })
+        self.assertIn("A strategy deck is available.", text)
+        self.assertNotIn("We sent a strategy deck", text)
 
 
 class PrepRouteTests(unittest.TestCase):
