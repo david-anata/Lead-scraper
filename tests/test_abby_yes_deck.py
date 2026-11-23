@@ -724,3 +724,30 @@ def test_yes_sends_a_dtc_deck_the_public_page_would_serve():
             "SELECT status, deck_url FROM abby_deck_sends"
         )).one()
     assert status == "sent" and url == DECK
+
+
+def test_yes_holds_when_amazon_absence_is_not_confirmed():
+    engine = create_engine("sqlite://")
+    message = email()
+    client = FakeClient([message], {"t1": [message]})
+    posts = []
+
+    class Held:
+        view_url = DECK
+        content_gate_passed = False
+        content_gate_findings = ("unconfirmed Amazon absence",)
+
+    out = runner.handle_email(
+        engine, message, client=client, campaign_id="camp", now=NOW, think=abby.think,
+        post_slack=posts.append,
+        lead_info=lambda _e: {"first_name": "Ann", "company": "Xvive Audio", "domain": "xviveaudio.com"},
+        run_mode="live", build_deck=lambda **_kw: Held(),
+    )
+    assert client.replies == []
+    assert out["held"] == 1 and out["replied"] == 0
+    assert posts and "unconfirmed Amazon absence" in posts[0]
+    with engine.connect() as conn:
+        status, detail = conn.execute(text(
+            "SELECT status, detail FROM abby_deck_sends"
+        )).one()
+    assert status == "held" and "unconfirmed Amazon absence" in detail

@@ -90,6 +90,8 @@ class DeckGenerationResult:
     content_gate_passed: bool = True
     content_gate_findings: tuple[str, ...] = ()
     market_mode: str = "amazon"
+    amazon_presence: str = ""
+    amazon_listings: tuple[dict[str, Any], ...] = ()
 @dataclass(frozen=True)
 class TargetRowMatch:
     product: XrayProduct | None
@@ -203,6 +205,8 @@ def _build_target_snapshot_text(
     *,
     comparison_mode: str,
     hero_product: EnrichedHeroProduct,
+    amazon_status: str = "",
+    amazon_listings: list[dict[str, Any]] | tuple[dict[str, Any], ...] | None = None,
 ) -> str:
     if comparison_mode == "matched_market" and target_row:
         revenue_text = target_row.revenue_label if target_row.revenue_label and target_row.revenue_label != "n/a" else ""
@@ -228,11 +232,17 @@ def _build_target_snapshot_text(
             f"{_brand_product_reference(brand_name)} is live, but it was not matched to the current niche export.{metrics_clause} "
             "Use this deck to compare the PDP and offer against page-one leaders while the market benchmark is refined."
         )
-    return (
+    if amazon_status == "present" or comparison_mode == "existing_seller":
+        from sales_support_agent.services.deck.amazon_presence import listing_plan_text
+
+        return listing_plan_text(brand_name, amazon_listings or ())
+    site_line = (
         f"{_brand_product_reference(brand_name)} is described from its own site. "
-        "This deck does not show a category benchmark unless a competitor export supplies one. "
-        f"{brand_name} is not an Amazon seller."
+        "This deck does not show a category benchmark unless a competitor export supplies one."
     )
+    if amazon_status == "absent":
+        return f"{site_line} {brand_name} is not an Amazon seller."
+    return site_line
 def _build_market_summary(
     brand_name: str,
     xray_report: Helium10XrayReport,
@@ -259,23 +269,32 @@ def _build_executive_summary(
     *,
     launch_mode: bool = False,
     market_mode: str = "amazon",
+    amazon_status: str = "",
+    amazon_listings: list[dict[str, Any]] | tuple[dict[str, Any], ...] | None = None,
 ) -> str:
     keyword_text = ""
     if keyword_report and keyword_report.keywords:
         keyword_text = f" The leading search objective in the dataset is {keyword_report.keywords[0].phrase}."
+    if amazon_status == "present":
+        from sales_support_agent.services.deck.amazon_presence import listing_plan_text
+
+        return listing_plan_text(brand_name, amazon_listings or ()) + keyword_text
     if market_mode == "dtc":
+        absence = f" {brand_name} is not an Amazon seller." if amazon_status == "absent" else ""
         return (
             f"This is an Amazon launch plan for {brand_name}, built from the brand's own store. "
             "It uses the products and positioning on the site, a channel plan, and how Anata's software "
             "and Agency team would launch the brand and run ads. Case studies later in the deck use "
             "published results only. Competitor and market metrics are left out."
+            f"{absence}"
         )
     if launch_mode and not xray_report.market_evidence_sufficient:
+        absence = f" {brand_name} is not an Amazon seller." if amazon_status == "absent" else ""
         return (
             f"This analysis treats {brand_name} as a market-entry brand and outlines the "
             "first launch-page and measurement actions. Market-size and competitor-benchmark "
-            "claims are withheld until enough relevant products are verified. "
-            f"{brand_name} is not an Amazon seller."
+            "claims are withheld until enough relevant products are verified."
+            f"{absence}"
         )
     if not xray_report.market_evidence_sufficient:
         return (
@@ -284,10 +303,11 @@ def _build_executive_summary(
             "claims are withheld until enough relevant products are verified."
         )
     if launch_mode:
+        absence = f" {brand_name} is not an Amazon seller." if amazon_status == "absent" else ""
         return (
             f"This deck treats {brand_name} as a market-entry brand. It benchmarks the product concept "
-            f"against the live Amazon category and outlines the launch offer, page, and positioning. "
-            f"{brand_name} is not an Amazon seller."
+            f"against the live Amazon category and outlines the launch offer, page, and positioning."
+            f"{absence}"
             f"{keyword_text}"
         )
     return (
@@ -300,6 +320,7 @@ def _build_advertising_summary(
     *,
     launch_mode: bool = False,
     market_mode: str = "amazon",
+    amazon_status: str = "",
 ) -> str:
     top_keyword = keyword_report.keywords[0].phrase if keyword_report and keyword_report.keywords else "the primary search terms"
     if market_mode == "dtc":
@@ -310,10 +331,11 @@ def _build_advertising_summary(
         )
     if launch_mode:
         if not xray_report.market_evidence_sufficient:
+            absence = " There is no Amazon listing to clean up yet." if amazon_status == "absent" else ""
             return (
                 "Advertising should follow the launch page and measurement setup. "
-                "Validate category terms against qualified competitors or Helium 10 data before scaling spend. "
-                "There is no Amazon listing to clean up yet."
+                "Validate category terms against qualified competitors or Helium 10 data before scaling spend."
+                f"{absence}"
             )
         return (
             f"Advertising should follow the launch page. Once the product is in market, lean into {top_keyword} "
@@ -1356,6 +1378,8 @@ def _build_target_opportunities(
     dtc_price: bool = False,
     image_supported: bool = False,
     reviews_supported: bool = False,
+    amazon_status: str = "",
+    amazon_listings: list[dict[str, Any]] | tuple[dict[str, Any], ...] | None = None,
 ) -> tuple[list[str], list[str]]:
     strengths: list[str] = []
     gaps: list[str] = []
@@ -1377,16 +1401,28 @@ def _build_target_opportunities(
         strengths.append(f"The listing already carries a credible review signal at {target_row.rating_label}.")
     if search_insights.get("title_hits"):
         strengths.append("The title already captures some high-intent search terms: " + ", ".join(search_insights["title_hits"][:3]) + ".")
+    if amazon_status == "present" or comparison_mode == "existing_seller":
+        from sales_support_agent.services.deck.amazon_presence import listing_plan_text
+
+        strengths.insert(0, listing_plan_text(brand_name, amazon_listings or ()))
     if comparison_mode == "live_unmatched":
         gaps.append("The live Amazon target was not matched in the current niche export, so the benchmark column uses the top page-one competitor while direct target data fills identity, BSR, rating, and review signals where available.")
     elif comparison_mode == "concept_only":
-        if best_seller is not None:
+        if amazon_status == "absent" and best_seller is not None:
             gaps.append(
                 "The prospect is not currently visible in the Amazon market set, so the benchmark column uses the top page-one competitor. This brand does not sell on Amazon yet."
             )
-        else:
+        elif amazon_status == "absent":
             gaps.append(
                 "This brand does not sell on Amazon yet, and no competitor export was supplied, so there is no benchmark column."
+            )
+        elif best_seller is not None:
+            gaps.append(
+                "The benchmark column uses the top page-one competitor."
+            )
+        else:
+            gaps.append(
+                "No competitor export was supplied, so there is no benchmark column."
             )
     if not hero_product.description:
         if launch_mode:

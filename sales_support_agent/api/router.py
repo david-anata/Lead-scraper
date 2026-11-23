@@ -2906,6 +2906,8 @@ async def _run_generate_deck(
             "content_gate_passed": result.content_gate_passed,
             "content_gate_findings": list(result.content_gate_findings),
             "market_mode": result.market_mode,
+            "amazon_presence": result.amazon_presence,
+            "amazon_listings": [dict(item) for item in result.amazon_listings],
             "attachment_status": attachment_details.get("attachment_status", ""),
             "attached_deal_id": attachment_details.get("attached_deal_id", ""),
             "deal_match_audit": attachment_details.get("deal_match_audit", []),

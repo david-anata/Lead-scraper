@@ -188,8 +188,13 @@ def _support_tokens(html: str) -> set[str]:
     return {part.strip().lower() for part in raw.split() if part.strip()}
 
 
-def assess_deck_content(html: str) -> list[str]:
-    """Phrases that make a deck unfit to send, in a stable order."""
+def assess_deck_content(html: str, *, amazon_presence: str = "") -> list[str]:
+    """Phrases that make a deck unfit to send, in a stable order.
+
+    A claim that the brand is not on Amazon is allowed only after a
+    confirmed-negative Amazon check (``amazon_presence="absent"``). Any
+    other status, including a missing one, fails the gate.
+    """
 
     text = html or ""
     findings: list[str] = []
@@ -221,6 +226,10 @@ def assess_deck_content(html: str) -> list[str]:
         findings.append("unsupported review")
     if _PRICE_CLAIM_RE.search(text) and "price" not in support:
         findings.append("unsupported price")
+    from sales_support_agent.services.deck.amazon_presence import asserts_amazon_absence
+
+    if asserts_amazon_absence(text) and str(amazon_presence or "") != "absent":
+        findings.append("unconfirmed Amazon absence")
     return findings
 
 
