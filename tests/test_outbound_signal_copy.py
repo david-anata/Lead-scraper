@@ -251,11 +251,11 @@ def test_step_one_deck_variant_is_the_live_edit_and_has_no_opener():
         assert signal.word_count(variant.text, opener_words=24) < 80
 
 
-def test_idea_variant_stays_paused_on_amz_off_and_plan_upgrade():
+def test_idea_variant_stays_paused_on_every_signal_campaign():
     for key, _campaign_id in signal.CAMPAIGNS:
         variants = signal.steps_for(key)[0]["variants"]
         assert variants[1]["subject"] == "idea for {{companyName | your brand}}"
-        assert variants[1]["v_disabled"] is (key in {"amz_off", "plan_upgrade"})
+        assert variants[1]["v_disabled"] is True
         assert variants[0]["v_disabled"] is False
         assert variants[2]["v_disabled"] is False
         assert all(
@@ -263,11 +263,11 @@ def test_idea_variant_stays_paused_on_amz_off_and_plan_upgrade():
             for step in signal.steps_for(key)[1:]
             for variant in step["variants"]
         )
-        assert signal.plain_emails(key)[0][1].paused is (key in {"amz_off", "plan_upgrade"})
-        assert signal.plain_emails("amz_on")[0][0].paused is False
-    turned_on = signal.steps_for("amz_off")
+        assert signal.plain_emails(key)[0][1].paused is True
+        assert signal.plain_emails(key)[0][0].paused is False
+    turned_on = signal.steps_for("amz_on")
     turned_on[0]["variants"][1] = dict(turned_on[0]["variants"][1], v_disabled=False)
-    assert any("paused" in item for item in signal.validate_steps(turned_on, campaign="amz_off"))
+    assert any("paused" in item for item in signal.validate_steps(turned_on, campaign="amz_on"))
 
 
 def test_apply_pushes_v_disabled_for_a_paused_variant():
@@ -286,6 +286,149 @@ def test_apply_pushes_v_disabled_for_a_paused_variant():
     second = yes.apply_yes_cta(again, campaigns=(("amz_off v2", amz_off),))
     assert again.patched == []
     assert second["campaigns"][0]["changed"] == 0
+
+
+def _live_without_the_deck(key):
+    """The four signal campaigns as they are live: two step 1 openers, idea-for paused."""
+
+    steps = signal.steps_for(key)
+    deck = steps[0]["variants"][2]
+    assert "Amazon" in deck["subject"]
+    steps[0]["variants"] = [dict(item) for item in steps[0]["variants"][:2]]
+    assert steps[0]["variants"][1]["v_disabled"] is True
+    return steps
+
+
+def test_reapply_is_a_noop_when_idea_for_is_paused_and_the_deck_variant_is_gone():
+    """Dry run against the live shape. The unpreserved model would add the deck variant."""
+
+    names = {
+        "8e0df427-1f18-43ac-b0c6-e8ea787123d7": "amz_on",
+        "138a162d-6654-4916-9959-20c11e31214b": "amz_off v2",
+        "4dc10f79-f7c9-43c5-9c3e-5e28e9cf4c72": "plan_upgrade",
+        "d1c197e3-bf1f-4f41-bcb9-e30e73975a2c": "replatform v2",
+    }
+    keys = {campaign_id: key for key, campaign_id in signal.CAMPAIGNS}
+    for campaign_id, name in names.items():
+        key = keys[campaign_id]
+        live = _live_without_the_deck(key)
+        raw = signal.steps_for(key)
+        assert len(raw[0]["variants"]) == 3
+        assert yes._normalized_steps(raw) != yes._normalized_steps(live)
+        client = _Instantly(live)
+        report = yes.apply_yes_cta(client, campaigns=((name, campaign_id),))
+        assert client.patched == [], name
+        assert report["campaigns"][0]["patched"] is False
+        assert report["campaigns"][0]["changed"] == 0
+        blob = str(live).lower()
+        assert "zantrex" not in blob and "redo" not in blob
+
+
+def test_a_live_pause_is_not_cleared_when_the_model_says_the_variant_is_on(monkeypatch):
+    amz_on = "8e0df427-1f18-43ac-b0c6-e8ea787123d7"
+    model = signal.steps_for("amz_on")
+    model[0]["variants"][1] = dict(model[0]["variants"][1], v_disabled=False)
+    live = _live_without_the_deck("amz_on")
+    live[2]["variants"][0] = dict(live[2]["variants"][0], v_disabled=True)
+
+    def fake(campaign_id):
+        if campaign_id == amz_on:
+            return model
+        return None
+
+    monkeypatch.setattr(signal, "steps_for_campaign_id", fake)
+    client = _Instantly(live)
+    report = yes.apply_yes_cta(client, campaigns=(("amz_on", amz_on),))
+    assert client.patched == []
+    assert report["campaigns"][0]["changed"] == 0
+    projected = yes.preserve_live_variant_state(model, live)
+    assert len(projected[0]["variants"]) == 2
+    assert projected[0]["variants"][1]["v_disabled"] is True
+    assert projected[0]["variants"][1]["subject"] == "idea for {{companyName | your brand}}"
+    assert projected[2]["variants"][0]["v_disabled"] is True
+
+
+def test_a_body_update_keeps_the_live_variant_set_and_the_idea_pause():
+    amz_on = "8e0df427-1f18-43ac-b0c6-e8ea787123d7"
+    live = _live_without_the_deck("amz_on")
+    live[0]["variants"][0] = dict(live[0]["variants"][0], body="<div>old opener</div>")
+    client = _Instantly(live)
+    report = yes.apply_yes_cta(client, campaigns=(("amz_on", amz_on),))
+    assert report["campaigns"][0]["patched"] is True
+    steps = client.patched[0][1]["sequences"][0]["steps"]
+    assert len(steps[0]["variants"]) == 2
+    assert steps[0]["variants"][1]["v_disabled"] is True
+    assert "idea for" in steps[0]["variants"][1]["subject"]
+    assert "old opener" not in steps[0]["variants"][0]["body"]
+    assert signal.ASK in steps[0]["variants"][0]["body"]
+    assert all("zantrex" not in variant["body"].lower() for step in steps for variant in step["variants"])
+    assert len(steps[1]["variants"]) == 1
+
+
+def test_a_removed_variant_stays_removed_unless_restore_is_flagged(monkeypatch):
+    amz_on = "8e0df427-1f18-43ac-b0c6-e8ea787123d7"
+    live = signal.steps_for("amz_on")
+    assert len(live[1]["variants"]) == 1
+    assert "zantrex" not in live[1]["variants"][0]["body"].lower()
+    removed = dict(live[1]["variants"][0])
+    removed["body"] = removed["body"].replace("Shadyvue", "Second proof")
+    model = signal.steps_for("amz_on")
+    model[1]["variants"] = [model[1]["variants"][0], removed]
+
+    def fake(campaign_id):
+        return model if campaign_id == amz_on else None
+
+    monkeypatch.setattr(signal, "steps_for_campaign_id", fake)
+    client = _Instantly(live)
+    report = yes.apply_yes_cta(client, campaigns=(("amz_on", amz_on),))
+    assert client.patched == []
+    assert report["campaigns"][0]["changed"] == 0
+    assert "Second proof" not in str(live)
+
+    flagged = signal.steps_for("amz_on")
+    flagged[1]["variants"] = [
+        flagged[1]["variants"][0],
+        dict(removed, restore_if_removed=True),
+    ]
+    monkeypatch.setattr(signal, "steps_for_campaign_id", lambda campaign_id: flagged if campaign_id == amz_on else None)
+    again = _Instantly(live)
+    forced = yes.apply_yes_cta(again, campaigns=(("amz_on", amz_on),))
+    assert forced["campaigns"][0]["patched"] is True
+    added = again.patched[0][1]["sequences"][0]["steps"][1]["variants"]
+    assert len(added) == 2
+    assert "Second proof" in added[1]["body"]
+    assert "restore_if_removed" not in added[1]
+    assert "zantrex" not in added[1]["body"].lower()
+
+
+def test_deleting_the_first_followup_keeps_the_surviving_copy():
+    plan = "4dc10f79-f7c9-43c5-9c3e-5e28e9cf4c72"
+    live = signal.steps_for("plan_upgrade")
+    proof = live[1]["variants"]
+    assert "SeroVital" in proof[0]["body"]
+    assert "Sonrei" in proof[1]["body"]
+    live[1]["variants"] = [dict(proof[1], v_disabled=True)]
+    projected = yes.preserve_live_variant_state(signal.steps_for("plan_upgrade"), live)
+    assert len(projected[1]["variants"]) == 1
+    assert "Sonrei" in projected[1]["variants"][0]["body"]
+    assert "SeroVital" not in projected[1]["variants"][0]["body"]
+    assert projected[1]["variants"][0]["v_disabled"] is True
+    client = _Instantly(live)
+    report = yes.apply_yes_cta(client, campaigns=(("plan_upgrade", plan),))
+    assert client.patched == []
+    assert report["campaigns"][0]["changed"] == 0
+
+    model = signal.steps_for("plan_upgrade")
+    model[1]["variants"][1] = dict(
+        model[1]["variants"][1],
+        body=model[1]["variants"][1]["body"].replace("137%", "140%"),
+    )
+    shifted = yes.preserve_live_variant_state(model, live)
+    assert len(shifted[1]["variants"]) == 1
+    assert "Sonrei" in shifted[1]["variants"][0]["body"]
+    assert "140%" in shifted[1]["variants"][0]["body"]
+    assert "SeroVital" not in shifted[1]["variants"][0]["body"]
+    assert shifted[1]["variants"][0]["v_disabled"] is True
 
 
 def test_amz_on_proof_followup_is_shadyvue_only():

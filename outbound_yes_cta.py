@@ -219,6 +219,219 @@ def _variant_disabled(variant: dict[str, Any]) -> bool:
     return variant.get("v_disabled") is True
 
 
+def _subject_key(value: str) -> str:
+    """Subject identity with the company token and extra space removed."""
+
+    text = unescape(str(value or ""))
+    text = _TAG_RE.sub(" ", text)
+    text = re.sub(r"\{\{.*?\}\}", " ", text)
+    return re.sub(r"\s+", " ", text).strip().lower()
+
+
+def _step_variants(step: Any) -> tuple[bool, list[dict[str, Any]]]:
+    """Whether this step names its variants, and the dict variants it has."""
+
+    if not isinstance(step, dict) or not isinstance(step.get("variants"), list):
+        return False, []
+    return True, [item for item in step["variants"] if isinstance(item, dict)]
+
+
+def _subject_overlap(model_vars: list[dict[str, Any]], live_vars: list[dict[str, Any]]) -> bool:
+    model_keys = {_subject_key(item.get("subject")) for item in model_vars}
+    live_keys = {_subject_key(item.get("subject")) for item in live_vars}
+    model_keys.discard("")
+    live_keys.discard("")
+    return bool(model_keys & live_keys)
+
+
+def _outgoing_variant(variant: dict[str, Any], *, disabled: bool) -> dict[str, Any]:
+    """The fields Instantly should store. The restore flag stays in the repo."""
+
+    return {
+        "subject": str(variant.get("subject") or ""),
+        "body": str(variant.get("body") or ""),
+        "v_disabled": bool(disabled),
+    }
+
+
+def _strip_model_step(step: dict[str, Any]) -> dict[str, Any]:
+    copy = dict(step)
+    _present, variants = _step_variants(step)
+    copy["variants"] = [_outgoing_variant(item, disabled=_variant_disabled(item)) for item in variants]
+    return copy
+
+
+def _align_by_subject(model_vars: list[dict[str, Any]], live_vars: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Live order. A model variant with no live subject is not put back."""
+
+    unused = list(model_vars)
+    chosen: list[dict[str, Any]] = []
+    for live in live_vars:
+        key = _subject_key(live.get("subject"))
+        match = None
+        if key:
+            for index, model in enumerate(unused):
+                if _subject_key(model.get("subject")) == key:
+                    match = unused.pop(index)
+                    break
+        if match is None:
+            chosen.append(_outgoing_variant(live, disabled=_variant_disabled(live)))
+            continue
+        chosen.append(_outgoing_variant(match, disabled=_variant_disabled(live) or _variant_disabled(match)))
+    for model in unused:
+        if model.get("restore_if_removed") is True:
+            chosen.append(_outgoing_variant(model, disabled=_variant_disabled(model)))
+    return chosen
+
+
+# Words every follow-up shares. They are not enough to tell two variants apart.
+_BODY_BOILERPLATE = frozenset({
+    "hi", "i", "a", "an", "the", "and", "or", "to", "of", "for", "in", "on",
+    "with", "your", "you", "it", "is", "we", "can", "if", "not", "me", "my",
+    "from", "that", "this", "be", "at", "by", "as", "do", "our", "us", "put",
+    "short", "plan", "together", "send", "amazon", "growth", "brand", "just",
+    "let", "know", "follow", "up", "abby", "account", "specialist", "anata",
+    "inc", "state", "st", "lehi", "ut",
+})
+
+
+def _body_tokens(value: str) -> tuple[str, ...]:
+    """Words that can identify a variant after tags and tokens are removed."""
+
+    text = unescape(str(value or ""))
+    text = _TAG_RE.sub(" ", text)
+    text = re.sub(r"\{%.*?%\}", " ", text, flags=re.S)
+    text = re.sub(r"\{\{.*?\}\}", " ", text, flags=re.S)
+    text = re.sub(r"[^a-z0-9]+", " ", text.lower())
+    return tuple(tok for tok in text.split() if tok and tok not in _BODY_BOILERPLATE)
+
+
+def _match_followups(
+    model_vars: list[dict[str, Any]], live_vars: list[dict[str, Any]],
+) -> list[Optional[int]]:
+    """Pair each live follow-up with a model variant.
+
+    An unchanged body wins. A shifted survivor still matches on the words
+    that are unique to that variant, such as Sonrei after SeroVital was
+    deleted. Position is only the leftover.
+    """
+
+    model_tokens = [_body_tokens(item.get("body")) for item in model_vars]
+    if len(model_tokens) > 1:
+        common = set.intersection(*(set(tokens) for tokens in model_tokens))
+    else:
+        common = set()
+    distinctive = [set(tokens) - common for tokens in model_tokens]
+    assignment: list[Optional[int]] = [None] * len(live_vars)
+    unused = list(range(len(model_vars)))
+
+    def take(live_index: int, model_index: int) -> None:
+        assignment[live_index] = model_index
+        unused.remove(model_index)
+
+    for live_index, live in enumerate(live_vars):
+        live_key = " ".join(_body_tokens(live.get("body")))
+        if not live_key:
+            continue
+        for model_index in list(unused):
+            if live_key == " ".join(model_tokens[model_index]):
+                take(live_index, model_index)
+                break
+
+    for live_index, live in enumerate(live_vars):
+        if assignment[live_index] is not None or not unused:
+            continue
+        live_fp = set(_body_tokens(live.get("body"))) - common
+        scored = [(len(live_fp & distinctive[model_index]), model_index) for model_index in unused]
+        scored = [item for item in scored if item[0] >= 2]
+        scored.sort(reverse=True)
+        if scored and (len(scored) == 1 or scored[0][0] > scored[1][0]):
+            take(live_index, scored[0][1])
+
+    for live_index in range(len(live_vars)):
+        if assignment[live_index] is None and unused:
+            take(live_index, unused[0])
+    return assignment
+
+
+def _align_by_index(model_vars: list[dict[str, Any]], live_vars: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Follow-ups have an empty subject. Match the body, then the position."""
+
+    chosen: list[dict[str, Any]] = []
+    used: set[int] = set()
+    for live_index, model_index in enumerate(_match_followups(model_vars, live_vars)):
+        live = live_vars[live_index]
+        if model_index is None:
+            chosen.append(_outgoing_variant(live, disabled=_variant_disabled(live)))
+            continue
+        used.add(model_index)
+        model = model_vars[model_index]
+        chosen.append(_outgoing_variant(
+            model, disabled=_variant_disabled(live) or _variant_disabled(model),
+        ))
+    for model_index, model in enumerate(model_vars):
+        if model_index not in used and model.get("restore_if_removed") is True:
+            chosen.append(_outgoing_variant(model, disabled=_variant_disabled(model)))
+    return chosen
+
+
+def _align_variants(model_vars: list[dict[str, Any]], live_vars: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    if _subject_overlap(model_vars, live_vars):
+        return _align_by_subject(model_vars, live_vars)
+    return _align_by_index(model_vars, live_vars)
+
+
+def preserve_live_variant_state(
+    model_steps: list[dict[str, Any]], live_steps: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Keep the live variant list, and never re-enable a paused variant.
+
+    A campaign whose step 1 subjects do not match this copy is a first
+    install, so the full model is sent. Once the subjects match, a variant
+    that is not in Instantly stays out unless ``restore_if_removed`` is set,
+    and ``v_disabled: true`` on the live variant stays true. A follow-up
+    with an empty subject is matched on its body before its position, so
+    deleting the first variant does not overwrite the one that remains.
+    """
+
+    model = [step for step in (model_steps or []) if isinstance(step, dict)]
+    live = [step for step in (live_steps or []) if isinstance(step, dict)]
+    model_openers = _step_variants(model[0])[1] if model else []
+    live_openers = _step_variants(live[0])[1] if live else []
+    known = bool(model and live and _subject_overlap(model_openers, live_openers))
+    if not known:
+        return [_strip_model_step(step) for step in model]
+
+    aligned: list[dict[str, Any]] = []
+    for index, model_step in enumerate(model):
+        if index >= len(live):
+            break
+        present, live_vars = _step_variants(live[index])
+        _model_present, model_vars = _step_variants(model_step)
+        copy = dict(model_step)
+        if not present:
+            copy["variants"] = [_outgoing_variant(item, disabled=_variant_disabled(item)) for item in model_vars]
+        elif not live_vars:
+            copy["variants"] = [
+                _outgoing_variant(item, disabled=_variant_disabled(item))
+                for item in model_vars if item.get("restore_if_removed") is True
+            ]
+        else:
+            copy["variants"] = _align_variants(model_vars, live_vars)
+        aligned.append(copy)
+    for extra in live[len(model):]:
+        present, variants = _step_variants(extra)
+        if not present:
+            continue
+        aligned.append({
+            "type": str(extra.get("type") or "email"),
+            "delay": int(extra.get("delay") or 0),
+            "delay_unit": str(extra.get("delay_unit") or "days"),
+            "variants": [_outgoing_variant(item, disabled=_variant_disabled(item)) for item in variants],
+        })
+    return aligned
+
+
 def _normalized_steps(steps: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """The fields this apply owns: type, delay, unit, subject, body, and v_disabled."""
 
@@ -307,9 +520,11 @@ def apply_yes_cta(client: Any, *, campaigns: Optional[tuple[tuple[str, str], ...
     """Replace signal-campaign steps, add the reengage footer, leave Trial Offer alone, and pause the calendar subsequence.
 
     ``client`` needs ``get_campaign``, ``patch_campaign``, ``get_subsequence``,
-    and ``pause_subsequence``. A signal campaign whose steps already match the
-    repo copy is not patched. The subsequence is paused even when its copy is
-    left in place, so it cannot send a calendar email after a yes.
+    and ``pause_subsequence``. A signal campaign is not patched when the live
+    variants already match the repo copy. A paused live variant stays paused,
+    and a variant removed in Instantly is not added back. The subsequence is
+    paused even when its copy is left in place, so it cannot send a calendar
+    email after a yes.
     """
 
     from outbound_cold_sequence import steps_with_footer
@@ -337,9 +552,13 @@ def apply_yes_cta(client: Any, *, campaigns: Optional[tuple[tuple[str, str], ...
             report["errors"].append({"campaign": name, "error": f"read {status}"})
             continue
         steps = ((payload.get("sequences") or [{}])[0].get("steps") or []) if payload.get("sequences") else []
-        replacement = steps_for_campaign_id(campaign_id)
-        if replacement is None and campaign_id == REENGAGE_CAMPAIGN_ID:
+        signal_steps = steps_for_campaign_id(campaign_id)
+        if signal_steps is not None:
+            replacement = preserve_live_variant_state(signal_steps, steps)
+        elif campaign_id == REENGAGE_CAMPAIGN_ID:
             replacement = steps_with_footer(steps)
+        else:
+            replacement = None
         if replacement is not None:
             same = _normalized_steps(steps) == _normalized_steps(replacement)
             changes = [] if same else _body_changes(steps, replacement)
