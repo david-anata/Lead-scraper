@@ -123,6 +123,71 @@ def scrub_dash_copy(text: str) -> str:
     return "".join(scrubbed)
 
 
+_COVERAGE_ZERO_RE = re.compile(r"\b0\s+covered\b|\b0\s+missing\b", re.IGNORECASE)
+_EMPTY_METRIC_VALUE_RE = re.compile(
+    r"class=['\"]val['\"]>\s*(?:\$?0(?:\.0+)?|n/?a|unavailable|unknown|not supplied)?\s*</",
+    re.IGNORECASE,
+)
+_APPAREL_ADVICE_RE = re.compile(r"materials,\s*size and fit", re.IGNORECASE)
+_INGREDIENT_ADVICE_RE = re.compile(
+    r"ingredient context|clinical or generic packaging",
+    re.IGNORECASE,
+)
+_IMAGE_CLAIM_RE = re.compile(r"usable primary image", re.IGNORECASE)
+_REVIEW_CLAIM_RE = re.compile(
+    r"review signal|review base|review moat|lighter review",
+    re.IGNORECASE,
+)
+_PRICE_CLAIM_RE = re.compile(
+    r"Price on the site|The DTC price|The current price point",
+    re.IGNORECASE,
+)
+_META_CONTENT_RE = re.compile(
+    r'<meta\s+name="(?P<name>anata-scraped-support|anata-store-category)"\s+content="(?P<value>[^"]*)"',
+    re.IGNORECASE,
+)
+_EMPTY_METRIC_TOKENS = {
+    "",
+    "0",
+    "0.0",
+    "0.00",
+    "$0",
+    "$0.0",
+    "$0.00",
+    "n/a",
+    "na",
+    "unavailable",
+    "unknown",
+    "not supplied",
+    "none",
+}
+
+
+def metric_value_is_empty(value: str) -> bool:
+    """True when a displayed metric is zero, blank, or a placeholder."""
+
+    token = re.sub(r"\s+", " ", str(value or "")).strip().lower()
+    if token in _EMPTY_METRIC_TOKENS:
+        return True
+    if re.fullmatch(r"\$?0(?:\.0+)?", token):
+        return True
+    if re.fullmatch(r"0\s*/\s*0", token):
+        return True
+    return False
+
+
+def _meta_values(html: str) -> dict[str, str]:
+    found: dict[str, str] = {}
+    for match in _META_CONTENT_RE.finditer(html or ""):
+        found[match.group("name").lower()] = match.group("value").strip()
+    return found
+
+
+def _support_tokens(html: str) -> set[str]:
+    raw = _meta_values(html).get("anata-scraped-support", "")
+    return {part.strip().lower() for part in raw.split() if part.strip()}
+
+
 def assess_deck_content(html: str) -> list[str]:
     """Phrases that make a deck unfit to send, in a stable order."""
 
@@ -138,6 +203,63 @@ def assess_deck_content(html: str) -> list[str]:
         findings.append("Top 0")
     if _ZERO_DOLLAR_RE.search(text):
         findings.append("$0")
-    if _ZERO_METRIC_RE.search(text):
+    if _ZERO_METRIC_RE.search(text) or _EMPTY_METRIC_VALUE_RE.search(text):
         findings.append("zero metric")
+    if _COVERAGE_ZERO_RE.search(text):
+        findings.append("coverage zero")
+    from sales_support_agent.services.deck.dataset import category_family
+
+    family = category_family(_meta_values(text).get("anata-store-category", ""))
+    if _APPAREL_ADVICE_RE.search(text) and family != "apparel":
+        findings.append("category mismatch")
+    if _INGREDIENT_ADVICE_RE.search(text) and family != "ingredient":
+        findings.append("category mismatch")
+    support = _support_tokens(text)
+    if _IMAGE_CLAIM_RE.search(text) and "image" not in support:
+        findings.append("unsupported image")
+    if _REVIEW_CLAIM_RE.search(text) and "reviews" not in support:
+        findings.append("unsupported review")
+    if _PRICE_CLAIM_RE.search(text) and "price" not in support:
+        findings.append("unsupported price")
     return findings
+
+
+def public_deck_block_reason(summary: Any) -> str:
+    """Why the public deck page would not return 200.
+
+    An empty string means the page would return 200. DTC mode, a deck with
+    no Amazon market export, is sendable when the content gate passes.
+    Amazon mode stays under review when that export was expected and is
+    missing. Either mode stays under review when the content gate fails.
+    """
+
+    data = dict(summary or {})
+    findings = [
+        str(item).strip()
+        for item in (data.get("content_gate_findings") or ())
+        if str(item).strip()
+    ]
+    passed = bool(data.get("content_gate_passed", True)) and not findings
+    if not passed:
+        detail = ", ".join(findings)
+        if detail:
+            return f"Content gate failed: {detail}."
+        return "Content gate failed."
+    mode = str(data.get("market_mode") or "").strip().lower()
+    if mode == "dtc":
+        return ""
+    sufficient = bool(data.get("market_evidence_sufficient", True))
+    status = str(data.get("evidence_status") or "ready").strip().lower()
+    if sufficient and status not in {"missing", "blocked"}:
+        return ""
+    reason = str(data.get("market_evidence_reason") or "").strip()
+    return reason or "The market comparison needs an internal review."
+
+
+def public_deck_visitor_message(reason: str) -> str:
+    """The sentence an external visitor sees on the under-review page."""
+
+    text = str(reason or "").strip()
+    if text.lower().startswith("content gate"):
+        return "The deck still needs an internal review before it can be shared."
+    return text or "The market comparison needs an internal review."

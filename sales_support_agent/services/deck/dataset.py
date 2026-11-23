@@ -89,6 +89,7 @@ class DeckGenerationResult:
     market_evidence_reason: str = ""
     content_gate_passed: bool = True
     content_gate_findings: tuple[str, ...] = ()
+    market_mode: str = "amazon"
 @dataclass(frozen=True)
 class TargetRowMatch:
     product: XrayProduct | None
@@ -257,10 +258,18 @@ def _build_executive_summary(
     keyword_report: Helium10KeywordReport | None,
     *,
     launch_mode: bool = False,
+    market_mode: str = "amazon",
 ) -> str:
     keyword_text = ""
     if keyword_report and keyword_report.keywords:
         keyword_text = f" The leading search objective in the dataset is {keyword_report.keywords[0].phrase}."
+    if market_mode == "dtc":
+        return (
+            f"This is an Amazon launch plan for {brand_name}, built from the brand's own store. "
+            "It uses the products and positioning on the site, a channel plan, and how Anata's software "
+            "and Agency team would launch the brand and run ads. Case studies later in the deck use "
+            "published results only. Competitor and market metrics are left out."
+        )
     if launch_mode and not xray_report.market_evidence_sufficient:
         return (
             f"This analysis treats {brand_name} as a market-entry brand and outlines the "
@@ -290,8 +299,15 @@ def _build_advertising_summary(
     keyword_report: Helium10KeywordReport | None,
     *,
     launch_mode: bool = False,
+    market_mode: str = "amazon",
 ) -> str:
     top_keyword = keyword_report.keywords[0].phrase if keyword_report and keyword_report.keywords else "the primary search terms"
+    if market_mode == "dtc":
+        return (
+            "The Agency team would launch and run sponsored ads after the Amazon listing is live. "
+            "Anata's software would watch search terms, spend, and conversion once the account is connected. "
+            "This plan does not name a budget or a competitor."
+        )
     if launch_mode:
         if not xray_report.market_evidence_sufficient:
             return (
@@ -326,7 +342,46 @@ def _build_plan_summary(offer_cards: list[dict[str, str]], channels: list[str], 
     if "tiktok_shop" in channels:
         services.append("package the TikTok Shop offer and creative")
     return "Phase 1: " + "; ".join(services[:3]) + ". Phase 2: launch the first measurement sprint and tune against live market response."
-def _build_expected_impact_summary(xray_report: Helium10XrayReport) -> str:
+def render_dtc_channel_plan(brand_name: str, description: str = "") -> str:
+    """Amazon entry plan for a store with no market export. No invented metrics."""
+
+    brand = str(brand_name or "").strip() or "this brand"
+    story = " ".join(str(description or "").split())
+    if story:
+        positioning = story[:700]
+    else:
+        positioning = "The store page did not expose a product description, so this plan does not guess one."
+    return (
+        '<section class="slide" data-screen-label="04 Channel plan">'
+        '<header class="slide-head"><div class="heading-stack">'
+        '<p class="eyebrow">Channel plan</p>'
+        f'<h2 class="slide-title">How Anata would launch {html.escape(brand)} on Amazon</h2>'
+        "</div>"
+        "<p class=\"caption\">Built from the brand's own store. Competitor and market metrics are left out.</p>"
+        "</header>"
+        "<ul class=\"cklist\">"
+        f"<li><strong>Products and positioning.</strong> {html.escape(positioning)}</li>"
+        "<li><strong>Listing.</strong> The launch title and bullets use words already on the store page.</li>"
+        "<li><strong>Ads.</strong> The Agency team launches and runs sponsored ads after the listing is live. "
+        "Anata's software watches search terms, spend, and conversion once Amazon is connected.</li>"
+        "<li><strong>Channels.</strong> Amazon is the entry point. Shopify, TikTok Shop, and fulfillment "
+        "stay on the same plan when the brand wants them.</li>"
+        "</ul>"
+        "<p>Case studies later in this deck use published results only. No new figures are estimated here.</p>"
+        "</section>"
+    )
+
+
+def _build_expected_impact_summary(
+    xray_report: Helium10XrayReport,
+    *,
+    market_mode: str = "amazon",
+) -> str:
+    if market_mode == "dtc":
+        return (
+            "The first work is the Amazon listing, the image stack, and the measurement setup. "
+            "No growth figure is shown, because no market export was supplied."
+        )
     if not xray_report.market_evidence_sufficient:
         return "The first priority is validating the comparison set and baseline before forecasting growth."
     return (
@@ -473,19 +528,20 @@ def _build_keyword_rows(
                 ]
             )
         return rows
+    if not keyword_report or not keyword_report.keywords:
+        return []
     rows = [["Keyword", "Search volume", "Sales", "Competing products", "Title density"]]
-    if keyword_report:
-        for keyword in keyword_report.keywords[:10]:
-            rows.append(
-                [
-                    keyword.phrase,
-                    keyword.search_volume_label,
-                    keyword.keyword_sales_label,
-                    str(keyword.competing_products or ""),
-                    str(keyword.title_density or ""),
-                ]
-            )
-    return rows
+    for keyword in keyword_report.keywords[:10]:
+        rows.append(
+            [
+                keyword.phrase,
+                keyword.search_volume_label,
+                keyword.keyword_sales_label,
+                str(keyword.competing_products or ""),
+                str(keyword.title_density or ""),
+            ]
+        )
+    return rows if len(rows) > 1 else []
 
 
 def _build_observed_marketplace_keyword_rows(products: list[XrayProduct]) -> list[list[str]]:
@@ -601,6 +657,12 @@ _INGREDIENT_CATEGORY_TOKENS = frozenset(
 )
 
 
+_APPAREL_CATEGORY_RE = re.compile(
+    r"\b(?:socks?|apparel|clothing|shirts?|pants|dresses|jackets?|sweaters?|hoodies?|beanies?|gloves?|underwear|leggings|jeans|scarves|scarfs|activewear|knitwear|footwear|shoes|sneakers|boots)\b",
+    re.IGNORECASE,
+)
+
+
 def is_ingredient_category(*texts: str) -> bool:
     """True when the listing sells something whose ingredients drive the buy
     (supplements, food and drink, skin and hair care). Used to keep
@@ -613,19 +675,35 @@ def is_ingredient_category(*texts: str) -> bool:
     return bool(tokens & _INGREDIENT_CATEGORY_TOKENS)
 
 
+def category_family(*texts: str) -> str:
+    """Apparel, ingredient, or general. General advice stays category-neutral."""
+
+    blob = " ".join(str(text or "") for text in texts)
+    if is_ingredient_category(blob):
+        return "ingredient"
+    if _APPAREL_CATEGORY_RE.search(blob):
+        return "apparel"
+    return "general"
+
+
 def _build_cro_recommendations(
     target_row: XrayProduct | None,
     competitors: list[XrayProduct],
     *,
     category_text: str = "",
 ) -> list[str]:
-    ingredient_led = is_ingredient_category(category_text, target_row.title if target_row else "")
-    detail_step = "ingredient context" if ingredient_led else "product details (materials, size and fit)"
+    family = category_family(category_text, target_row.title if target_row else "")
+    if family == "ingredient":
+        detail_step = "ingredient context"
+    elif family == "apparel":
+        detail_step = "product details (materials, size and fit)"
+    else:
+        detail_step = "what the product is and how it is used"
     recommendations = [
         "Simplify the above-the-fold value proposition so the primary outcome is readable in under five seconds.",
         f"Tighten the PDP information hierarchy: hero image, proof, {detail_step}, usage, and trust markers should read in that order.",
     ]
-    if target_row and (target_row.review_count or 0) < 75:
+    if target_row is not None and target_row.review_count is not None and target_row.review_count < 75:
         recommendations.append("Compensate for the lighter review base with stronger proof blocks, FAQ coverage, and comparison framing.")
     if competitors:
         recommendations.append(f"{_trim_text(competitors[0].title, 30)} does a better job of showing proof and hierarchy early; replicate that clarity in the first image stack.")
@@ -636,8 +714,13 @@ def _build_creative_recommendations(
     *,
     category_text: str = "",
 ) -> list[str]:
-    ingredient_led = is_ingredient_category(category_text, target_row.title if target_row else "")
-    shots = "clinical or generic packaging shots" if ingredient_led else "plain product-on-white shots"
+    family = category_family(category_text, target_row.title if target_row else "")
+    if family == "ingredient":
+        shots = "clinical or generic packaging shots"
+    elif family == "apparel":
+        shots = "plain product-on-white shots"
+    else:
+        shots = "a single product shot with no use context"
     recommendations = [
         "Rebuild the hero image sequence so each panel communicates one claim, one proof point, or one use case.",
         f"Add visual comparison and product-context frames instead of relying only on {shots}.",
@@ -1271,11 +1354,13 @@ def _build_target_opportunities(
     best_seller: XrayProduct | None,
     price_label: str = "",
     dtc_price: bool = False,
+    image_supported: bool = False,
+    reviews_supported: bool = False,
 ) -> tuple[list[str], list[str]]:
     strengths: list[str] = []
     gaps: list[str] = []
     launch_mode = comparison_mode == "concept_only"
-    if hero_product.image_url:
+    if image_supported and hero_product.image_url:
         if launch_mode:
             strengths.append("The product already has a usable primary image, so launch creative can focus on sequencing and proof.")
         else:
@@ -1288,7 +1373,7 @@ def _build_target_opportunities(
     )
     if price_summary:
         strengths.append(price_summary)
-    if target_row and (target_row.rating or 0) >= 4.2:
+    if reviews_supported and target_row and (target_row.rating or 0) >= 4.2:
         strengths.append(f"The listing already carries a credible review signal at {target_row.rating_label}.")
     if search_insights.get("title_hits"):
         strengths.append("The title already captures some high-intent search terms: " + ", ".join(search_insights["title_hits"][:3]) + ".")
@@ -1312,10 +1397,15 @@ def _build_target_opportunities(
         gaps.append("Important title keywords are still missing: " + ", ".join(search_insights["title_misses"][:3]) + ".")
     if search_insights.get("copy_misses"):
         gaps.append("The bullets / description are not covering: " + ", ".join(search_insights["copy_misses"][:3]) + ".")
-    if target_row and (target_row.review_count or 0) < 75:
+    if reviews_supported and target_row is not None and target_row.review_count is not None and target_row.review_count < 75:
         gaps.append("The review moat is still light, so the PDP needs stronger proof blocks and comparison framing.")
     if not strengths:
-        strengths.append(f"{_brand_product_reference(brand_name)} already gives us a clear product to benchmark against the current niche leaders.")
+        if launch_mode and best_seller is None:
+            strengths.append(
+                f"{_brand_product_reference(brand_name)} is described on its own store, so the Amazon launch plan starts from that positioning."
+            )
+        else:
+            strengths.append(f"{_brand_product_reference(brand_name)} already gives us a clear product to benchmark against the current niche leaders.")
     if not gaps:
         gaps.append("The next gap is to tighten the claim hierarchy, comparison frames, and conversion proof above the fold.")
     return strengths[:4], gaps[:4]

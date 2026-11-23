@@ -33,6 +33,10 @@ class EnrichedHeroProduct:
     market_metrics_source: str
     tags: tuple[str, ...]
     warnings: tuple[str, ...]
+    image_supported: bool = False
+    price_supported: bool = False
+    reviews_supported: bool = False
+    specs_supported: bool = False
 
 
 @dataclass(frozen=True)
@@ -261,6 +265,10 @@ class ProductResearchService:
             market_metrics_source="+".join(metric_sources),
             tags=(),
             warnings=deduped_warnings,
+            image_supported=bool(image_url),
+            price_supported=bool(price),
+            reviews_supported=review_count is not None,
+            specs_supported=bool(dimensions),
         )
 
     def _enrich_generic_target(self, target: dict[str, str]) -> EnrichedHeroProduct:
@@ -309,6 +317,10 @@ class ProductResearchService:
             market_metrics_source="",
             tags=(),
             warnings=tuple(warnings),
+            image_supported=bool(page_data.get("image_supported")),
+            price_supported=bool(page_data.get("price_supported")),
+            reviews_supported=False,
+            specs_supported=False,
         )
 
 
@@ -1055,6 +1067,8 @@ def _fetch_shopify_product_data(source_url: str) -> dict[str, Any] | None:
         "brand_name": brand_name,
         "category": category,
         "warnings": warnings,
+        "image_supported": bool(image_url),
+        "price_supported": bool(price),
     }
 
 
@@ -1085,11 +1099,14 @@ def _fetch_generic_page_data(source_url: str) -> dict[str, Any]:
             r"<h1[^>]*>\s*(.*?)\s*</h1>",
         )
     )
-    image_url = _extract_first(
+    product_image = ""
+    if re.search(r'"@type"\s*:\s*"Product"', content, flags=re.IGNORECASE):
+        product_image = _extract_first(content, r'"image"\s*:\s*"([^"]+)"')
+    image_url = (product_image or _extract_first(
         content,
         r'<meta\s+property="og:image"\s+content="([^"]+)"',
-        r'"image":"([^"]+)"',
-    ).replace("\\u0026", "&").replace("\\/", "/")
+    )).replace("\\u0026", "&").replace("\\/", "/")
+    image_supported = bool(product_image)
     description = _clean_scraped_text(
         _extract_first(
             content,
@@ -1110,9 +1127,9 @@ def _fetch_generic_page_data(source_url: str) -> dict[str, Any]:
             content,
             r'<meta\s+property="product:price:amount"\s+content="([^"]+)"',
             r'"price"\s*:\s*"([^"]+)"',
-            r'[$]\s?(\d+(?:\.\d{2})?)',
         )
     )
+    price_supported = bool(price)
     if price and not price.startswith("$") and re.fullmatch(r"\d+(?:\.\d{2})?", price):
         price = f"${price}"
     category = _clean_scraped_text(_extract_first(content, r'"category"\s*:\s*"([^"]+)"'))
@@ -1127,6 +1144,8 @@ def _fetch_generic_page_data(source_url: str) -> dict[str, Any]:
         "brand_name": brand_name,
         "category": category,
         "warnings": warnings,
+        "image_supported": image_supported,
+        "price_supported": price_supported,
     }
 
 
