@@ -555,6 +555,7 @@ def _catalog_hosts(lead: dict[str, Any], domain: str) -> list[str]:
     hosts: list[str] = []
     for raw in (
         lead.get("catalog_host"),
+        profile.get("catalog_host"),
         lead.get("website"),
         profile.get("name"),
         lead.get("domain"),
@@ -596,8 +597,8 @@ def _read_catalog(domain: str, catalog_for: Optional[Callable[[str], Any]],
 
 
 def _ship_gate(lead: dict[str, Any], domain: str,
-               catalog_for: Optional[Callable[[str], Any]]) -> str:
-    """``digital`` or ``no_shippable_goods`` before any contact credit is spent."""
+               catalog_for: Optional[Callable[[str], Any]]) -> tuple[str, Any]:
+    """Ship-gate reason, and the catalog that was read (None when unreadable)."""
 
     from outbound_pipeline import digital_product_reason
 
@@ -606,7 +607,22 @@ def _ship_gate(lead: dict[str, Any], domain: str,
     catalog = _read_catalog(domain, catalog_for, lead)
     if catalog is not None:
         store["catalog"] = catalog
-    return digital_product_reason(store, catalog)
+    return digital_product_reason(store, catalog), catalog
+
+
+def _remember_catalog(lead: dict[str, Any], catalog: Any) -> None:
+    """Keep a readable catalog on the lead so later copy checks use it.
+
+    The shipping decision and the opener read the same evidence. A physical
+    catalog must not be dropped before ``company_blocked_reason`` runs.
+    """
+
+    if catalog is None:
+        return
+    lead["catalog"] = catalog
+    profile = dict(lead.get("store_profile") or {}) if isinstance(lead.get("store_profile"), dict) else {}
+    profile["catalog"] = catalog
+    lead["store_profile"] = profile
 
 
 def run_enrichment(
@@ -713,8 +729,20 @@ def run_enrichment(
             for domain, lead in leads_by_domain.items()
             if isinstance(lead.get("store_profile"), dict)
         ])
+        from sales_support_agent.services.outbound_memory import load_store_profiles
+
+        stored_profiles = load_store_profiles(engine, list(leads_by_domain))
     except Exception:  # noqa: BLE001
         logger.debug("[outbound-enrich] store profiles were not saved for opener checks")
+        stored_profiles = {}
+    for domain, lead in leads_by_domain.items():
+        saved = stored_profiles.get(domain) if isinstance(stored_profiles.get(domain), dict) else {}
+        current = lead.get("store_profile") if isinstance(lead.get("store_profile"), dict) else {}
+        if saved or current:
+            lead["store_profile"] = {**saved, **current}
+        host = str(lead.get("catalog_host") or (lead.get("store_profile") or {}).get("catalog_host") or "")
+        if host and not lead.get("catalog_host"):
+            lead["catalog_host"] = host
 
     for domain, lead in list(leads_by_domain.items()):
         if report.companies_tried >= max_companies:
@@ -761,7 +789,7 @@ def run_enrichment(
             except Exception:  # noqa: BLE001
                 logger.exception("[outbound-enrich] could not mark %s", domain)
             continue
-        ship = _ship_gate(lead, domain, catalog_for)
+        ship, catalog = _ship_gate(lead, domain, catalog_for)
         if ship:
             report.skip_reasons[ship] = report.skip_reasons.get(ship, 0) + 1
             logger.info("[outbound-enrich] skipping %s before contact lookup: %s", domain, ship)
@@ -770,6 +798,7 @@ def run_enrichment(
             except Exception:  # noqa: BLE001
                 logger.exception("[outbound-enrich] could not mark %s", domain)
             continue
+        _remember_catalog(lead, catalog)
         report.companies_tried += 1
         find_kwargs = {
             "api_key": api_key,
@@ -1290,6 +1319,8 @@ def push_pending(engine, campaign_id: str, *, dry_run: bool = True, limit: int =
             continue
         domain_key = str(person.get("domain") or "").strip().lower()
         profile = profiles.get(domain_key) or {}
+        if catalog is not None:
+            profile = {**profile, "catalog": catalog}
         copy_lead = {
             "brand": person.get("brand"),
             "domain": domain_key,
@@ -1299,6 +1330,7 @@ def push_pending(engine, campaign_id: str, *, dry_run: bool = True, limit: int =
             "campaign_id": person.get("campaign_id"),
             "campaign_name": person.get("campaign_name"),
             "store_profile": profile,
+            **({"catalog": catalog} if catalog is not None else {}),
         }
         copy_reason = _openers.opener_hold_reason(
             str(person.get("opener") or ""), copy_lead,

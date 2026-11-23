@@ -135,7 +135,7 @@ def _lead_from(store: dict[str, Any], recipe_key: str) -> Optional[dict[str, Any
     if "." not in domain or " " in domain:
         return None
     yearly = store.get("estimated_sales_yearly")
-    return {
+    lead = {
         "domain": domain,
         "brand": pipeline.company_label(
             store.get("merchant_name") or store.get("name") or domain,
@@ -153,6 +153,10 @@ def _lead_from(store: dict[str, Any], recipe_key: str) -> Optional[dict[str, Any
         "estimated_sales_yearly_cents": yearly if isinstance(yearly, (int, float)) else 0,
         "store_profile": pipeline.store_profile(store),
     }
+    host = str((lead["store_profile"] or {}).get("catalog_host") or "")
+    if host:
+        lead["catalog_host"] = host
+    return lead
 
 
 def _platform_queries(filters: dict[str, Any]) -> list[dict[str, Any]]:

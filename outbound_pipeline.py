@@ -1056,9 +1056,10 @@ def passes_company_fit(store: dict[str, Any], *, require_niche: bool = True) -> 
 def store_niche(store: dict[str, Any]) -> str:
     """Return the ICP niche label for a store, or '' if it fits none.
 
-    Decor, gift, and stationery are ignored when the store's own words are
-    digital goods. Home, beauty, food, apparel, and the other keywords
-    still count.
+    Decor, gift, and stationery are ignored only when the shipping check
+    calls the store digital. A positive weight or a catalog of physical
+    goods keeps those keywords, even if the description says "patterns".
+    Home, beauty, food, apparel, and the other keywords still count.
     """
     text = " ".join(
         str(part) for part in (
@@ -1068,10 +1069,12 @@ def store_niche(store: dict[str, Any]) -> str:
             store.get("name") or "",
         )
     ).lower()
-    digital = _has_digital_wording(store) if isinstance(store, dict) else False
+    disarmed = False
+    if isinstance(store, dict):
+        disarmed = digital_product_reason(store, _attached_catalog(store)) == "digital"
     for niche, keywords in ICP_NICHE_KEYWORDS.items():
         for kw in keywords:
-            if digital and kw in _WEAK_NICHE_KEYWORDS:
+            if disarmed and kw in _WEAK_NICHE_KEYWORDS:
                 continue
             if kw in text:
                 return niche
@@ -1409,6 +1412,26 @@ def _review_blob(value: Any) -> dict[str, Any]:
     }
 
 
+def catalog_host_for(store: dict[str, Any]) -> str:
+    """The StoreLeads host when it is more specific than the company domain.
+
+    ``shop.brand.com`` and ``brand.com`` are one company. The public catalog
+    lives on the storefront, so later loads need that host, not only the apex.
+    """
+
+    if not isinstance(store, dict):
+        return ""
+    host = _catalog_host(str(store.get("name") or store.get("domain") or ""))
+    if not host:
+        return ""
+    import outbound_contacts as contacts
+
+    company = contacts.company_domain(host)
+    if company and host != company:
+        return host
+    return ""
+
+
 def store_profile(store: dict[str, Any]) -> dict[str, Any]:
     """Compact StoreLeads facts for a later opener. Not a sentence."""
 
@@ -1419,7 +1442,7 @@ def store_profile(store: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(trust, dict):
         trust = {}
     description = " ".join(str(store.get("description") or "").split())[:300]
-    return {
+    profile = {
         "country_code": headquarters_verdict(store)[0],
         "sales_channels": _named_list(store.get("sales_channels"), limit=8),
         "apps": _named_list(store.get("apps")),
@@ -1463,6 +1486,10 @@ def store_profile(store: dict[str, Any]) -> dict[str, Any]:
         "estimated_visits": store.get("estimated_visits"),
         "product_images_created_90": store.get("product_images_created_90"),
     }
+    host = catalog_host_for(store)
+    if host:
+        profile["catalog_host"] = host
+    return profile
 
 
 _LEGAL_SUFFIX = re.compile(
@@ -1619,6 +1646,9 @@ def to_clay_lead(store: dict[str, Any], *, now: Optional[datetime] = None,
         "apps": store.get("apps"),
         "store_profile": store_profile(store),
     }
+    host = str((lead["store_profile"] or {}).get("catalog_host") or "")
+    if host:
+        lead["catalog_host"] = host
     apply_amazon(lead, amazon)
     return lead
 

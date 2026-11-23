@@ -527,6 +527,146 @@ def test_facts_and_shopper_lines_skip_non_shipping_products():
     assert personalization.fact_sheet(digital).facts == []
 
 
+def test_shipping_evidence_keeps_a_stationery_niche_that_mentions_patterns():
+    notebooks = _fit(
+        categories="Stationery",
+        description="Notebooks with floral patterns and lined pages",
+        merchant_name="Field Notes Co",
+        avg_weight=180,
+    )
+    assert pipeline.store_niche(notebooks) == "family_gifts"
+    assert pipeline.passes_company_fit(notebooks)
+    catalog = [_product("Floral Pattern Notebook", True), _product("Grid Notebook", True)]
+    no_weight = {k: v for k, v in notebooks.items() if k != "avg_weight"}
+    no_weight["catalog"] = catalog
+    assert pipeline.store_niche(no_weight) == "family_gifts"
+    assert pipeline.passes_company_fit(no_weight)
+    templates = _fit(categories="Stationery", description="printable template downloads")
+    assert pipeline.store_niche(templates) == ""
+    assert not pipeline.passes_company_fit(templates)
+
+
+def test_sourced_leads_keep_the_storefront_host():
+    store = _fit(
+        name="shop.designersoasis.com",
+        merchant_name="Designer's Oasis",
+        categories="Home & Interior Decor",
+        description="Printable wall templates",
+    )
+    profile = pipeline.store_profile(store)
+    assert profile["catalog_host"] == "shop.designersoasis.com"
+    lead = pipeline.to_clay_lead(store)
+    assert lead["domain"] == "designersoasis.com"
+    assert lead["catalog_host"] == "shop.designersoasis.com"
+    assert lead["store_profile"]["catalog_host"] == "shop.designersoasis.com"
+    assert "catalog_host" not in pipeline.store_profile(_fit(name="soap.com"))
+
+
+def test_enrichment_reads_the_storefront_and_keeps_a_physical_catalog_for_copy(engine, monkeypatch):
+    """Apex has no feed. The shop host does. A physical catalog is not re-classified as digital."""
+
+    fetched = []
+
+    def fetch(host):
+        fetched.append(host)
+        if host == "shop.press.com":
+            return physical_with_ebook_app()[1]
+        if host == "shop.designersoasis.com":
+            return designers_oasis()
+        return None
+
+    monkeypatch.setattr(pipeline, "fetch_public_catalog", fetch)
+    calls = []
+    find, apollo = _find_guard(calls)
+    press = {
+        "domain": "press.com",
+        "brand": "Press Goods",
+        "recipe": "amz_off",
+        "tier": "A",
+        "categories": "Beauty",
+        "country_code": "US",
+        "catalog_host": "shop.press.com",
+        "store_profile": {
+            "catalog_host": "shop.press.com",
+            "merchant_name": "Press Goods",
+            "categories": "Beauty",
+            "description": "Cedar bar soap",
+            "apps": [{"name": "E-book Download", "categories": ["Digital products"]}],
+            "most_recently_published_product": {
+                "title": "Cedar Bar Soap",
+                "url": "https://shop.press.com/products/cedar-bar-soap",
+            },
+        },
+    }
+    oasis = {
+        "domain": "designersoasis.com",
+        "brand": "Designer's Oasis",
+        "recipe": "amz_off",
+        "categories": "Home & Interior Decor",
+        "country_code": "US",
+        "store_profile": {"catalog_host": "shop.designersoasis.com", "categories": "Decor"},
+    }
+    report = enrich.run_enrichment(
+        engine, [press, oasis], api_key="k", find=find, apollo_find=apollo, apollo_api_key="present",
+        write=lambda _lead, _contact: ("Press Goods sells cedar bar soap.", "ai"),
+    )
+    assert fetched[0] == "shop.press.com"
+    assert "shop.designersoasis.com" in fetched
+    assert calls == [("prospeo", "press.com")]
+    assert report.credits_used == 4
+    assert report.skip_reasons["digital"] == 1
+    with engine.connect() as conn:
+        skip = conn.execute(text(
+            "SELECT COALESCE(skip_reason, '') FROM outbound_enriched_contacts WHERE email = 'a@press.com'"
+        )).scalar()
+    assert skip == ""
+
+
+def test_push_keeps_a_physical_catalog_when_the_profile_has_a_digital_app(engine, monkeypatch):
+    from sales_support_agent.services.outbound_memory import save_store_profiles
+
+    monkeypatch.setattr(
+        pipeline, "fetch_public_catalog",
+        lambda host: physical_with_ebook_app()[1] if "soap.com" in host else None,
+    )
+    enrich.ensure_tables(engine)
+    save_store_profiles(engine, [{
+        "domain": "soap.com",
+        "store_profile": {
+            "catalog_host": "shop.soap.com",
+            "merchant_name": "Press Goods",
+            "description": "Cedar bar soap",
+            "categories": "Beauty",
+            "apps": ["E-book Download"],
+            "most_recently_published_product": {
+                "title": "Cedar Bar Soap",
+                "url": "https://shop.soap.com/products/cedar-bar-soap",
+            },
+        },
+    }])
+    with engine.begin() as conn:
+        conn.execute(text(
+            "INSERT INTO outbound_enriched_contacts "
+            "(email, domain, first_name, last_name, title, opener, brand, category, recipe, tier) "
+            "VALUES ('bea@soap.com', 'soap.com', 'Bea', 'Smith', 'Founder', "
+            "'Press Goods sells cedar bar soap.', 'Press Goods', 'Beauty', 'amz_off', 'A')"
+        ))
+    sent = []
+
+    def record(payload, cid, dry_run=False, **kwargs):
+        sent.extend(item["email"] for item in payload)
+        return push.PushOutcome(attempted=len(payload), created=len(payload), dry_run=False)
+
+    out = enrich.push_pending(engine, "camp", dry_run=False, push=record)
+    assert sent == ["bea@soap.com"]
+    assert out["pushed"] == 1
+    with engine.connect() as conn:
+        reason = conn.execute(text(
+            "SELECT COALESCE(skip_reason, '') FROM outbound_enriched_contacts WHERE email = 'bea@soap.com'"
+        )).scalar()
+    assert reason == ""
+
+
 def test_abby_deck_holds_instead_of_building(monkeypatch):
     import abby_deck
 
