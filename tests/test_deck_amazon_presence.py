@@ -199,6 +199,47 @@ class AmazonLookupTests(unittest.TestCase):
         self.assertEqual(found.listings[0]["asin"], "B07XVIVEU2")
         self.assertIn("xvive audio", client.searches[0])
 
+    def test_a_failed_query_blocks_an_absence_claim(self) -> None:
+        class _ByTerm:
+            def search(self, term, page=1, amazon_domain=None):
+                del page, amazon_domain
+                if term == "xvive audio":
+                    raise RuntimeError("timeout")
+                return {"request_info": {"success": True}, "search_results": []}
+
+        found = lookup_brand_on_amazon("Xvive Audio", domain="xviveaudio.com", client=_ByTerm())
+        self.assertEqual(found.status, UNKNOWN)
+        self.assertEqual(found.source, "incomplete")
+
+    def test_a_shared_first_word_is_not_the_brand(self) -> None:
+        for brand in ("Earth", None):
+            item = {
+                "asin": "B0EARTHBAG1",
+                "title": "Earth Rated Dog Poop Bags",
+            }
+            if brand:
+                item["brand"] = brand
+            found = lookup_brand_on_amazon(
+                "Earth Moon Magick",
+                domain="earthmoonmagick.com",
+                client=_SearchClient({"request_info": {"success": True}, "search_results": [item]}),
+            )
+            self.assertEqual(found.status, UNKNOWN, brand)
+        real = lookup_brand_on_amazon(
+            "Earth Moon Magick",
+            domain="earthmoonmagick.com",
+            client=_SearchClient({
+                "request_info": {"success": True},
+                "search_results": [{
+                    "asin": "B0MAGICK01",
+                    "title": "Earth Moon Magick Tarot Deck",
+                    "brand": "Earth Moon Magick",
+                }],
+            }),
+        )
+        self.assertEqual(real.status, PRESENT)
+        self.assertEqual(real.listings[0]["asin"], "B0MAGICK01")
+
 
 class ContentGateAmazonTests(unittest.TestCase):
     def test_absence_claim_fails_unless_the_check_was_negative(self) -> None:

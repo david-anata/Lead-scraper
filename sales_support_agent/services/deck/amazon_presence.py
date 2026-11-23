@@ -148,6 +148,7 @@ def _lookup(brand: str, *, domain: str, client: Any) -> AmazonPresence:
 
     completed_empty = 0
     completed_with_rows = 0
+    incomplete = False
     matched: list[dict[str, Any]] = []
     seen: set[str] = set()
     store_hit = False
@@ -156,16 +157,20 @@ def _lookup(brand: str, *, domain: str, client: Any) -> AmazonPresence:
             payload = search(term)
         except Exception as exc:  # noqa: BLE001 — one failed query is not a negative
             logger.info("Amazon search failed for %r: %s", term, exc)
+            incomplete = True
             continue
         if not isinstance(payload, dict):
+            incomplete = True
             continue
         info = payload.get("request_info") or {}
         if isinstance(info, dict) and info.get("success") is False:
+            incomplete = True
             continue
         if _store_matches(payload, candidates):
             store_hit = True
         results = payload.get("search_results")
         if not isinstance(results, list):
+            incomplete = True
             continue
         if not results:
             completed_empty += 1
@@ -199,11 +204,16 @@ def _lookup(brand: str, *, domain: str, client: Any) -> AmazonPresence:
             detail="Amazon search returned a brand store or a listing whose brand matches.",
             listings=listings,
         )
+    if incomplete:
+        return unknown_presence(
+            "incomplete",
+            "Amazon search did not finish for every name, so absence was not confirmed.",
+        )
     if completed_with_rows == 0 and completed_empty > 0:
         return AmazonPresence(
             status=ABSENT,
             source="rainforest_search",
-            detail="Amazon search returned no listings and no brand store.",
+            detail="Every Amazon search finished with no listings and no brand store.",
         )
     if completed_with_rows:
         return unknown_presence(
@@ -263,11 +273,51 @@ def _store_matches(payload: dict[str, Any], candidates: list[str]) -> bool:
     return False
 
 
-def _listing_confidence(candidates: list[str], item: dict[str, Any]) -> str:
-    """Outbound match rules, plus a prefix brand match.
+# Words that can trail a brand without naming a different company.
+# "Xvive" is the Amazon brand for "Xvive Audio". "Earth" is not "Earth Moon Magick".
+_GENERIC_BRAND_TOKENS = frozenset({
+    "audio", "global", "official", "shop", "store", "inc", "llc", "co",
+    "company", "ltd", "usa", "us", "the", "brand",
+})
 
-    Amazon's brand field for Xvive Audio is often "Xvive". That is the same
-    brand, not a contradiction.
+
+def _brand_field_aligns(candidates: list[str], brand_norm: str, title: str) -> bool:
+    """True when the Amazon brand field is this prospect, not a shared first word."""
+
+    from outbound_amazon import _clean_name, _compact
+
+    if len(brand_norm) < 4:
+        return False
+    title_tokens = set(_clean_name(title).split())
+    for cand in candidates:
+        cleaned = _clean_name(cand)
+        cand_norm = _compact(cleaned)
+        if len(cand_norm) < 4:
+            continue
+        if brand_norm == cand_norm:
+            return True
+        tokens = cleaned.split()
+        if not cand_norm.startswith(brand_norm):
+            continue
+        acc = ""
+        used = 0
+        for token in tokens:
+            acc += token
+            used += 1
+            if acc == brand_norm:
+                rest = tokens[used:]
+                if rest and all(token in _GENERIC_BRAND_TOKENS or token in title_tokens for token in rest):
+                    return True
+                break
+    return False
+
+
+def _listing_confidence(candidates: list[str], item: dict[str, Any]) -> str:
+    """Outbound match rules, plus a brand-field prefix that keeps the whole name.
+
+    Amazon's brand field for Xvive Audio is often "Xvive". That matches because
+    the leftover word is generic. A title that only shares the first word, such
+    as "Earth Rated" for "Earth Moon Magick", does not.
     """
 
     from outbound_amazon import _as_text, _clean_name, _compact, _first_present, match_confidence
@@ -278,22 +328,13 @@ def _listing_confidence(candidates: list[str], item: dict[str, Any]) -> str:
     brand_value, _ = _first_present(item, ("brand", "brand_name", "manufacturer"))
     brand_norm = _compact(_as_text(brand_value))
     title = _clean_name(_as_text(_first_present(item, ("title", "name"))[0]))
-    prefix = False
-    for cand in candidates:
-        cand_norm = _compact(cand)
-        if len(cand_norm) >= 4 and len(brand_norm) >= 4 and (
-            brand_norm.startswith(cand_norm) or cand_norm.startswith(brand_norm)
-        ):
-            prefix = True
-            break
-    if prefix:
+    if _brand_field_aligns(candidates, brand_norm, title):
         return "high"
     if brand_norm:
         return "low"
     for cand in candidates:
         cleaned = _clean_name(cand)
-        token = cleaned.split()[0] if cleaned else ""
-        if len(token) >= 4 and (title == cleaned or title.startswith(cleaned + " ") or title == token or title.startswith(token + " ")):
+        if len(_compact(cleaned)) >= 4 and (title == cleaned or title.startswith(cleaned + " ")):
             return "medium"
     return "low"
 
