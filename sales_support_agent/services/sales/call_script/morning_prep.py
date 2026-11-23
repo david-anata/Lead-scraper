@@ -20,6 +20,7 @@ from sales_support_agent.services.sales.call_script.prep import (
     _history_line,
     format_when,
     no_em_dash,
+    situation_summary,
 )
 
 FLAG_ENV = "SALES_MORNING_PREP_ENABLED"
@@ -79,7 +80,9 @@ def build_comment(booking: Booking, context: dict) -> str:
     website = context.get("website") or {}
     amazon = links.get("amazon") or {}
     clickup = context.get("clickup") or {}
-    history = _history_line(context)
+    history = situation_summary(booking, context)
+    if history.startswith("Unknown"):
+        history = "none on file"
     lines = [
         f"Morning prep: {booking.prospect_name or 'Unknown'} ({booking.prospect_email or 'no email'}) at {format_when(booking.starts_at)}",
         f"Company: {context.get('company') or 'Unknown'}",
@@ -88,7 +91,7 @@ def build_comment(booking: Booking, context: dict) -> str:
         f"Current ClickUp status: {clickup.get('status') or 'unknown'}",
         "",
         "Why they're back: " + _why_back(booking, context),
-        "Prior history: " + (history[:1200] if history else "none on file"),
+        "Prior history: " + history,
         "",
         "Disqualification flags:",
     ]

@@ -28,7 +28,11 @@ from sales_support_agent.models.database import session_scope  # noqa: E402
 from sales_support_agent.models.entities import SalesCallTracker  # noqa: E402
 from sales_support_agent.services.job_lease import JobLease  # noqa: E402
 from sales_support_agent.services.sales.call_script import service  # noqa: E402
+from sqlalchemy import text  # noqa: E402
+
+from sales_support_agent.models.entities import AutomationRun  # noqa: E402
 from sales_support_agent.services.sales.call_script.bookings import (  # noqa: E402
+    Booking,
     booking_from_event,
     booking_from_gmail,
     load_bookings,
@@ -38,7 +42,10 @@ from sales_support_agent.services.sales.call_script.prep import (  # noqa: E402
     SALES_SLACK_CHANNEL,
     PITCH_POINTS,
     as_list,
+    clean_company_name,
+    clean_message_text,
     gather_context,
+    lookup_deck,
     names_match,
     run_prep,
     verify_links,
@@ -526,6 +533,217 @@ class PrepShapeTests(unittest.TestCase):
         self.assertEqual(again["reused"], 1)
         self.assertEqual(asked["notes"], 1)
         self.assertEqual(len(gmail.drafts), 1)
+
+    def test_company_title_drops_the_home_prefix(self) -> None:
+        self.assertEqual(clean_company_name("Home - Babaco Alarm Systems"), "Babaco Alarm Systems")
+        self.assertEqual(clean_company_name("Babaco Alarm Systems | Home"), "Babaco Alarm Systems")
+        self.assertEqual(clean_company_name("Home Depot"), "Home Depot")
+        booking = Booking(
+            "title-check", "Call", "GREG HABER", "greg@babaco-title.test",
+            "Exploring products", None, None, "", "google_calendar",
+        )
+
+        def fetch(url):
+            return {
+                "ok": True, "url": "https://babaco-title.test/", "status": 200,
+                "html": "<title>Home - Babaco Alarm Systems</title>", "text": "alarms",
+            }
+
+        with session_scope(app.state.session_factory) as session:
+            context = gather_context(session, None, booking, fetch=fetch)
+        self.assertEqual(context["company"], "Babaco Alarm Systems")
+
+    def test_deck_lookup_prefers_a_sent_row_then_a_generation_run(self) -> None:
+        lead = "greg@babaco-deck.test"
+        sent = "https://agent.anatainc.com/decks/babaco-alarm-systems-x-anata-strategy-deck/3870/sent-token"
+        held = "https://agent.anatainc.com/decks/babaco/3870/held-token"
+        generated = "https://agent.anatainc.com/decks/babaco-alarm-systems-x-anata-strategy-deck/3870/run-token"
+        with session_scope(app.state.session_factory) as session:
+            session.execute(text(
+                "CREATE TABLE IF NOT EXISTS abby_deck_sends ("
+                "id INTEGER PRIMARY KEY AUTOINCREMENT, lead TEXT, deck_url TEXT, "
+                "status TEXT, sent_at TEXT, detail TEXT)"
+            ))
+            session.execute(text("DELETE FROM abby_deck_sends WHERE lower(lead) = :e"), {"e": lead})
+            session.execute(text(
+                "INSERT INTO abby_deck_sends (lead, deck_url, status, detail) VALUES "
+                "(:lead, :held, 'held', 'held'), (:lead, :sent, 'sent', 'deck sent')"
+            ), {"lead": lead, "held": held, "sent": sent})
+            found = lookup_deck(session, lead, "babaco-deck.test")
+            self.assertEqual(found["source"], "abby_deck_sends")
+            self.assertEqual(found["url"], sent)
+            self.assertEqual(found["run_id"], "3870")
+            self.assertNotIn("held-token", found["url"])
+            session.execute(text("DELETE FROM abby_deck_sends WHERE lower(lead) = :e"), {"e": lead})
+            run = AutomationRun(
+                run_type="deck_generation",
+                status="success",
+                trigger="test",
+                metadata_json={
+                    "target_product_input": "https://babaco-deck.test",
+                    "brand_website": "",
+                },
+                summary_json={"view_url": generated, "deck_html": "<html>secret html</html>"},
+            )
+            session.add(run)
+            session.flush()
+            found = lookup_deck(session, lead, "babaco-deck.test")
+            self.assertEqual(found["source"], "deck_generation")
+            self.assertEqual(found["url"], generated)
+            self.assertEqual(found["run_id"], str(run.id))
+            self.assertNotIn("secret", json.dumps(found))
+            other = lookup_deck(session, "nobody@zz-no-deck-callprep.test", "zz-no-deck-callprep.test")
+            self.assertFalse(other.get("url"))
+
+    def test_babaco_email_summarizes_the_thread_and_links_the_deck(self) -> None:
+        quote = (
+            "Abby, I don't fully understand your email but I am interested — in you explaining it to me. "
+            "What services are you offering? Thank you, Greg Haber President Babaco "
+            "Phone (201) 555-0100 |^^^^^^^^^^^^^^^^^^^^| ||__ | BABACO"
+        )
+        our_mail = "Thanks Abby for sending this over. Greg, to answer your question " + ("word " * 40)
+        deck_url = "https://agent.anatainc.com/decks/babaco-alarm-systems-x-anata-strategy-deck/3870/test-token"
+        booking = Booking(
+            "babaco-event",
+            "Schedule a Meeting with anata (GREG HABER)",
+            "GREG HABER",
+            "greg@babaco.com",
+            "Exploring Babaco products on Amazon",
+            datetime(2026, 11, 30, 18, 15, tzinfo=timezone.utc),
+            datetime(2026, 11, 30, 18, 45, tzinfo=timezone.utc),
+            "https://meet.google.com/mwx-hrns-pfa",
+            "google_calendar",
+        )
+        context = {
+            "company": "Home - Babaco Alarm Systems",
+            "deck": {"url": deck_url, "run_id": "3870", "source": "abby_deck_sends"},
+            "links": {
+                "website": {"verified": True, "url": "https://babaco.com/"},
+                "amazon": {"verified": False, "urls": [], "line": AMAZON_UNVERIFIED},
+                "shopify": False,
+            },
+            "abby_handled": {"rows": [
+                {
+                    "category": "other", "action": "skip",
+                    "detail": "written by our team | THEM: " + our_mail,
+                    "created_at": "2026-11-23 19:21:43",
+                },
+                {"category": "nudge", "action": "nudge", "detail": "nudge 3", "created_at": "2026-11-16 17:40:32"},
+                {"category": "nudge", "action": "nudge", "detail": "nudge 2", "created_at": "2026-11-09 17:35:31"},
+                {"category": "nudge", "action": "nudge", "detail": "nudge 1", "created_at": "2026-11-05 17:30:32"},
+                {
+                    "category": "interested", "action": "reply",
+                    "detail": "THEM: " + quote,
+                    "created_at": "2026-11-02 17:29:52",
+                },
+            ]},
+            "clickup": {"matched": True, "comments": []},
+            "gmail": [{
+                "from": "anata Services <abby@anatainc.com>",
+                "date": "Mon, 23 Nov 2026",
+                "subject": "Appointment booked: Schedule a Meeting with anata (GREG HABER)",
+                "snippet": "Join with Google Meet https://meet.google.com/mwx-hrns-pfa Cc: david@anatainc.com",
+            }],
+            "mailbox": [],
+            "instantly": {"emails": []},
+            "outbound_contact": {"row": None},
+            "outbound_enriched": {"row": None},
+        }
+
+        def notes_for(item, packet):
+            from sales_support_agent.services.sales.call_script.prep import fallback_notes
+            return fallback_notes(item, packet), "facts"
+
+        slack, gmail = FakeSlack(), FakeGmail()
+        when = datetime(2026, 11, 23, 20, 0, tzinfo=timezone.utc)
+        with session_scope(app.state.session_factory) as session:
+            result = run_prep(
+                session, now=when, bookings=[booking], source="google_calendar", gap="",
+                context_for=lambda item, tracker=None: context,
+                notes_for=notes_for, slack=slack, gmail=gmail,
+            )
+            tracker = session.get(SalesCallTracker, result["bookings"][0]["tracker_id"])
+            prep = tracker.state_json["ss-prep"]
+        text_body = gmail.drafts[0]["text"]
+        self.assertEqual(text_body, slack.messages[0]["text"])
+        self.assertTrue(text_body.startswith("Call prep: GREG HABER"))
+        self.assertLess(text_body.index("Call script:"), text_body.index("Who:"))
+        self.assertIn(f"Call script: https://agent.anatainc.com/admin/sales/call/{tracker.id}", text_body)
+        self.assertNotIn("Tracker:", text_body)
+        self.assertIn(f"Deck: {deck_url}", text_body)
+        self.assertEqual(text_body.lower().count("amazon presence: not verified"), 1)
+        self.assertNotIn("—", text_body)
+        self.assertIn("interested - in you explaining", text_body)
+        self.assertNotIn("nudge 3", text_body)
+        self.assertNotIn("Join with Google Meet", text_body)
+        self.assertNotIn("^^^^", text_body)
+        self.assertNotIn("Phone (201)", text_body)
+        self.assertNotIn("written by our team", text_body)
+        self.assertNotIn("Thanks Abby for sending this over", text_body)
+        self.assertNotIn("Home - Babaco", text_body)
+        self.assertNotIn("Angle:", text_body)
+        self.assertNotIn("Unknown. Use section", text_body)
+        self.assertIn("I don't fully understand your email", text_body)
+        self.assertIn("What services are you offering?", text_body)
+        self.assertIn("We sent a strategy deck and 3 follow-up nudges.", text_body)
+        self.assertIn("Current situation:", text_body)
+        self.assertIn("Babaco Alarm Systems", text_body)
+        self.assertIn("They replied to Abby's outreach.", text_body)
+        self.assertNotIn("other / skip", text_body)
+        self.assertIn("Objections prepared, not raised by them:", text_body)
+        self.assertIn("Free 14-day trial.", text_body)
+        self.assertIn("Next step:", text_body)
+        self.assertLess(len(text_body), 2500)
+        steps = {step["id"]: step["known"] for step in prep["sections"]["discovery"]}
+        self.assertLess(len(steps["s3"]), 500)
+        self.assertNotEqual(steps["s3"], steps["s9"])
+        self.assertNotIn("nudge", steps["s9"].lower())
+        self.assertNotIn("^^^^", steps["s3"])
+        self.assertIn("I don't fully understand your email", tracker.state_json["ss-gap"]["quotes"])
+        self.assertNotIn("Phone (201)", tracker.state_json["ss-gap"]["quotes"])
+        self.assertEqual(clean_message_text("Join with Google Meet https://meet.google.com/abc"), "")
+        script = (Path(service.ASSETS_DIR) / "runtime_adapter.js").read_text(encoding="utf-8")
+        self.assertIn("prep.deck", script)
+        self.assertIn("Strategy deck", script)
+
+    def test_gmail_history_drops_invites_and_quoted_tails(self) -> None:
+        import base64
+
+        from sales_support_agent.services.sales.call_script.prep import _gmail_history
+
+        def encoded(body: str) -> str:
+            return base64.urlsafe_b64encode(body.encode()).decode()
+
+        class Client:
+            def list_messages(self, *, query, max_results):
+                return [{"id": "invite"}, {"id": "them"}]
+
+            def get_message(self, message_id):
+                if message_id == "invite":
+                    subject = "Appointment booked: Greg"
+                    body = "Join with Google Meet https://meet.google.com/abc Cc: david@anatainc.com"
+                else:
+                    subject = "Re: Thought about Babaco"
+                    body = (
+                        "I want to talk about selling on Amazon. Thank you, Greg "
+                        "Phone (201) 555-0100 On Mon, Nov 9, David wrote: the rest of the thread"
+                    )
+                return {"payload": {
+                    "mimeType": "text/plain",
+                    "headers": [
+                        {"name": "Subject", "value": subject},
+                        {"name": "From", "value": "Greg Haber <greg@babaco.com>"},
+                        {"name": "Date", "value": "Mon, 2 Nov 2026"},
+                    ],
+                    "body": {"data": encoded(body)},
+                }}
+
+        rows = _gmail_history(Client(), "greg@babaco.com")
+        self.assertEqual(len(rows), 1)
+        self.assertIn("I want to talk about selling on Amazon.", rows[0]["snippet"])
+        self.assertNotIn("Phone", rows[0]["snippet"])
+        self.assertNotIn("wrote:", rows[0]["snippet"])
+        self.assertNotIn("meet.google.com", rows[0]["snippet"])
 
 
 class PrepRouteTests(unittest.TestCase):

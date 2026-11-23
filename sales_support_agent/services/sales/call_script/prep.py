@@ -381,6 +381,358 @@ def _page_title(html: str) -> str:
     return " ".join(re.sub(r"<[^>]+>", " ", match.group(1)).split())[:160]
 
 
+_NOISE_SUBJECT = re.compile(
+    r"(?i)^(?:(?:re|fw|fwd)\s*:\s*)*(?:appointment booked\b|call prep:|invitation:|"
+    r"updated invitation:|accepted:|declined:)"
+)
+_HOME_PREFIX = re.compile(r"(?i)^(?:home|homepage|welcome)(?:\s+page)?\s*[-|:]\s*")
+_HOME_SUFFIX = re.compile(r"(?i)\s*[-|:]\s*(?:home|homepage|welcome)(?:\s+page)?$")
+_SIGNATURE_CUT = re.compile(r"(?i)\bthank you,\s|\bthanks,\s|phone\s*\(|fax\s*\(")
+_THREAD_MARK = re.compile(
+    r"(?i)join with google meet|appointment booked:|original message|begin forwarded message|"
+    r"\bmeet\.google\.com\b|\bon [A-Za-z]{3},\s.{0,60}?wrote:|\bABBY:\s|\bcc:\s|\|\^{3,}"
+)
+_AMAZON_REPEAT = re.compile(r"(?i)\s*amazon presence: not verified\.?")
+_PREPARED = re.compile(r"(?i)^prepared(?:,\s*not raised by them)?\s*:\s*")
+_NUDGE_ONLY = re.compile(r"(?i)^nudge\s*\d+$")
+
+
+def clean_company_name(value: str) -> str:
+    """Drop homepage chrome such as 'Home - Brand' so the title is not the company."""
+
+    text = no_em_dash(" ".join(str(value or "").split()))
+    previous = None
+    while text and text != previous:
+        previous = text
+        text = _HOME_PREFIX.sub("", text).strip()
+        text = _HOME_SUFFIX.sub("", text).strip()
+    if text.lower() in {"home", "homepage", "welcome"}:
+        return ""
+    return text.strip(" -|")
+
+
+def clean_message_text(value: str) -> str:
+    """Keep the prospect's own words. Cut quoted threads, signatures, invites, and art."""
+
+    text = no_em_dash(str(value or "")).replace("\r", "\n")
+    kept = []
+    for line in text.split("\n"):
+        stripped = line.strip()
+        if not stripped or stripped.startswith((">", "|")):
+            continue
+        if re.match(r"(?i)^(cc|bcc|from|sent|subject)\s*:", stripped):
+            continue
+        kept.append(stripped)
+    text = re.sub(r"\s+", " ", " ".join(kept)).strip()
+    cut_at = None
+    mark = _THREAD_MARK.search(text)
+    if mark:
+        cut_at = mark.start()
+    signature = _SIGNATURE_CUT.search(text)
+    if signature and signature.start() >= 40:
+        cut_at = signature.start() if cut_at is None else min(cut_at, signature.start())
+    art = text.find("|^^^")
+    if art >= 0:
+        cut_at = art if cut_at is None else min(cut_at, art)
+    if cut_at is not None:
+        text = text[:cut_at]
+    text = text.strip(" \t,;|")
+    text = text.rstrip("-")
+    if not text or _NUDGE_ONLY.match(text) or _THREAD_MARK.search(text):
+        return ""
+    return text[:320]
+
+
+def _https_url(value: str) -> str:
+    url = str(value or "").strip()
+    if url.startswith("https://") and " " not in url and len(url) < 500:
+        return url
+    return ""
+
+
+def _run_id_from_deck_url(url: str) -> str:
+    match = re.search(r"/decks/[^/]+/(\d+)(?:/|$)", url or "")
+    return match.group(1) if match else ""
+
+
+def _json_text(dialect: str, column: str, key: str) -> str:
+    if dialect == "postgresql":
+        return f"coalesce({column}->>'{key}', '')"
+    return f"coalesce(json_extract({column}, '$.{key}'), '')"
+
+
+def _host_matches(value: str, domain: str) -> bool:
+    from urllib.parse import urlparse
+
+    raw = str(value or "").strip().lower()
+    host_name = (domain or "").strip().lower()
+    if not raw or not host_name:
+        return False
+    if "://" not in raw:
+        raw = "https://" + raw
+    host = (urlparse(raw).hostname or "").lower()
+    return host == host_name or host.endswith("." + host_name)
+
+
+def _deck_from_sends(session: Optional[Session], email: str) -> dict:
+    if not email:
+        return {}
+    ok, rows = _query(
+        session,
+        "SELECT deck_url, status FROM abby_deck_sends "
+        "WHERE lower(lead) = :e AND trim(deck_url) <> '' "
+        "ORDER BY CASE WHEN lower(status) = 'sent' THEN 0 ELSE 1 END, id DESC "
+        "LIMIT 5",
+        {"e": email},
+    )
+    if not ok:
+        return {}
+    for row in rows:
+        if str(row.get("status") or "").strip().lower() != "sent":
+            continue
+        url = _https_url(row.get("deck_url") or "")
+        if url:
+            return {
+                "url": url,
+                "run_id": _run_id_from_deck_url(url),
+                "source": "abby_deck_sends",
+                "status": "sent",
+            }
+    return {}
+
+
+def _deck_from_runs(session: Optional[Session], domain: str) -> dict:
+    """Latest successful deck whose target site is this domain. Does not read deck HTML."""
+
+    if session is None or not domain:
+        return {}
+    try:
+        dialect = session.get_bind().dialect.name
+    except Exception:
+        return {}
+    target = _json_text(dialect, "metadata_json", "target_product_input")
+    site = _json_text(dialect, "metadata_json", "brand_website")
+    view = _json_text(dialect, "summary_json", "view_url")
+    ok, rows = _query(
+        session,
+        "SELECT id, "
+        f"{view} AS view_url, {target} AS target, {site} AS site "
+        "FROM automation_runs "
+        "WHERE run_type = 'deck_generation' AND status = 'success' "
+        f"AND {view} <> '' "
+        f"AND (lower({target}) LIKE :pat OR lower({site}) LIKE :pat) "
+        "ORDER BY id DESC LIMIT 8",
+        {"pat": f"%{domain.lower()}%"},
+    )
+    if not ok:
+        return {}
+    for row in rows:
+        if not (
+            _host_matches(str(row.get("target") or ""), domain)
+            or _host_matches(str(row.get("site") or ""), domain)
+        ):
+            continue
+        url = _https_url(row.get("view_url") or "")
+        if not url:
+            continue
+        return {
+            "url": url,
+            "run_id": str(row.get("id") or "") or _run_id_from_deck_url(url),
+            "source": "deck_generation",
+            "status": "success",
+        }
+    return {}
+
+
+def lookup_deck(session: Optional[Session], email: str, domain: str) -> dict:
+    """The strategy deck sent to this prospect, else the latest generated deck for the domain."""
+
+    found = _deck_from_sends(session, email)
+    if found.get("url"):
+        return found
+    return _deck_from_runs(session, domain)
+
+
+def _scrub_repeat(value: str) -> str:
+    text = _AMAZON_REPEAT.sub("", no_em_dash(str(value or "")))
+    text = re.sub(r"[ \t]{2,}", " ", text)
+    text = re.sub(r"\s+\.", ".", text)
+    return text.strip()
+
+
+def _team_written(detail: str) -> bool:
+    return "written by our team" in str(detail or "").lower()
+
+
+def _abby_rows(context: dict) -> list[dict]:
+    return list((context.get("abby_handled") or {}).get("rows") or [])
+
+
+def _nudge_count(rows: list[dict]) -> int:
+    count = 0
+    for row in rows:
+        action = str(row.get("action") or "").lower()
+        category = str(row.get("category") or "").lower()
+        if action == "nudge" or category == "nudge":
+            count += 1
+    return count
+
+
+def _reply_count(rows: list[dict]) -> int:
+    count = 0
+    for row in rows:
+        if str(row.get("action") or "").lower() != "reply":
+            continue
+        if _team_written(str(row.get("detail") or "")):
+            continue
+        count += 1
+    return count
+
+
+def _prospect_lines(booking: Booking, context: dict) -> list[str]:
+    """Lines the prospect wrote. Team mail, nudges, and quoted threads stay out."""
+
+    email = (booking.prospect_email or "").lower()
+    lines: list[str] = []
+    seen: set[str] = set()
+
+    def add(value: str) -> None:
+        cleaned = clean_message_text(value)
+        if not cleaned:
+            return
+        key = cleaned.casefold()
+        if key in seen:
+            return
+        seen.add(key)
+        lines.append(cleaned)
+
+    for row in _abby_rows(context):
+        action = str(row.get("action") or "").lower()
+        detail = str(row.get("detail") or "")
+        if action in {"nudge", "skip"} or _team_written(detail):
+            continue
+        match = re.search(r"(?is)\bTHEM:\s*(.+)", detail)
+        if match:
+            add(match.group(1))
+    notes = list(context.get("gmail") or []) + list(context.get("mailbox") or [])
+    notes += list(((context.get("instantly") or {}).get("emails") or []))
+    for note in notes:
+        subject = str(note.get("subject") or "")
+        if _NOISE_SUBJECT.search(subject.strip()):
+            continue
+        sender = str(note.get("from") or "").lower()
+        if email and email in sender:
+            add(str(note.get("snippet") or ""))
+    for comment in (context.get("clickup") or {}).get("comments") or []:
+        text_value = str(comment.get("text") or "")
+        marker = re.search(r"(?is)\b(?:said|wrote):\s*(.+)", text_value)
+        if marker:
+            add(marker.group(1))
+    return lines
+
+
+def _clickup_notes(context: dict) -> list[str]:
+    notes = []
+    for comment in (context.get("clickup") or {}).get("comments") or []:
+        text_value = str(comment.get("text") or "")
+        if re.search(r"(?is)\b(?:said|wrote):", text_value):
+            continue
+        cleaned = clean_message_text(text_value)
+        if cleaned and len(cleaned) <= 180:
+            notes.append(cleaned)
+    return notes
+
+
+def _first_sentences(lines: list[str], limit: int) -> list[str]:
+    chosen: list[str] = []
+    for line in lines:
+        parts = [part.strip() for part in _SENTENCE.split(line) if part.strip()] or [line]
+        for part in parts:
+            if part[-1:] not in ".!?":
+                part += "."
+            chosen.append(part)
+            if len(chosen) >= limit:
+                return chosen
+    return chosen
+
+
+def _sent_sentence(context: dict) -> str:
+    rows = _abby_rows(context)
+    parts = []
+    if _https_url((context.get("deck") or {}).get("url") or ""):
+        parts.append("a strategy deck")
+    elif _reply_count(rows):
+        parts.append("a reply")
+    nudges = _nudge_count(rows)
+    if nudges:
+        parts.append(f"{nudges} follow-up nudge" + ("s" if nudges != 1 else ""))
+    if not parts:
+        return ""
+    if len(parts) == 1:
+        body = parts[0]
+    elif len(parts) == 2:
+        body = f"{parts[0]} and {parts[1]}"
+    else:
+        body = ", ".join(parts[:-1]) + ", and " + parts[-1]
+    return f"We sent {body}."
+
+
+def _how_they_came_in(rows: list[dict]) -> str:
+    """A short source line. Skip nudge logs and mail our team wrote."""
+
+    chosen = None
+    for row in rows:
+        action = str(row.get("action") or "").lower()
+        category = str(row.get("category") or "").lower()
+        if action in {"skip", "nudge"} or category == "nudge":
+            continue
+        if _team_written(str(row.get("detail") or "")):
+            continue
+        chosen = row
+        break
+    if chosen is None:
+        return "Abby outreach is on file."
+    category = str(chosen.get("category") or "unspecified")
+    action = str(chosen.get("action") or "unspecified")
+    if category.lower() == "interested" and action.lower() == "reply":
+        how = "They replied to Abby's outreach."
+    else:
+        how = f"Abby history on file: {category} / {action}."
+    detail = _short_abby_detail(chosen)
+    if detail:
+        how = f"{how} {detail}"
+    return how
+
+
+def _short_abby_detail(row: dict) -> str:
+    detail = " ".join(str(row.get("detail") or "").split())
+    if not detail or _team_written(detail) or re.search(r"(?i)\bTHEM:", detail):
+        return ""
+    if _NUDGE_ONLY.match(detail) or _THREAD_MARK.search(detail) or len(detail) > 120:
+        return ""
+    return detail
+
+
+def situation_summary(booking: Booking, context: dict) -> str:
+    """Two or three sentences: what the prospect said, and what we sent."""
+
+    said = _first_sentences(_prospect_lines(booking, context), 2)
+    sent = _sent_sentence(context)
+    sentences = list(said)
+    if sent:
+        sentences.append(sent)
+    if len(sentences) < 3:
+        for note in _clickup_notes(context):
+            sentence = note if note[-1:] in ".!?" else note + "."
+            if sentence not in sentences:
+                sentences.append("ClickUp note: " + sentence)
+            if len(sentences) >= 3:
+                break
+    if not sentences:
+        return "Unknown. No Abby, ClickUp, Gmail, or Instantly history matched this email."
+    return no_em_dash(" ".join(sentences[:3]))
+
+
 def _gmail_history(client: Any, email: str) -> list[dict]:
     if client is None or not email or not getattr(client, "list_messages", None):
         return []
@@ -406,14 +758,17 @@ def _gmail_history(client: Any, email: str) -> list[dict]:
         payload = full.get("payload") if isinstance(full.get("payload"), dict) else {}
         headers = payload.get("headers") if isinstance(payload.get("headers"), list) else []
         subject = extract_header(headers, "subject")
-        if subject.lower().startswith("call prep:"):
+        if subject.lower().startswith("call prep:") or _NOISE_SUBJECT.search(subject.strip()):
             continue
         body = extract_body_text(payload) or str(full.get("snippet") or "")
+        cleaned = clean_message_text(body)
+        if not cleaned:
+            continue
         rows.append({
             "from": extract_header(headers, "from"),
             "date": extract_header(headers, "date"),
             "subject": subject[:180],
-            "snippet": " ".join(body.split())[:400],
+            "snippet": cleaned[:400],
         })
     return rows
 
@@ -445,10 +800,16 @@ def _instantly_history(email: str) -> dict:
             continue
         body = item.get("body") if isinstance(item.get("body"), dict) else {}
         text_value = str(body.get("text") or item.get("content_preview") or "")
+        subject = str(item.get("subject") or "")
+        if _NOISE_SUBJECT.search(subject.strip()):
+            continue
+        cleaned = clean_message_text(text_value)
+        if not cleaned:
+            continue
         emails.append({
             "from": str(item.get("from_address_email") or item.get("lead") or ""),
-            "subject": str(item.get("subject") or "")[:180],
-            "snippet": " ".join(text_value.split())[:400],
+            "subject": subject[:180],
+            "snippet": cleaned[:400],
             "timestamp": str(item.get("timestamp_created") or ""),
         })
     slim = {}
@@ -539,6 +900,8 @@ def gather_context(
         company = str(links["title"])
     elif clickup_task.get("name"):
         company = str(clickup_task["name"]).split("|")[0].strip()
+    company = clean_company_name(company)
+    deck = lookup_deck(session, email, domain)
     return {
         "booking": {
             "prospect_name": booking.prospect_name,
@@ -566,6 +929,7 @@ def gather_context(
         "gmail": gmail_rows,
         "instantly": instantly,
         "mailbox": mailbox,
+        "deck": deck,
         "website": {
             "domain": domain,
             "verified": bool((links.get("website") or {}).get("verified")),
@@ -601,22 +965,7 @@ def _history_line(context: dict) -> str:
 def prospect_quotes(booking: Booking, context: dict) -> str:
     """Lines the prospect wrote, for the script's quotes field. Not claims we inferred."""
 
-    email = (booking.prospect_email or "").lower()
-    lines = []
-    for comment in (context.get("clickup") or {}).get("comments") or []:
-        text_value = str(comment.get("text") or "")
-        marker = re.search(r"(?is)\b(?:said|wrote):\s*(.+)", text_value)
-        if marker:
-            lines.append(" ".join(marker.group(1).split())[:400])
-    for note in list(context.get("gmail") or []) + list(context.get("mailbox") or []):
-        sender = str(note.get("from") or "").lower()
-        if email and email in sender and note.get("snippet"):
-            lines.append(" ".join(str(note["snippet"]).split())[:400])
-    seen = []
-    for line in lines:
-        if line and line not in seen:
-            seen.append(line)
-    return "\n".join(seen[:6])
+    return "\n".join(_prospect_lines(booking, context)[:4])
 
 
 def discovery_map(booking: Booking, context: dict) -> list[dict]:
@@ -625,29 +974,29 @@ def discovery_map(booking: Booking, context: dict) -> list[dict]:
     links = context.get("links") or {}
     website = (links.get("website") or {})
     amazon = (links.get("amazon") or {})
-    company = str(context.get("company") or "").strip() or "Unknown"
-    site_line = website.get("url") if website.get("verified") else "Website: not verified"
+    company = clean_company_name(str(context.get("company") or "")) or "Unknown"
+    if website.get("verified") and website.get("url"):
+        site_line = f"Website: {website.get('url')}."
+    else:
+        site_line = "Website: not verified."
     channel = "The fetched homepage is a Shopify store." if links.get("shopify") else ""
-    amazon_line = str(amazon.get("line") or AMAZON_UNVERIFIED)
-    history = _history_line(context)
     purpose = booking.purpose or "Unknown"
     known = {
         "s1": f"Booking form: {purpose}.",
         "s2": " ".join(
             part for part in (
                 f"Company on file: {company}.",
-                f"Website: {site_line}.",
+                site_line,
                 channel,
-                amazon_line + ".",
             ) if part
         ),
-        "s3": history or "Unknown. No Abby, ClickUp, Gmail, or Instantly history matched this email.",
+        "s3": situation_summary(booking, context),
         "s4": "Unknown. Ask section 4. Do not treat follow-up emails as their current ad setup.",
         "s5": "Unknown. No verified account numbers are on file. Use the script's number questions.",
         "s6": "Unknown. Use section 6.",
         "s7": "Unknown. Use section 7 after they name the gap.",
         "s8": "Unknown. Use section 8.",
-        "s9": history or "Unknown. Use section 9.",
+        "s9": "Unknown. Use section 9. Prior emails are context, not a list of solutions they tried.",
         "s10": f"They booked for: {purpose}.",
         "s11": "Unknown who else decides. Use section 11.",
         "s12": "Unknown. Use section 12.",
@@ -656,7 +1005,7 @@ def discovery_map(booking: Booking, context: dict) -> list[dict]:
     angles = {
         "s1": "Use section 1. Start from the booking reason, then the script's biggest-challenge question.",
         "s2": "Use section 2. Only the verified website and Amazon lines above are safe to say.",
-        "s3": "Use section 3. Read back a fact from the history, then ask them to say it in their words.",
+        "s3": "Use section 3. Read back what they said, then ask them to say it in their words.",
         "s4": "Use section 4. Do not assume an agency, a tool, or an Amazon account.",
         "s5": "Use section 5. Leave the calculators blank until they give a number.",
         "s6": "Use section 6.",
@@ -679,43 +1028,32 @@ def discovery_map(booking: Booking, context: dict) -> list[dict]:
 def fallback_notes(booking: Booking, context: dict) -> dict:
     """Prep from the packet only, used when the model is down or unreadable."""
 
-    company = str(context.get("company") or "").strip()
+    company = clean_company_name(str(context.get("company") or ""))
     email = booking.prospect_email or "Unknown"
     who = f"{booking.prospect_name or 'Unknown'} ({email})."
     who += f" Company: {company}." if company else " Company: Unknown."
     abby = (context.get("abby_handled") or {}).get("rows") or []
     outbound = (context.get("outbound_enriched") or {}).get("row") or (context.get("outbound_contact") or {}).get("row")
+    summary = situation_summary(booking, context)
     if abby:
-        latest = abby[0]
-        how = (
-            f"Abby history on file: {latest.get('category') or 'unspecified'} / "
-            f"{latest.get('action') or 'unspecified'}."
-        )
+        how = _how_they_came_in(abby)
     elif outbound:
         how = "Matched an outbound contact already stored for this email."
     elif (context.get("clickup") or {}).get("matched"):
         how = "Matched an existing ClickUp Sales CRM task. No outbound or Abby row was on file."
+    elif not summary.startswith("Unknown"):
+        how = summary
     else:
         how = "Unknown. No outbound row, Abby history, or ClickUp task matched this email."
     needs = booking.purpose or "Unknown. The booking form answer was empty."
-    history = _history_line(context)
-    if history and how.startswith("Unknown"):
-        how = history[:700]
-    elif history and "Abby history" in how:
-        how = (how + " " + history)[:700]
     links = context.get("links") or {}
-    amazon_line = str((links.get("amazon") or {}).get("line") or AMAZON_UNVERIFIED)
-    if not (links.get("amazon") or {}).get("verified"):
-        needs = needs.rstrip(".") + f". {amazon_line}."
     unknowns = []
     if not company:
         unknowns.append("Company")
     if not booking.purpose:
         unknowns.append("Booking form answer")
-    if not history and not abby and not outbound:
+    if summary.startswith("Unknown") and not abby and not outbound:
         unknowns.append("How they came in")
-    if not (links.get("amazon") or {}).get("verified"):
-        unknowns.append(AMAZON_UNVERIFIED)
     return {
         "who": who,
         "how_they_came_in": how,
@@ -801,8 +1139,8 @@ def generate_notes(booking: Booking, context: dict) -> tuple[dict, str]:
         "Do not write discovery questions. The call script already has sections s1 to s13. "
         "trial_pitch must be a JSON array of strings, never one paragraph. "
         "Do not say the prospect is on Amazon unless the packet's amazon.verified is true, "
-        "and then only repeat the resolved URLs. If it is not verified, write "
-        "'Amazon presence: not verified'. "
+        "and then only repeat the resolved URLs. Do not write 'Amazon presence: not verified' "
+        "anywhere; that line is added once, outside these notes. "
         "If the prospect has not raised an objection, label it Prepared, not raised by them. "
         "Reply with JSON only, no prose and no code fences, using keys who, how_they_came_in, "
         "likely_needs, trial_pitch (array of strings), objections "
@@ -899,57 +1237,100 @@ def _lead_link(context: dict) -> str:
     return ""
 
 
+def _objection_lines(objections: list) -> list[str]:
+    """One prepared label for the whole group, then a short objection and answer."""
+
+    prepared: list[tuple[str, str]] = []
+    raised: list[tuple[str, str]] = []
+    for item in objections:
+        if not isinstance(item, dict):
+            continue
+        question = _scrub_repeat(str(item.get("objection") or "")).strip() or "Unknown"
+        answer = _scrub_repeat(str(item.get("answer") or "")).strip()
+        if _PREPARED.match(question):
+            prepared.append((_PREPARED.sub("", question).strip() or "Unknown", answer))
+        else:
+            raised.append((question, answer))
+    lines: list[str] = []
+
+    def add(title: str, pairs: list[tuple[str, str]]) -> None:
+        if not pairs:
+            return
+        lines.append(title)
+        for question, answer in pairs:
+            lines.append(f"- {question}")
+            if answer and answer.lower() != "unknown":
+                lines.append(f"  {answer}")
+
+    add("Objections prepared, not raised by them:", prepared)
+    add("Objections they raised:", raised)
+    if not lines:
+        lines.append("Objections:")
+        lines.append("- Unknown")
+    return lines
+
+
+def _discovery_known(sections: dict, step_id: str) -> str:
+    for item in as_list(sections.get("discovery")):
+        if isinstance(item, dict) and str(item.get("id") or "") == step_id:
+            return str(item.get("known") or "").strip()
+    return ""
+
+
 def slack_text(tracker: SalesCallTracker, prep: dict, timing_note: str) -> str:
+    """Short brief for Slack and the Gmail draft. The call page keeps the full script."""
+
     sections = prep.get("sections") if isinstance(prep.get("sections"), dict) else {}
-    questions = as_list(sections.get("discovery") or sections.get("discovery_questions"))
     pitch = as_list(sections.get("trial_pitch"))
     objections = as_list(sections.get("objections"))
     lines = [
         f"Call prep: {prep.get('prospect_name') or tracker.prospect_name or 'Unknown'}",
         f"When: {prep.get('when') or 'Unknown'}",
         f"Purpose: {prep.get('purpose') or 'Unknown'}",
-        f"Tracker: {tracker_url(tracker.id)}",
+        f"Call script: {tracker_url(tracker.id)}",
     ]
+    deck = prep.get("deck") if isinstance(prep.get("deck"), dict) else {}
+    deck_url = _https_url(deck.get("url") or "")
+    if deck_url:
+        lines.append(f"Deck: {deck_url}")
     if timing_note:
         lines.append(timing_note)
     if prep.get("meet_url"):
         lines.append(f"Meet: {prep['meet_url']}")
     lines += [
         "",
-        "Who: " + str(sections.get("who") or "Unknown"),
-        "How they came in: " + str(sections.get("how_they_came_in") or "Unknown"),
-        "Likely needs: " + str(sections.get("likely_needs") or "Unknown"),
+        "Who: " + (_scrub_repeat(str(sections.get("who") or "")) or "Unknown"),
+        "How they came in: " + (_scrub_repeat(str(sections.get("how_they_came_in") or "")) or "Unknown"),
+        "Likely needs: " + (_scrub_repeat(str(sections.get("likely_needs") or "")) or "Unknown"),
         "",
-        "Discovery, using the call script:",
     ]
+    situation = _scrub_repeat(_discovery_known(sections, "s3"))
+    if situation and not situation.lower().startswith("unknown"):
+        lines += ["Current situation:", situation, ""]
     links = prep.get("links") if isinstance(prep.get("links"), dict) else {}
-    website = (links.get("website") or {}) if isinstance(links, dict) else {}
-    amazon = (links.get("amazon") or {}) if isinstance(links, dict) else {}
+    website = links.get("website") if isinstance(links.get("website"), dict) else {}
+    amazon = links.get("amazon") if isinstance(links.get("amazon"), dict) else {}
     if website.get("verified") and website.get("url"):
         lines.append(f"Website: {website['url']}")
-    if isinstance(amazon, dict) and amazon.get("line"):
+    else:
+        lines.append("Website: not verified")
+    if amazon.get("line"):
         lines.append(str(amazon["line"]))
-    for item in questions:
-        if isinstance(item, dict):
-            lines.append(
-                f"- {item.get('id') or ''} {item.get('title') or ''}: "
-                f"{item.get('known') or 'Unknown'} Angle: {item.get('angle') or ''}"
-            )
-        else:
-            lines.append(f"- {item}")
+    elif not amazon.get("verified"):
+        lines.append(AMAZON_UNVERIFIED)
     lines.append("")
     lines.append("Trial pitch:")
     for point in pitch:
         lines.append(f"- {point}")
     lines.append("")
-    lines.append("Objections:")
-    for item in objections:
-        if isinstance(item, dict):
-            lines.append(f"- {item.get('objection') or 'Unknown'}: {item.get('answer') or 'Unknown'}")
-    lines += ["", "Next step: " + str(sections.get("next_step") or "Unknown")]
-    unknowns = prep.get("unknowns") or []
+    lines.extend(_objection_lines(objections))
+    lines += ["", "Next step: " + (_scrub_repeat(str(sections.get("next_step") or "")) or "Unknown")]
+    unknowns = [
+        str(item) for item in (prep.get("unknowns") or [])
+        if str(item).strip() and AMAZON_UNVERIFIED.casefold() not in str(item).casefold()
+    ]
     if unknowns:
-        lines += ["", "Unknown: " + ", ".join(str(item) for item in unknowns)]
+        lines += ["", "Unknown: " + ", ".join(unknowns)]
     return no_em_dash("\n".join(lines))[:3500]
 
 
@@ -1098,6 +1479,11 @@ def apply_booking(
             "links": {
                 "website": (context.get("links") or {}).get("website") or {},
                 "amazon": (context.get("links") or {}).get("amazon") or {"line": AMAZON_UNVERIFIED},
+            },
+            "deck": {
+                "url": _https_url((context.get("deck") or {}).get("url") or ""),
+                "run_id": str((context.get("deck") or {}).get("run_id") or ""),
+                "source": str((context.get("deck") or {}).get("source") or ""),
             },
             "unknowns": sections.get("unknowns") or [],
             "slack": {},
