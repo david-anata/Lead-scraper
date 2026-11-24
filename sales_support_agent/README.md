@@ -147,17 +147,23 @@ campaigns: `amz_on` `8e0df427-1f18-43ac-b0c6-e8ea787123d7`, `amz_off`
 `138a162d-6654-4916-9959-20c11e31214b`, `plan_upgrade`
 `4dc10f79-f7c9-43c5-9c3e-5e28e9cf4c72`, `replatform` and `replatformed`
 `d1c197e3-bf1f-4f41-bcb9-e30e73975a2c`, `abby_reengage`
-`907d32fd-d6db-4ce6-8edc-485b78cce120`. The `replatform` v2 campaign is
-completed in Instantly, so leads added there do not send until it is
-restarted. `icp_baseline`, `social_surge`, `churned_tool`, and
-`new_growth_app` are not mapped onto a campaign. They stay queued unless
-the stored lead carries evidence for one v2 recipe (a Shopify Plus change
-in 90 days, a move off WooCommerce, Magento, or BigCommerce in 120 days,
-or a sales-channel list that does or does not include Amazon). The filler
-name alone is not evidence. `OUTBOUND_INSTANTLY_CAMPAIGN_ID` is ignored,
-including when it still names Trial Offer Oct
-(`e5f5046b-07e4-41ad-a395-79cf8766ccd0`). Cut filler hold rows stay in
-place. Contacts whose v2 campaign is `cut` or `proposed` stay unpushed.
+`907d32fd-d6db-4ce6-8edc-485b78cce120`, and `icp_baseline`
+`4f118329-c07e-4279-9c08-12059f2a49f4` (AGENT SDR // MARCH '26). The
+`replatform` v2 campaign is completed in Instantly, so leads added there
+do not send until it is restarted. `icp_baseline` routes to AGENT SDR
+without a signal token. A signal token does not move that contact to
+another campaign. Contacts are added with `skip_if_in_workspace`, so a
+person already in Instantly stays in the campaign they are already in.
+`social_surge`, `churned_tool`, and `new_growth_app` are not mapped onto
+a campaign. They stay queued unless the stored lead carries evidence for
+one v2 recipe (a Shopify Plus change in 90 days, a move off WooCommerce,
+Magento, or BigCommerce in 120 days, or a sales-channel list that does or
+does not include Amazon). The filler name alone is not evidence.
+`OUTBOUND_INSTANTLY_CAMPAIGN_ID` is ignored, including when it still names
+Trial Offer Oct (`e5f5046b-07e4-41ad-a395-79cf8766ccd0`). AGENT SDR is not
+a fallback for an unmapped recipe. Cut filler hold rows for the other
+fillers stay in place. Contacts whose campaign is `cut` or `proposed`
+stay unpushed. This does not start AGENT SDR or edit its copy or limits.
 Contacts tagged `redo_partner` are stored and left out of that push. This
 does not create, edit, activate, or archive Instantly campaigns.
 
@@ -199,9 +205,11 @@ send a reply, or read Trial Offer Oct. Unsubscribes, negative replies,
 open threads, prior re-engage members, suppressed emails, and contacts
 already pushed to another campaign are excluded.
 
-The weekday morning pull sources `amz_on`, `amz_off`, `plan_upgrade`, and
-`replatform` from each row's `storeleads_filters` before the older recipes.
-Those filters are confirmed List Domains parameters: Shopify, Active, US,
+The weekday morning pull sources `amz_on`, `amz_off`, `plan_upgrade`,
+`replatform`, and `icp_baseline` from each row's `storeleads_filters`
+before the older recipes. `icp_baseline` is Shopify, Active, US, an email,
+and $1M to $20M a year, at 25 companies a day. It does not take leftover
+room. The four signal filters are confirmed List Domains parameters: Shopify, Active, US,
 an email, and $10k a month through $20M a year, plus Amazon / not Amazon, a
 Shopify Plus plan change in the last 90 days, or a move off WooCommerce,
 Magento, or BigCommerce in the last 120 days. The code applies that revenue
@@ -239,12 +247,16 @@ are carried on the domain reason as `apollo_credits=N`.
 
 The hourly enrich job tries active `outbound_campaigns` recipes first,
 oldest unenriched brand first, up to each row's remaining `daily_cap`
-(the live caps are 100). The recipes are interleaved. `icp_baseline`,
-`social_surge`, and every other recipe use whatever room is left,
-newest first. The enrich order does not move a contact already in
-Instantly. Each recipe is still pushed from the active
-`outbound_campaigns` row, or from the v2 fallback map when that table
-cannot be read.
+(the signal caps are 100; `icp_baseline` is 25 and does not take leftover
+company room). The recipes are interleaved. `icp_baseline` companies
+first seen before 2026-11-20 stay in the library and are not enriched.
+A throttled or zero-cap baseline row does not enrich them either. Companies
+first seen on or after that date are the daily feed, and only while the
+row is active with room left in its cap. `social_surge`
+and every other non-campaign recipe use whatever room is left, newest
+first. The enrich order does not move a contact already in Instantly.
+Each recipe is still pushed from the active `outbound_campaigns` row, or
+from the v2 fallback map when that table cannot be read.
 
 Monday at 7:00 AM America/Denver, `/api/jobs/outbound-campaign-score/at-1300`
 and `at-1400` score the previous week once `instantly_campaign_daily`

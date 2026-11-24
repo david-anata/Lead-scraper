@@ -146,7 +146,7 @@ def test_stale_trial_default_does_not_receive_filler_leads(engine, monkeypatch, 
                     "most_recently_published_product": {"title": "Toothpaste Tabs"},
                 },
             } for i in range(10)],
-            push=lambda *a, **k: called.append(a[1] if len(a) > 1 else k.get("campaign_id")),
+            push=lambda *a, **k: called.append(a[1] if len(a) > 1 else k.get("campaign_id")) or ok_push(*a, **k),
         )
     assert out["ran"] and out["pushed"] == 0 and out["campaign_missing"] is False
     assert out["campaign_id"] == ""
@@ -154,9 +154,9 @@ def test_stale_trial_default_does_not_receive_filler_leads(engine, monkeypatch, 
     text = job.summary_text(out)
     assert posts == []
     assert push.LEGACY_TRIAL_CAMPAIGN_ID not in text
-    assert "Queued, no matching v2 campaign: 10" in text
+    assert push.LIVE_CAMPAIGN_ID not in text
     assert "OUTBOUND_INSTANTLY_CAMPAIGN_ID is unset" not in caplog.text
-    assert len(oe.unpushed(engine)) == 10
+    assert oe.unpushed(engine) == []
 
 
 def test_max_contacts_comes_from_the_env(engine, monkeypatch):
@@ -467,7 +467,7 @@ def test_enrich_job_tries_campaign_recipes_before_newer_baseline(engine, monkeyp
     for recipe in ("amz_on", "amz_off", "plan_upgrade", "replatform"):
         _cap(engine, recipe, 1)
         _store_recipe(engine, recipe, 3, "2026-10-01")
-    _store_recipe(engine, "social_surge", 8, "2026-11-04")
+    social = _store_recipe(engine, "social_surge", 8, "2026-11-04")
     baseline = _store_recipe(engine, "icp_baseline", 8, "2026-11-05")
     tried = []
     sent = []
@@ -483,8 +483,9 @@ def test_enrich_job_tries_campaign_recipes_before_newer_baseline(engine, monkeyp
     out, _posts = _run_loaded(engine, find=find, push=record)
     assert out["ran"]
     assert tried == [
-        "amzon0.com", "amzoff0.com", "planup0.com", "replat0.com", baseline[-1],
+        "amzon0.com", "amzoff0.com", "planup0.com", "replat0.com", social[-1],
     ]
+    assert baseline[-1] not in tried
     by_campaign = {cid: emails for cid, emails in sent}
     assert by_campaign[push.RECIPE_CAMPAIGN_MAP["amz_on"]] == ["a@amzon0.com"]
     assert by_campaign[push.RECIPE_CAMPAIGN_MAP["amz_off"]] == ["a@amzoff0.com"]
@@ -537,7 +538,8 @@ def test_campaign_cap_already_used_today_lets_baseline_follow(engine, monkeypatc
         _cap(engine, recipe, 0)
     _cap(engine, "amz_on", 2)
     domains = _store_recipe(engine, "amz_on", 4, "2026-10-01")
-    baseline = _store_recipe(engine, "icp_baseline", 4, "2026-11-05")
+    social = _store_recipe(engine, "social_surge", 4, "2026-11-05")
+    _store_recipe(engine, "icp_baseline", 4, "2026-11-05")
     oe.ensure_tables(engine)
     oe._record_domain(engine, domains[0], "found", 1, 1, "already enriched")
     with engine.begin() as conn:
@@ -553,7 +555,8 @@ def test_campaign_cap_already_used_today_lets_baseline_follow(engine, monkeypatc
 
     out, _posts = _run_loaded(engine, find=find)
     assert out["ran"]
-    assert tried == ["amzon1.com", baseline[-1], baseline[-2]]
+    assert tried == ["amzon1.com", social[-1], social[-2]]
+    assert not any(domain.startswith("baseline") for domain in tried)
 
 
 def test_replatformed_alias_counts_against_the_replatform_cap(engine):
@@ -564,11 +567,11 @@ def test_replatformed_alias_counts_against_the_replatform_cap(engine):
     memory.record_leads(engine, [
         {"domain": "oldmove.com", "brand": "Old", "recipe": "replatformed"},
         {"domain": "newmove.com", "brand": "New", "recipe": "replatform"},
-        {"domain": "base.com", "brand": "Base", "recipe": "icp_baseline"},
+        {"domain": "social.com", "brand": "Social", "recipe": "social_surge"},
     ])
     _stamp(engine, "oldmove.com", "2026-10-01 08:00:00")
     _stamp(engine, "newmove.com", "2026-10-01 09:00:00")
-    _stamp(engine, "base.com", "2026-11-05 12:00:00")
+    _stamp(engine, "social.com", "2026-11-05 12:00:00")
     oe.ensure_tables(engine)
     oe._record_domain(engine, "oldmove.com", "found", 1, 1, "done")
     with engine.begin() as conn:
@@ -579,7 +582,7 @@ def test_replatformed_alias_counts_against_the_replatform_cap(engine):
         engine, memory.load_leads(engine, limit=1000),
         since_utc=datetime(2026, 10, 22, 6, 0, 0),
     )
-    assert [lead["domain"] for lead in ordered][0] == "base.com"
+    assert [lead["domain"] for lead in ordered][0] == "social.com"
     assert "newmove.com" in [lead["domain"] for lead in ordered]
 
 
@@ -592,12 +595,97 @@ def test_cut_campaign_stays_behind_baseline(engine):
             "UPDATE outbound_campaigns SET status = 'cut' WHERE recipe_key = 'plan_upgrade'"
         ))
     _store_recipe(engine, "plan_upgrade", 2, "2026-10-01")
-    baseline = _store_recipe(engine, "icp_baseline", 1, "2026-11-05")
+    social = _store_recipe(engine, "social_surge", 1, "2026-11-05")
+    _store_recipe(engine, "icp_baseline", 1, "2026-11-06")
     ordered = oe.order_leads_for_enrich(
         engine, memory.load_leads(engine, limit=1000),
         since_utc=datetime(2026, 10, 22, 6, 0, 0),
     )
-    assert ordered[0]["domain"] == baseline[0]
+    domains = [lead["domain"] for lead in ordered]
+    assert domains[0] == social[0]
+    assert not any(domain.startswith("baseline") for domain in domains)
+
+
+def test_an_active_baseline_feed_skips_companies_from_before_the_restart(engine):
+    campaigns.ensure_tables(engine)
+    with engine.begin() as conn:
+        conn.execute(text(
+            "INSERT INTO outbound_campaigns "
+            "(campaign_id, name, recipe_key, recipe_aliases, storeleads_filters, "
+            "status, daily_cap, template_ref) VALUES ("
+            ":campaign_id, :name, 'icp_baseline', '', :filters, 'active', 25, 'icp_baseline')"
+        ), {
+            "campaign_id": push.LIVE_CAMPAIGN_ID,
+            "name": "icp_baseline|standard|us_shopify_1m_20m",
+            "filters": '{"f:p":"shopify"}',
+        })
+    old = _store_recipe(engine, "icp_baseline", 2, "2026-11-05")
+    memory.record_leads(engine, [{
+        "domain": "newbase.com", "brand": "New", "recipe": "icp_baseline",
+        "categories": "Apparel", "site_product": "toothpaste tabs",
+        "store_profile": {
+            "description": "Toothpaste tabs",
+            "most_recently_published_product": {"title": "Toothpaste Tabs"},
+        },
+    }])
+    _stamp(engine, "newbase.com", "2026-11-20 09:00:00")
+    ordered = oe.order_leads_for_enrich(
+        engine, memory.load_leads(engine, limit=1000),
+        since_utc=datetime(2026, 11, 20, 6, 0, 0),
+    )
+    domains = [lead["domain"] for lead in ordered]
+    assert domains[0] == "newbase.com"
+    assert old[0] not in domains and old[1] not in domains
+    assert oe.baseline_company_is_new("2026-11-20 00:00:00") is True
+    assert oe.baseline_company_is_new("2026-11-19 23:59:59") is False
+    assert oe.BASELINE_NEW_LEAD_FROM == "2026-11-20"
+
+
+def _insert_baseline(engine, *, status, cap):
+    with engine.begin() as conn:
+        conn.execute(text(
+            "INSERT INTO outbound_campaigns "
+            "(campaign_id, name, recipe_key, recipe_aliases, storeleads_filters, "
+            "status, daily_cap, template_ref) VALUES ("
+            ":campaign_id, :name, 'icp_baseline', '', :filters, :status, :cap, 'icp_baseline')"
+        ), {
+            "campaign_id": push.LIVE_CAMPAIGN_ID,
+            "name": "icp_baseline|standard|us_shopify_1m_20m",
+            "filters": '{"f:p":"shopify"}',
+            "status": status,
+            "cap": cap,
+        })
+
+
+def test_a_closed_baseline_row_does_not_enrich_old_or_new_companies(engine):
+    """Throttled and zero-cap rows are not a back door around the restart date."""
+
+    campaigns.ensure_tables(engine)
+    _insert_baseline(engine, status="throttled", cap=25)
+    old = _store_recipe(engine, "icp_baseline", 1, "2026-11-05")
+    memory.record_leads(engine, [{
+        "domain": "newbase.com", "brand": "New", "recipe": "icp_baseline",
+        "categories": "Apparel",
+    }])
+    _stamp(engine, "newbase.com", "2026-11-20 09:00:00")
+    ordered = oe.order_leads_for_enrich(
+        engine, memory.load_leads(engine, limit=1000),
+        since_utc=datetime(2026, 11, 20, 6, 0, 0),
+    )
+    domains = [lead["domain"] for lead in ordered]
+    assert old[0] not in domains and "newbase.com" not in domains
+
+    with engine.begin() as conn:
+        conn.execute(text(
+            "UPDATE outbound_campaigns SET status = 'active', daily_cap = 0 "
+            "WHERE recipe_key = 'icp_baseline'"
+        ))
+    ordered = oe.order_leads_for_enrich(
+        engine, memory.load_leads(engine, limit=1000),
+        since_utc=datetime(2026, 11, 20, 6, 0, 0),
+    )
+    domains = [lead["domain"] for lead in ordered]
+    assert old[0] not in domains and "newbase.com" not in domains
 
 
 def test_off_unless_explicitly_on(engine, monkeypatch):

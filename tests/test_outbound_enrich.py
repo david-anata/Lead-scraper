@@ -294,13 +294,13 @@ def test_push_pending_routes_each_recipe_and_holds_redo_partner(engine, monkeypa
     assert sent[push.RECIPE_CAMPAIGN_MAP["plan_upgrade"]] == ["a@plan.com"]
     assert sent[push.RECIPE_CAMPAIGN_MAP["replatform"]] == ["a@plat.com"]
     assert sent[push.RECIPE_CAMPAIGN_MAP["amz_on"]] == ["a@amz.com"]
+    assert sent[push.LIVE_CAMPAIGN_ID] == ["a@base.com"]
     assert "default-camp" not in sent
     assert push.LEGACY_TRIAL_CAMPAIGN_ID not in sent
     assert "a@redo.com" not in [email for emails in sent.values() for email in emails]
-    assert "a@base.com" not in [email for emails in sent.values() for email in emails]
-    assert out["pushed"] == 3 and out["queued"] == 1 and out["excluded_recipes"] == 1
-    assert sorted(row["email"] for row in oe.unpushed(engine)) == ["a@base.com", "a@redo.com"]
-    assert [row["email"] for row in oe.unpushed(engine, exclude_recipes=push.PUSH_EXCLUDED_RECIPES)] == ["a@base.com"]
+    assert out["pushed"] == 4 and out["queued"] == 0 and out["excluded_recipes"] == 1
+    assert sorted(row["email"] for row in oe.unpushed(engine)) == ["a@redo.com"]
+    assert oe.unpushed(engine, exclude_recipes=push.PUSH_EXCLUDED_RECIPES) == []
     from sqlalchemy import text
     with engine.connect() as conn:
         rows = conn.execute(text(
@@ -308,11 +308,11 @@ def test_push_pending_routes_each_recipe_and_holds_redo_partner(engine, monkeypa
         )).fetchall()
     marked = {email: campaign for email, campaign in rows}
     assert marked["a@plan.com"] == push.RECIPE_CAMPAIGN_MAP["plan_upgrade"]
-    assert "a@base.com" not in marked
+    assert marked["a@base.com"] == push.LIVE_CAMPAIGN_ID
     assert "a@redo.com" not in marked
 
 
-def test_unmapped_recipe_is_not_sent_to_the_trial_offer_env(engine, monkeypatch):
+def test_baseline_is_not_sent_to_the_trial_offer_env(engine, monkeypatch):
     monkeypatch.setenv("OUTBOUND_INSTANTLY_CAMPAIGN_ID", push.LEGACY_TRIAL_CAMPAIGN_ID)
     row = lead("a.com")
     row["recipe"] = "icp_baseline"
@@ -325,13 +325,13 @@ def test_unmapped_recipe_is_not_sent_to_the_trial_offer_env(engine, monkeypatch)
         return push.PushOutcome(attempted=len(payload), created=len(payload), dry_run=False)
 
     out = oe.push_pending(engine, push.LEGACY_TRIAL_CAMPAIGN_ID, dry_run=False, push=record)
-    assert seen == []
-    assert out["queued"] == 1 and out["pushed"] == 0
-    assert push.QUEUED_NOTE in out["note"]
-    assert [row["email"] for row in oe.unpushed(engine)] == ["x@a.com"]
+    assert seen == [push.LIVE_CAMPAIGN_ID]
+    assert out["queued"] == 0 and out["pushed"] == 1
+    assert push.LEGACY_TRIAL_CAMPAIGN_ID not in out["note"]
+    assert oe.unpushed(engine) == []
 
 
-def test_held_filler_with_a_plan_signal_routes_to_plan_upgrade(engine, monkeypatch):
+def test_baseline_with_a_plan_signal_stays_on_agent_sdr(engine, monkeypatch):
     monkeypatch.setenv("OUTBOUND_INSTANTLY_CAMPAIGN_ID", push.LEGACY_TRIAL_CAMPAIGN_ID)
     from sales_support_agent.services import outbound_memory as memory
 
@@ -357,12 +357,13 @@ def test_held_filler_with_a_plan_signal_routes_to_plan_upgrade(engine, monkeypat
     def record(payload, cid, dry_run=False, **k):
         seen["campaign"] = cid
         seen["signal"] = payload[0]["custom_variables"]["signal"]
-        seen["source"] = payload[0]["custom_variables"]["source_recipe"]
+        seen["source"] = payload[0]["custom_variables"].get("source_recipe")
         return push.PushOutcome(attempted=len(payload), created=len(payload), dry_run=False)
 
     out = oe.push_pending(engine, push.LEGACY_TRIAL_CAMPAIGN_ID, dry_run=False, push=record)
-    assert seen["campaign"] == push.RECIPE_CAMPAIGN_MAP["plan_upgrade"]
-    assert seen["signal"] == "plan_upgrade" and seen["source"] == "icp_baseline"
+    assert seen["campaign"] == push.LIVE_CAMPAIGN_ID
+    assert seen["signal"] == "icp_baseline"
+    assert seen["source"] is None
     assert out["pushed"] == 1 and out["queued"] == 0
 
 
@@ -381,12 +382,13 @@ def test_mapped_recipe_still_pushes_when_the_default_campaign_is_unset(engine, m
         return push.PushOutcome(attempted=len(payload), created=len(payload), dry_run=False)
 
     out = oe.push_pending(engine, "", dry_run=False, push=record)
-    assert sent == [(push.RECIPE_CAMPAIGN_MAP["plan_upgrade"], ["a@plus.com"])]
-    assert out["pending"] == 1 and out["pushed"] == 1 and out["queued"] == 1
-    assert push.QUEUED_NOTE in out["note"]
+    assert sorted((cid, tuple(emails)) for cid, emails in sent) == sorted([
+        (push.RECIPE_CAMPAIGN_MAP["plan_upgrade"], ("a@plus.com",)),
+        (push.LIVE_CAMPAIGN_ID, ("a@base.com",)),
+    ])
+    assert out["pending"] == 2 and out["pushed"] == 2 and out["queued"] == 0
     assert push.LEGACY_TRIAL_CAMPAIGN_ID not in out["note"]
-    remaining = [row["email"] for row in oe.unpushed(engine)]
-    assert remaining == ["a@base.com"]
+    assert oe.unpushed(engine) == []
 
 
 def test_enrich_domain_list_dry_run_does_not_search_or_store(engine):
