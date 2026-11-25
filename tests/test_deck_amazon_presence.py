@@ -89,17 +89,23 @@ class TitleCleanupTests(unittest.TestCase):
 
 
 class FollowUpDateTests(unittest.TestCase):
-    def test_thanksgiving_2026_moves_to_friday(self) -> None:
+    def test_thanksgiving_2026_skips_black_friday(self) -> None:
         thanksgiving = date(2026, 11, 26)
         self.assertIn(thanksgiving, us_federal_holidays(2026))
-        self.assertEqual(next_follow_up_date(date(2026, 11, 23)), date(2026, 11, 27))
+        self.assertEqual(next_follow_up_date(date(2026, 11, 23)), date(2026, 11, 30))
+        self.assertNotEqual(next_follow_up_date(date(2026, 11, 23)), date(2026, 11, 27))
+
+    def test_year_end_break_is_skipped(self) -> None:
+        self.assertEqual(next_follow_up_date(date(2026, 12, 21)), date(2027, 1, 4))
+        self.assertEqual(next_follow_up_date(date(2026, 12, 28)), date(2027, 1, 4))
+        self.assertEqual(next_follow_up_date(date(2026, 12, 1)), date(2026, 12, 4))
 
     def test_weekend_and_observed_independence_day_are_skipped(self) -> None:
         self.assertEqual(next_follow_up_date(date(2026, 11, 19)), date(2026, 11, 23))
         self.assertIn(date(2026, 7, 3), us_federal_holidays(2026))
         self.assertEqual(next_follow_up_date(date(2026, 6, 30)), date(2026, 7, 6))
 
-    def test_offer_section_does_not_name_thanksgiving(self) -> None:
+    def test_offer_section_does_not_name_thanksgiving_or_black_friday(self) -> None:
         from sales_support_agent.services.deck.agency_sections import render_offer_section
 
         html = render_offer_section(
@@ -107,41 +113,98 @@ class FollowUpDateTests(unittest.TestCase):
             urls={"trial": "https://example.com/trial", "booking": "https://example.com/book"},
             generated=date(2026, 11, 23),
         )
-        self.assertIn("November 27", html)
+        self.assertIn("November 30", html)
         self.assertNotIn("November 26", html)
+        self.assertNotIn("November 27", html)
+
+
+class _IChooseClient:
+    """IChoose listings come back for the short brand, not the legal name or the domain stem."""
+
+    def __init__(self, *, fail_short: bool = False, only_domain: bool = False):
+        self.searches: list[str] = []
+        self.fail_short = fail_short
+        self.only_domain = only_domain
+
+    def _hits(self) -> dict:
+        return {
+            "request_info": {"success": True},
+            "search_results": [
+                {
+                    "asin": "B0DY5F6862",
+                    "title": "IChoose Daily",
+                    "brand": "IChoose",
+                    "rating": 4.2,
+                    "ratings_total": 10,
+                    "price": {"raw": "$18.00"},
+                    "image": "https://example.com/search.jpg",
+                },
+                {
+                    "asin": "B0GJVKZJH4",
+                    "title": "IChoose Weekly Pack",
+                    "brand": {"name": "ICHOOSE"},
+                    "rating": 4.4,
+                    "ratings_total": 40,
+                    "price": {"value": 28},
+                },
+                {
+                    "asin": "B0DYBLDF1F",
+                    "title": "IChoose Travel Kit",
+                    "brand": "I Choose",
+                    "rating": 4.1,
+                    "ratings_total": 12,
+                    "price": {"raw": "$16.00"},
+                },
+            ],
+        }
+
+    def search(self, term, page=1, amazon_domain=None):
+        del page, amazon_domain
+        self.searches.append(term)
+        key = term.lower()
+        if self.only_domain:
+            return self._hits() if key == "ichooseglobal" else {"request_info": {"success": True}, "search_results": []}
+        if key in {"ichoose", "i choose"}:
+            if self.fail_short:
+                raise TimeoutError("amazon search timed out")
+            return self._hits()
+        if key == "ichoose global":
+            return {
+                "request_info": {"success": True},
+                "search_results": [{
+                    "asin": "B0OTHERGLOB",
+                    "title": "Global Choice Planner",
+                    "brand": "Global Choice",
+                }],
+            }
+        return {"request_info": {"success": True}, "search_results": []}
+
+    def get_product(self, asin, amazon_domain=None):
+        del amazon_domain
+        if asin != "B0DY5F6862":
+            return {}
+        return {
+            "product": {
+                "title": "IChoose Daily Vitamin",
+                "brand": "IChoose",
+                "rating": 4.6,
+                "ratings_total": 812,
+                "buybox_winner": {"price": {"raw": "$24.00"}},
+                "images": [{"link": f"https://example.com/{i}.jpg"} for i in range(7)],
+            }
+        }
 
 
 class AmazonLookupTests(unittest.TestCase):
-    def test_matching_brand_is_present_with_listing_facts(self) -> None:
-        client = _SearchClient(
-            {
-                "request_info": {"success": True},
-                "search_results": [
-                    {
-                        "asin": "B0DY5F6862",
-                        "title": "IChoose Daily",
-                        "brand": "IChoose",
-                        "rating": 4.2,
-                        "ratings_total": 10,
-                        "price": {"raw": "$18.00"},
-                        "image": "https://example.com/search.jpg",
-                    }
-                ],
-            },
-            product={
-                "product": {
-                    "title": "IChoose Daily Vitamin",
-                    "brand": "IChoose Global",
-                    "rating": 4.6,
-                    "ratings_total": 812,
-                    "buybox_winner": {"price": {"raw": "$24.00"}},
-                    "images": [{"link": f"https://example.com/{i}.jpg"} for i in range(7)],
-                }
-            },
-        )
+    def test_ichoose_global_matches_the_short_brand_field(self) -> None:
+        client = _IChooseClient()
         found = lookup_brand_on_amazon("IChoose Global", domain="ichooseglobal.com", client=client)
-        self.assertEqual(found.status, PRESENT)
-        self.assertEqual(found.listings[0]["asin"], "B0DY5F6862")
+        self.assertEqual(found.status, PRESENT, found.detail)
+        self.assertIn("ichoose", client.searches)
+        self.assertEqual(
+            [item["asin"] for item in found.listings],
+            ["B0DY5F6862", "B0GJVKZJH4", "B0DYBLDF1F"],
+        )
         self.assertEqual(found.listings[0]["title"], "IChoose Daily Vitamin")
         self.assertEqual(found.listings[0]["rating"], 4.6)
         self.assertEqual(found.listings[0]["review_count"], 812)
@@ -150,6 +213,21 @@ class AmazonLookupTests(unittest.TestCase):
         plan = listing_plan_text("IChoose Global", found.listings)
         for fact in ("B0DY5F6862", "IChoose Daily Vitamin", "4.6 stars", "812 reviews", "$24.00", "7 images"):
             self.assertIn(fact, plan)
+
+    def test_concatenated_domain_still_matches_ichoose_brand_field(self) -> None:
+        client = _IChooseClient(only_domain=True)
+        found = lookup_brand_on_amazon("IChoose Global", domain="ichooseglobal.com", client=client)
+        self.assertEqual(found.status, PRESENT, found.detail)
+        self.assertIn("B0DY5F6862", [item["asin"] for item in found.listings])
+
+    def test_ichoose_timeout_on_the_short_query_stays_unknown(self) -> None:
+        found = lookup_brand_on_amazon(
+            "IChoose Global",
+            domain="ichooseglobal.com",
+            client=_IChooseClient(fail_short=True),
+        )
+        self.assertEqual(found.status, UNKNOWN)
+        self.assertEqual(found.source, "incomplete")
 
     def test_empty_search_is_absent_and_a_miss_or_error_is_unknown(self) -> None:
         empty = lookup_brand_on_amazon(
@@ -219,12 +297,15 @@ class AmazonLookupTests(unittest.TestCase):
             }
             if brand:
                 item["brand"] = brand
+            client = _SearchClient({"request_info": {"success": True}, "search_results": [item]})
             found = lookup_brand_on_amazon(
                 "Earth Moon Magick",
                 domain="earthmoonmagick.com",
-                client=_SearchClient({"request_info": {"success": True}, "search_results": [item]}),
+                client=client,
             )
             self.assertEqual(found.status, UNKNOWN, brand)
+            self.assertNotIn("earth", client.searches)
+            self.assertTrue(any(term.startswith("earth moon") for term in client.searches))
         real = lookup_brand_on_amazon(
             "Earth Moon Magick",
             domain="earthmoonmagick.com",
@@ -250,19 +331,47 @@ class ContentGateAmazonTests(unittest.TestCase):
         self.assertNotIn("unconfirmed Amazon absence", assess_deck_content(html, amazon_presence="absent"))
         self.assertEqual(assess_deck_content("<p>Xvive Audio already sells on Amazon.</p>", amazon_presence="present"), [])
 
+    def test_present_deck_fails_launch_wording_duplicates_and_assumed_fees(self) -> None:
+        launch = "<p>Xvive Audio already sells on Amazon.</p><h2>Where Xvive Audio can enter</h2><p>Amazon launch plan. What to build before launch.</p>"
+        self.assertIn("launch wording on an Amazon seller", assess_deck_content(launch, amazon_presence="present"))
+        self.assertNotIn(
+            "launch wording on an Amazon seller",
+            assess_deck_content(launch, amazon_presence="absent"),
+        )
+        doubled = "<p>Xvive Audio already sells on Amazon. Xvive Audio already sells on Amazon.</p>"
+        self.assertIn("duplicated deck copy", assess_deck_content(doubled, amazon_presence="present"))
+        repeated = (
+            "<p>Xvive U2 Guitar Wireless System, ASIN B07XVIVEU2, 4.4 stars, 2,200 reviews, $149.00, 6 images.</p>"
+            "<p>Xvive U2 Guitar Wireless System, ASIN B07XVIVEU2, 4.4 stars, 2,200 reviews, $149.00, 6 images.</p>"
+        )
+        self.assertIn("duplicated deck copy", assess_deck_content(repeated))
+        fee = "<p>Amazon referral fee $30.00, estimated at 15%.</p>"
+        self.assertIn("assumed referral fee", assess_deck_content(fee))
+        self.assertIn("assumed referral fee", assess_deck_content(
+            "<p class='lab'>Amazon referral fee</p><p class='val'>$30.00</p><p class='sub'>estimated at 15%, an assumed rate for category audio</p>"
+        ))
 
-def _hero(brand: str, title: str, description: str) -> EnrichedHeroProduct:
+
+def _hero(
+    brand: str,
+    title: str,
+    description: str,
+    *,
+    source_url: str = "https://xviveaudio.com",
+    product_type: str = "Wireless audio",
+    asin: str = "",
+) -> EnrichedHeroProduct:
     return EnrichedHeroProduct(
-        asin="",
+        asin=asin,
         candidate_asin="",
         brand_name=brand,
         title=title,
-        source_url="https://xviveaudio.com",
+        source_url=source_url,
         description=description,
         price="",
         dimensions="",
-        image_url="https://example.com/xvive.jpg",
-        product_type="Wireless audio",
+        image_url="https://example.com/product.jpg",
+        product_type=product_type,
         bsr=None,
         rating=None,
         review_count=None,
@@ -273,22 +382,116 @@ def _hero(brand: str, title: str, description: str) -> EnrichedHeroProduct:
     )
 
 
+_LAUNCH_PHRASES = (
+    "sells on its own site",
+    "amazon launch plan",
+    "launch page",
+    "before launch",
+    "market entry",
+    "can enter",
+    "would enter",
+    "entry point",
+    "amazon entry",
+    "first launch",
+    "listing is live",
+    "walk through the launch",
+    "what to build before",
+)
+
+
+_SELLER_FIXTURES = (
+    {
+        "brand": "Xvive Audio",
+        "source": "https://xviveaudio.com",
+        "title": "Xvive Audio - Home Page",
+        "description": "We build wireless guitar systems for working players.",
+        "product_type": "Wireless audio",
+        "listings": ({
+            "asin": "B07XVIVEU2",
+            "title": "Xvive U2 Guitar Wireless System",
+            "rating": 4.4,
+            "review_count": 2200,
+            "price": "$149.00",
+            "image_count": 6,
+        },),
+    },
+    {
+        "brand": "elvy.ai",
+        "source": "https://elvy.ai",
+        "title": "elvy.ai",
+        "description": "elvy builds software teams use every day.",
+        "product_type": "Software",
+        "listings": ({
+            "asin": "B0ELVYAI001",
+            "title": "elvy team workspace",
+            "rating": 4.3,
+            "review_count": 86,
+            "price": "$49.00",
+            "image_count": 3,
+        },),
+    },
+    {
+        "brand": "Earth Moon Magick",
+        "source": "https://earthmoonmagick.com",
+        "title": "Earth Moon Magick",
+        "description": "Earth Moon Magick makes tarot and ritual goods.",
+        "product_type": "Tarot",
+        "listings": ({
+            "asin": "B0MAGICK01",
+            "title": "Earth Moon Magick Tarot Deck",
+            "rating": 4.8,
+            "review_count": 140,
+            "price": "$32.00",
+            "image_count": 5,
+        },),
+    },
+    {
+        "brand": "fwee",
+        "source": "https://benow.co.kr",
+        "title": "fwee",
+        "description": "fwee makes color cosmetics.",
+        "product_type": "Cosmetics",
+        "listings": ({
+            "asin": "B0FWEE0001",
+            "title": "fwee lip tint",
+            "rating": 4.5,
+            "review_count": 960,
+            "price": "$18.00",
+            "image_count": 8,
+        },),
+    },
+)
+
+
 @unittest.skipUnless(SQLALCHEMY_AVAILABLE, "sqlalchemy is required")
 class DeckAmazonStatusTests(unittest.TestCase):
-    def _generate(self, presence: AmazonPresence, *, brand: str = "Xvive Audio Xvive", title: str | None = None):
+    def _generate(
+        self,
+        presence: AmazonPresence,
+        *,
+        brand: str = "Xvive Audio",
+        title: str | None = None,
+        description: str = "We build wireless guitar systems for working players.",
+        source_url: str = "https://xviveaudio.com",
+        product_type: str = "Wireless audio",
+        asin: str = "",
+    ):
         session_factory = create_session_factory("sqlite:///:memory:")
         init_database(session_factory)
         hero = _hero(
             brand,
-            title or "Xvive Audio Xvive - Home Page",
-            "Contact Us Shop About FAQ We build wireless guitar systems.",
+            title or brand,
+            description,
+            source_url=source_url,
+            product_type=product_type,
+            asin=asin,
         )
         with session_scope(session_factory) as session:
             service = DeckGenerationService(_build_settings(), session)
             service.product_research.enrich_target_product = lambda _target: hero  # type: ignore[method-assign]
             service.amazon_lookup = lambda brand_name, domain="": presence  # type: ignore[method-assign]
             result = service.generate_deck(
-                target_product_input="https://xviveaudio.com",
+                target_product_input=source_url,
                 include_recommended_plan=True,
                 growth_plan_inputs={},
             )
@@ -298,25 +501,84 @@ class DeckAmazonStatusTests(unittest.TestCase):
         return result, html
 
     def test_confirmed_seller_gets_an_existing_seller_plan(self) -> None:
-        presence = _presence(PRESENT, listings=({
-            "asin": "B07XVIVEU2",
-            "title": "Xvive U2 Guitar Wireless System",
-            "rating": 4.4,
-            "review_count": 2200,
-            "price": "$149.00",
-            "image_count": 6,
-        },))
-        result, html = self._generate(presence)
+        for fixture in _SELLER_FIXTURES:
+            with self.subTest(brand=fixture["brand"]):
+                listings = fixture["listings"]
+                presence = _presence(PRESENT, listings=listings)
+                result, html = self._generate(
+                    presence,
+                    brand=fixture["brand"],
+                    title=fixture["title"],
+                    description=fixture["description"],
+                    source_url=fixture["source"],
+                    product_type=fixture["product_type"],
+                )
+                visible = html.lower()
+                self.assertEqual(result.amazon_presence, PRESENT)
+                self.assertTrue(result.content_gate_passed, result.content_gate_findings)
+                self.assertEqual(visible.count("already sells on amazon"), 1)
+                line = (
+                    f"{listings[0]['title']}, ASIN {listings[0]['asin']}, "
+                    f"{listings[0]['rating']:.1f} stars, {listings[0]['review_count']:,} reviews, "
+                    f"{listings[0]['price']}, {listings[0]['image_count']} images"
+                )
+                self.assertEqual(html.count(line), 1, line)
+                self.assertIn("Which ASINs to focus on", html)
+                self.assertIn("Ads structure for the live catalog", html)
+                self.assertIn("tracks conversion", html.lower())
+                self.assertIn("images", html.lower())
+                for phrase in _LAUNCH_PHRASES:
+                    self.assertNotIn(phrase, visible, phrase)
+                self.assertNotIn("Amazon referral fee", html)
+                self.assertNotIn("assumed rate", html.lower())
+        xvive = next(item for item in _SELLER_FIXTURES if item["brand"] == "Xvive Audio")
+        result, html = self._generate(
+            _presence(PRESENT, listings=xvive["listings"]),
+            brand="Xvive Audio Xvive",
+            title="Xvive Audio Xvive - Home Page",
+            description="Contact Us Shop About FAQ We build wireless guitar systems.",
+        )
         self.assertEqual(result.design_title, "Xvive Audio x anata strategy deck")
-        self.assertEqual(result.amazon_presence, PRESENT)
-        self.assertTrue(result.content_gate_passed, result.content_gate_findings)
-        self.assertIn("already sells on Amazon", html)
-        for fact in ("B07XVIVEU2", "Xvive U2 Guitar Wireless System", "4.4 stars", "2,200 reviews", "$149.00", "6 images"):
-            self.assertIn(fact, html)
-        self.assertNotIn("not an Amazon seller", html)
-        self.assertNotIn("does not sell on Amazon", html)
         self.assertNotIn("Home Page", html)
         self.assertNotIn("Contact Us", html)
+
+    def test_attached_asin_on_a_store_url_uses_the_existing_seller_plan(self) -> None:
+        result, html = self._generate(
+            _presence(UNKNOWN),
+            brand="IChoose Global",
+            title="IChoose Global",
+            description="IChoose Global sells daily vitamins on its site.",
+            source_url="https://ichooseglobal.com",
+            product_type="Vitamins",
+            asin="B0DY5F6862",
+        )
+        # The generator replaces the injected lookup when the hero carries an ASIN.
+        self.assertEqual(result.amazon_presence, PRESENT)
+        self.assertTrue(result.content_gate_passed, result.content_gate_findings)
+        self.assertIn("B0DY5F6862", html)
+        self.assertNotIn("amazon launch plan", html.lower())
+        self.assertNotIn("listing is live", html.lower())
+        self.assertNotIn("before launch", html.lower())
+
+    def test_present_seller_with_a_market_export_does_not_deny_the_export(self) -> None:
+        from types import SimpleNamespace
+
+        from sales_support_agent.services.deck.dataset import _build_expected_impact_summary
+
+        supplied = _build_expected_impact_summary(
+            SimpleNamespace(market_evidence_sufficient=True, under_75_reviews_count=4),
+            market_mode="amazon",
+            amazon_status="present",
+        )
+        self.assertNotIn("no market export", supplied.lower())
+        self.assertIn("under 75 reviews", supplied)
+        self.assertIn("live listings", supplied)
+        withheld = _build_expected_impact_summary(
+            SimpleNamespace(market_evidence_sufficient=False, under_75_reviews_count=0),
+            market_mode="dtc",
+            amazon_status="present",
+        )
+        self.assertIn("no market export was supplied", withheld.lower())
 
     def test_confirmed_absence_may_say_so_and_passes_the_gate(self) -> None:
         result, html = self._generate(

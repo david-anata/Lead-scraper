@@ -304,8 +304,8 @@ the founder address from `RBAC_SUPERADMIN_EMAILS` (default
 `david@anatainc.com`). The send is stored in `abby_deck_sends`. Apply
 `sales_support_agent/migrations/20261113_abby_deck_sends.sql` before the
 first live send. `GET /api/jobs/abby/deck-sends?since=` with
-`X-Internal-Api-Key` lists sends since that time that still have no founder
-reply on the thread.
+`X-Internal-Api-Key` lists every sent deck since that time. A later founder
+reply is returned on the row and does not remove it.
 
 Cold steps ask for a small yes instead of a call. The four signal campaigns
 take their steps from `outbound_signal_copy.py`: five emails in one thread,
