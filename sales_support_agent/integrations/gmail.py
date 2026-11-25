@@ -122,6 +122,19 @@ class GmailClient:
             stage="create_draft",
         )
 
+    def update_draft(self, draft_id: str, *, to: tuple[str, ...], subject: str, text: str, cc: tuple[str, ...] = ()) -> dict[str, Any]:
+        """Replace one draft. This does not send it."""
+
+        if not draft_id or not to:
+            return {"ok": False, "skipped": True, "reason": "missing_draft"}
+        raw = self._build_raw_message(to=to, subject=subject, text=text, cc=cc)
+        return self._request(
+            "PUT",
+            f"users/{self.user_id}/drafts/{draft_id}",
+            json_body={"id": draft_id, "message": {"raw": raw}},
+            stage="update_draft",
+        )
+
     def send_message(self, *, to: tuple[str, ...], subject: str, text: str, cc: tuple[str, ...] = (), attachments=None) -> dict[str, Any]:
         if not to:
             return {"ok": False, "skipped": True, "reason": "missing_recipients"}

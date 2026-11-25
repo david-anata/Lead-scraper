@@ -41,6 +41,7 @@ from sales_support_agent.services.sales.call_script import after_call
 from sales_support_agent.services.sales.call_script import ai as call_ai
 from sales_support_agent.services.sales.call_script import coach
 from sales_support_agent.services.sales.call_script import live as live_svc
+from sales_support_agent.services.sales.call_script import prep as call_prep
 from sales_support_agent.services.sales.call_script import service
 from sales_support_agent.services.sales.call_script.pages import render_call_list_page
 from sales_support_agent.services.sales.security import csrf_token, valid_csrf_token
@@ -222,6 +223,43 @@ def call_page(tracker_id: str, request: Request) -> HTMLResponse:
             tracker, user, csrf=csrf_token(user), ai_enabled=call_ai.ai_enabled()
         )
     return HTMLResponse(page, headers={"Cache-Control": "no-store"})
+
+
+@router.post("/{tracker_id}/prep/regenerate", dependencies=[Depends(require_json_token)])
+def regenerate_call_prep(tracker_id: str, request: Request) -> JSONResponse:
+    """Rebuild stored prep and replace David's draft. Does not email the prospect."""
+
+    from datetime import datetime, timezone
+
+    from sales_support_agent.api.sales_call_prep_job import _clickup, _gmail_clients, _slack
+
+    user = get_current_user(request)
+    settings = request.app.state.settings
+    clients = _gmail_clients(settings)
+    gmail = clients[0] if clients else None
+    with session_scope(_factory(request)) as session:
+        tracker = service.get_tracker(session, user, tracker_id)
+        if tracker is None:
+            raise HTTPException(status_code=404, detail="Call not found.")
+        try:
+            result = call_prep.regenerate_tracker(
+                session,
+                tracker,
+                context_for=lambda booking, stored=None: call_prep.gather_context(
+                    session,
+                    _clickup(settings),
+                    booking,
+                    gmail=gmail,
+                    tracker=stored or tracker,
+                ),
+                notes_for=call_prep.generate_notes,
+                slack=_slack(settings),
+                gmail=gmail,
+                now=datetime.now(timezone.utc),
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return JSONResponse(result)
 
 
 async def _save_state(tracker_id: str, request: Request) -> JSONResponse:

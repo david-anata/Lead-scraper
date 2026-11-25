@@ -156,6 +156,7 @@
     var lines = [];
     if (sections.who) lines.push(sections.who);
     if (site.verified && site.url) lines.push('Website: ' + site.url);
+    if (prep.deck && /^https:\/\//i.test(prep.deck.url || '')) lines.push('Deck: ' + prep.deck.url);
     if (amazon.line) lines.push(amazon.line);
     else lines.push('Amazon presence: not verified');
     asList(sections.discovery).forEach(function (step) {
@@ -222,6 +223,15 @@
       siteA.href = site.url; siteA.textContent = site.url; siteA.rel = 'noopener'; siteA.target = '_blank';
       siteDd.appendChild(siteA);
       facts.appendChild(siteDt); facts.appendChild(siteDd);
+    }
+    var deck = prep.deck || {};
+    if (/^https:\/\//i.test(deck.url || '')) {
+      var deckDt = document.createElement('dt'); deckDt.textContent = 'Deck';
+      var deckDd = document.createElement('dd');
+      var deckA = document.createElement('a');
+      deckA.href = deck.url; deckA.textContent = 'Strategy deck'; deckA.rel = 'noopener'; deckA.target = '_blank';
+      deckDd.appendChild(deckA);
+      facts.appendChild(deckDt); facts.appendChild(deckDd);
     }
     var amDt = document.createElement('dt'); amDt.textContent = 'Amazon';
     var amDd = document.createElement('dd');
