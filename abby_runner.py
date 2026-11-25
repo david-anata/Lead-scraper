@@ -1194,7 +1194,7 @@ def _handle_claimed(engine, email: dict, *, client: Instantly, campaign_id: str,
                 first_name=info.get("first_name", ""),
             )
             cc_address = ",".join(decision.cc)
-            if not url:
+            if not url and not block_reason:
                 decision = abby.Decision(
                     decision.category, "hold", reason="deck generation failed",
                     note="deck", send_deck=False,

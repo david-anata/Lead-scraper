@@ -249,7 +249,9 @@ def fact_sheet(lead: dict[str, Any]) -> FactSheet:
         if key == "description" and not description_ok:
             continue
         blurb = _clean_blurb(str(store.get(key) or ""), brand)
-        if blurb:
+        from outbound_pipeline import names_non_shipping_product
+
+        if blurb and not names_non_shipping_product(blurb):
             facts.append(blurb)
             break
     product = store.get("most_recently_published_product")
@@ -258,7 +260,9 @@ def fact_sheet(lead: dict[str, Any]) -> FactSheet:
         title = ""
         if not product_url or source_matches_store(product_url, domain):
             title = _clean_blurb(str(product.get("title") or ""), brand)
-        if title:
+        from outbound_pipeline import names_non_shipping_product
+
+        if title and not names_non_shipping_product(title):
             facts.append(f"recent product: {title}")
     channels = _channel_names(store)
     for name in ("Amazon", "Etsy", "Faire"):

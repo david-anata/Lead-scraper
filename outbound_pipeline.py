@@ -670,21 +670,276 @@ def blocked_category_reason(*parts: Any) -> str:
     return ""
 
 
-def company_blocked_reason(store: dict[str, Any]) -> str:
-    """Blocked category on the store name, category, description, or product.
+# Words that mean the goods are files, not freight. Applied to products that
+# do not ship, and to StoreLeads wording when the catalog cannot be read.
+_DIGITAL_TERM_RE = re.compile(
+    r"\b(?:downloads?|printables?|templates?|svgs?|fonts?|presets?|pdfs?|"
+    r"patterns?|e-?books?|courses?|masterclass(?:es)?|memberships?|"
+    r"programs?|subscriptions?|software)\b",
+    re.I,
+)
+# A rewards club is not a digital-product shop. Fitness programs still match.
+_LOYALTY_PROGRAM_RE = re.compile(
+    r"\b(?:loyalty|rewards?|affiliate|referral|points|vip)\s+programs?\b",
+    re.I,
+)
+_SERVICE_TERM_RE = re.compile(r"\b(?:classes?|services?|bookings?)\b", re.I)
+# Left out of the physical-product count. They are not the catalog.
+_EXCLUDED_PRODUCT_RE = re.compile(
+    r"\b(?:gift\s*cards?|giftcards?)\b"
+    r"|\b(?:shipping|package|order)\s+protection\b"
+    r"|\bshipping\s+insurance\b"
+    r"|\bfees?\b"
+    r"|\bdeposits?\b"
+    r"|\bdonations?\b",
+    re.I,
+)
+# Title filter for facts. Bare "pattern", "program", and "subscription" stay
+# out of this one: a floral-pattern mug and a subscription box still ship.
+_NON_SHIPPING_FACT_RE = re.compile(
+    r"\b(?:gift\s*cards?|giftcards?)\b"
+    r"|\b(?:shipping|package|order)\s+protection\b"
+    r"|\bshipping\s+insurance\b"
+    r"|\b(?:handling|processing)\s+fees?\b"
+    r"|\bdeposits?\b"
+    r"|\bdonations?\b"
+    r"|\b(?:downloads?|printables?|templates?|svgs?|fonts?|presets?|pdfs?|"
+    r"e-?books?|courses?|masterclass(?:es)?|memberships?|software)\b",
+    re.I,
+)
+_DIGITAL_APP_RE = re.compile(
+    r"digital\s*products?"
+    r"|digital\s*downloads?"
+    r"|e-?books?(?:\s+downloads?)?"
+    r"|sendowl"
+    r"|sky\s*pilot"
+    r"|fetchapp"
+    r"|filemonk"
+    r"|pdfify",
+    re.I,
+)
+# decor / gift / stationery are real niches for physical goods. They do not
+# qualify a shop whose own words are templates, printables, or downloads.
+_WEAK_NICHE_KEYWORDS = frozenset({"decor", "gift", "stationery"})
+_WEIGHT_KEYS = ("avg_weight", "max_weight", "min_weight")
+_CATALOG_LIMIT = 250
+_CATALOG_TIMEOUT = 8
 
-    A lead may keep the StoreLeads record on ``store`` or ``store_profile``.
-    Those nested records are checked too, so an opener cannot name a product
-    the company-fit gate would have rejected.
-    """
 
-    if not isinstance(store, dict):
-        return ""
+def _store_pieces(store: dict[str, Any]) -> list[dict[str, Any]]:
     pieces = [store]
     for key in ("store", "store_profile"):
         nested = store.get(key)
         if isinstance(nested, dict):
             pieces.append(nested)
+    return pieces
+
+
+def _positive_weight(value: Any) -> bool:
+    if isinstance(value, bool) or value is None:
+        return False
+    if isinstance(value, (int, float)):
+        return float(value) > 0
+    if isinstance(value, str):
+        raw = value.strip().replace(",", "")
+        if not raw:
+            return False
+        try:
+            return float(raw) > 0
+        except ValueError:
+            return False
+    return False
+
+
+def _has_shipping_weight(store: dict[str, Any]) -> bool:
+    for item in _store_pieces(store):
+        for key in _WEIGHT_KEYS:
+            if _positive_weight(item.get(key)):
+                return True
+    return False
+
+
+def _app_blob(app: Any) -> str:
+    if isinstance(app, str):
+        return app
+    if isinstance(app, dict):
+        cats = app.get("categories") or []
+        return " ".join((
+            str(app.get("name") or ""),
+            str(app.get("token") or ""),
+            str(app.get("platform") or ""),
+            " ".join(str(cat) for cat in cats) if isinstance(cats, (list, tuple)) else str(cats),
+        ))
+    return _flat_text(app)
+
+
+def _has_digital_app(store: dict[str, Any]) -> bool:
+    for item in _store_pieces(store):
+        apps = item.get("apps") or []
+        if isinstance(apps, str):
+            apps = [apps]
+        if not isinstance(apps, (list, tuple)):
+            continue
+        for app in apps:
+            if _DIGITAL_APP_RE.search(_app_blob(app)):
+                return True
+    return False
+
+
+def _wording_text(store: dict[str, Any]) -> str:
+    parts: list[Any] = []
+    for item in _store_pieces(store):
+        parts.extend((
+            item.get("name"),
+            item.get("merchant_name"),
+            item.get("brand"),
+            item.get("company_name"),
+            item.get("company"),
+            item.get("categories"),
+            item.get("niche"),
+            item.get("tags"),
+            item.get("description"),
+            item.get("merchant_description"),
+            item.get("title"),
+            item.get("most_recently_published_product"),
+        ))
+    text = _flat_text(parts)
+    return _LOYALTY_PROGRAM_RE.sub(" ", text)
+
+
+def _has_digital_wording(store: dict[str, Any]) -> bool:
+    return bool(_DIGITAL_TERM_RE.search(_wording_text(store)))
+
+
+def _product_text(product: dict[str, Any]) -> str:
+    parts: list[Any] = [
+        product.get("title"),
+        product.get("name"),
+        product.get("product_type"),
+        product.get("tags"),
+        product.get("handle"),
+    ]
+    variants = product.get("variants") or []
+    if isinstance(variants, list):
+        for variant in variants:
+            if isinstance(variant, dict):
+                parts.append(variant.get("title"))
+    return _flat_text(parts)
+
+
+def _variant_ships(variant: dict[str, Any]) -> bool:
+    flag = variant.get("requires_shipping")
+    if flag is True:
+        return True
+    if isinstance(flag, str) and flag.strip().lower() in {"true", "1", "yes"}:
+        return True
+    if isinstance(flag, (int, float)) and not isinstance(flag, bool) and int(flag) == 1:
+        return True
+    return False
+
+
+def _product_ships(product: dict[str, Any]) -> bool:
+    """True when any variant is marked requires_shipping."""
+
+    variants = product.get("variants")
+    if not isinstance(variants, list):
+        return False
+    return any(isinstance(variant, dict) and _variant_ships(variant) for variant in variants)
+
+
+def _excluded_from_count(product: dict[str, Any]) -> bool:
+    return bool(_EXCLUDED_PRODUCT_RE.search(_product_text(product)))
+
+
+def _catalog_products(catalog: Any) -> Optional[list[dict[str, Any]]]:
+    """Product dicts from a Shopify payload, or None when it cannot be read."""
+
+    if catalog is None:
+        return None
+    if isinstance(catalog, dict):
+        products = catalog.get("products")
+        if not isinstance(products, list):
+            return None
+        catalog = products
+    if not isinstance(catalog, list):
+        return None
+    return [item for item in catalog if isinstance(item, dict)][:_CATALOG_LIMIT]
+
+
+def names_non_shipping_product(value: Any) -> bool:
+    """True when this fact would name a gift card, fee, or digital item.
+
+    Physical goods can keep the words pattern, program, and subscription.
+    Those words classify a product only after ``requires_shipping`` is false.
+    """
+
+    text = " ".join(_flat_text(value).split())
+    if not text:
+        return False
+    return bool(_NON_SHIPPING_FACT_RE.search(text))
+
+
+def digital_product_reason(store: dict[str, Any], catalog: Any = None) -> str:
+    """Why this store is not a physical-goods brand, or '' when it is.
+
+    A readable catalog rejects ``digital`` when nothing ships, or when under
+    half the counted products ship and the rest match digital-goods words.
+    The same under-half case is ``no_shippable_goods`` when those products
+    are classes, services, or bookings. Gift cards, shipping protection,
+    fees, deposits, and donations are not counted. A mix at or above half
+    physical is kept.
+
+    When the catalog cannot be read, reject only if StoreLeads shows no
+    positive avg/max/min weight and the store has a digital-products app
+    or digital wording. An app by itself, with a weight on file, is kept.
+    """
+
+    if not isinstance(store, dict):
+        store = {}
+    products = _catalog_products(catalog)
+    if products:
+        counted = [product for product in products if not _excluded_from_count(product)]
+        if counted:
+            physical = [product for product in counted if _product_ships(product)]
+            if len(physical) * 2 >= len(counted):
+                return ""
+            rest = " ".join(
+                _product_text(product) for product in counted if not _product_ships(product)
+            )
+            if _DIGITAL_TERM_RE.search(rest):
+                return "digital"
+            if _SERVICE_TERM_RE.search(rest):
+                return "no_shippable_goods"
+            if not physical:
+                return "digital"
+            return ""
+    if _has_shipping_weight(store):
+        return ""
+    if _has_digital_app(store) or _has_digital_wording(store):
+        return "digital"
+    return ""
+
+
+def _attached_catalog(store: dict[str, Any]) -> Any:
+    for item in _store_pieces(store):
+        if "catalog" in item:
+            return item.get("catalog")
+    return None
+
+
+def company_blocked_reason(store: dict[str, Any]) -> str:
+    """Blocked category on the store name, category, description, or product.
+
+    A lead may keep the StoreLeads record on ``store`` or ``store_profile``.
+    Those nested records are checked too, so an opener cannot name a product
+    the company-fit gate would have rejected. A digital-goods or
+    no-shippable result from ``digital_product_reason`` is a block as well,
+    including a catalog attached on the lead.
+    """
+
+    if not isinstance(store, dict):
+        return ""
+    pieces = _store_pieces(store)
     parts: list[Any] = []
     for item in pieces:
         parts.extend((
@@ -702,7 +957,11 @@ def company_blocked_reason(store: dict[str, Any]) -> str:
             item.get("scraped_product"),
             item.get("most_recently_published_product"),
         ))
-    return blocked_category_reason(*parts)
+    blocked = blocked_category_reason(*parts)
+    if blocked:
+        return blocked
+    catalog = _attached_catalog(store)
+    return digital_product_reason(store, catalog)
 
 
 # Short words that must be whole words. "app" is not "apparel". "event" is not
@@ -757,10 +1016,13 @@ def passes_company_fit(store: dict[str, Any], *, require_niche: bool = True) -> 
     headquarters is excluded. A missing headquarters is kept unless the
     store currency is not USD, or a country-code domain and a non-US phone
     agree. The keep or the exclusion is logged. A missing or zero
-    sales figure is not revenue data. Distributors, multi-brand resellers,
+    sales figure is not revenue data.     Distributors, multi-brand resellers,
     services, events, apps, and fitness programs are out. The niche list
-    is the physical product test. The sales-org segment passes
-    require_niche=False because any US brand qualifies there.
+    is the physical product test. Decor, gift, and stationery do not
+    qualify a template or printable shop on their own. Digital goods and
+    stores with nothing to ship are blocked by ``digital_product_reason``.
+    The sales-org segment passes require_niche=False because any US brand
+    qualifies there, and the ship gate still applies.
     """
 
     allowed, reason = country_eligibility(store)
@@ -792,7 +1054,13 @@ def passes_company_fit(store: dict[str, Any], *, require_niche: bool = True) -> 
 
 
 def store_niche(store: dict[str, Any]) -> str:
-    """Return the ICP niche label for a store, or '' if it fits none."""
+    """Return the ICP niche label for a store, or '' if it fits none.
+
+    Decor, gift, and stationery are ignored only when the shipping check
+    calls the store digital. A positive weight or a catalog of physical
+    goods keeps those keywords, even if the description says "patterns".
+    Home, beauty, food, apparel, and the other keywords still count.
+    """
     text = " ".join(
         str(part) for part in (
             store.get("categories") or "",
@@ -801,9 +1069,15 @@ def store_niche(store: dict[str, Any]) -> str:
             store.get("name") or "",
         )
     ).lower()
+    disarmed = False
+    if isinstance(store, dict):
+        disarmed = digital_product_reason(store, _attached_catalog(store)) == "digital"
     for niche, keywords in ICP_NICHE_KEYWORDS.items():
-        if any(kw in text for kw in keywords):
-            return niche
+        for kw in keywords:
+            if disarmed and kw in _WEAK_NICHE_KEYWORDS:
+                continue
+            if kw in text:
+                return niche
     return ""
 
 
@@ -1138,6 +1412,26 @@ def _review_blob(value: Any) -> dict[str, Any]:
     }
 
 
+def catalog_host_for(store: dict[str, Any]) -> str:
+    """The StoreLeads host when it is more specific than the company domain.
+
+    ``shop.brand.com`` and ``brand.com`` are one company. The public catalog
+    lives on the storefront, so later loads need that host, not only the apex.
+    """
+
+    if not isinstance(store, dict):
+        return ""
+    host = _catalog_host(str(store.get("name") or store.get("domain") or ""))
+    if not host:
+        return ""
+    import outbound_contacts as contacts
+
+    company = contacts.company_domain(host)
+    if company and host != company:
+        return host
+    return ""
+
+
 def store_profile(store: dict[str, Any]) -> dict[str, Any]:
     """Compact StoreLeads facts for a later opener. Not a sentence."""
 
@@ -1148,7 +1442,7 @@ def store_profile(store: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(trust, dict):
         trust = {}
     description = " ".join(str(store.get("description") or "").split())[:300]
-    return {
+    profile = {
         "country_code": headquarters_verdict(store)[0],
         "sales_channels": _named_list(store.get("sales_channels"), limit=8),
         "apps": _named_list(store.get("apps")),
@@ -1159,6 +1453,9 @@ def store_profile(store: dict[str, Any]) -> dict[str, Any]:
         "last_platform_change_at": str(store.get("last_platform_change_at") or "").strip(),
         "product_count": store.get("product_count"),
         "avg_price_usd": store.get("avg_price_usd"),
+        "avg_weight": store.get("avg_weight"),
+        "max_weight": store.get("max_weight"),
+        "min_weight": store.get("min_weight"),
         "max_product_published_at": str(store.get("max_product_published_at") or "").strip(),
         "most_recently_published_product": {
             "title": str(product.get("title") or product.get("name") or "").strip(),
@@ -1189,6 +1486,10 @@ def store_profile(store: dict[str, Any]) -> dict[str, Any]:
         "estimated_visits": store.get("estimated_visits"),
         "product_images_created_90": store.get("product_images_created_90"),
     }
+    host = catalog_host_for(store)
+    if host:
+        profile["catalog_host"] = host
+    return profile
 
 
 _LEGAL_SUFFIX = re.compile(
@@ -1345,6 +1646,9 @@ def to_clay_lead(store: dict[str, Any], *, now: Optional[datetime] = None,
         "apps": store.get("apps"),
         "store_profile": store_profile(store),
     }
+    host = str((lead["store_profile"] or {}).get("catalog_host") or "")
+    if host:
+        lead["catalog_host"] = host
     apply_amazon(lead, amazon)
     return lead
 
@@ -1417,7 +1721,8 @@ _STORELEADS_FIELDS = ",".join((
     "sales_channels",
     # Same List Domains call. No extra request. Used for personalization and
     # to drop retailers (brands_page).
-    "product_count", "avg_price_usd", "max_product_published_at",
+    "product_count", "avg_price_usd", "avg_weight", "max_weight", "min_weight",
+    "max_product_published_at",
     "most_recently_published_product", "description", "title",
     "retailer_page", "store_locator_page", "brands_page", "trustpilot",
     "city", "estimated_visits", "product_images_created_90",
@@ -1548,6 +1853,91 @@ def fetch_storeleads_page(
         api_key, page=page, page_size=page_size, timeout=timeout,
         max_retries=max_retries, cursor=cursor, extra_params=extra_params,
     ).domains
+
+
+def _catalog_host(domain: str) -> str:
+    host = str(domain or "").strip().lower()
+    if "://" in host:
+        host = host.split("://", 1)[1]
+    host = host.split("/", 1)[0].split("?", 1)[0].split("@")[-1]
+    if host.startswith("www."):
+        host = host[4:]
+    if not host or " " in host or "." not in host:
+        return ""
+    return host
+
+
+def _products_from_catalog_response(response: Any) -> Optional[list[dict[str, Any]]]:
+    """Shopify products, or None when the body is not a catalog."""
+
+    status = int(getattr(response, "status_code", 0) or 0)
+    if status != 200:
+        return None
+    headers = getattr(response, "headers", {}) or {}
+    ctype = ""
+    if hasattr(headers, "get"):
+        ctype = str(headers.get("Content-Type") or headers.get("content-type") or "")
+    if "html" in ctype.lower():
+        return None
+    try:
+        payload = response.json() if hasattr(response, "json") else None
+    except Exception:  # noqa: BLE001 — a non-Shopify store returns HTML or nothing
+        return None
+    products = _catalog_products(payload)
+    if products is None:
+        return None
+    return products
+
+
+def fetch_public_catalog(domain: str, *, get: Optional[Callable[..., Any]] = None,
+                         timeout: float = _CATALOG_TIMEOUT) -> Optional[list[dict[str, Any]]]:
+    """The public Shopify ``/products.json`` feed, up to 250 products.
+
+    ``None`` means the catalog could not be read: timeout, non-Shopify
+    host, or a response that is not a product list. An empty list means
+    the store answered and has no products. Callers must not raise.
+    """
+
+    host = _catalog_host(domain)
+    if not host:
+        return None
+    try:
+        from sales_support_agent.services.public_url_guard import public_http_url
+    except Exception:  # noqa: BLE001
+        public_http_url = lambda value: value  # type: ignore[assignment]
+    from urllib.parse import urljoin
+
+    current = public_http_url(f"https://{host}/products.json?limit={_CATALOG_LIMIT}")
+    if not current:
+        return None
+    if get is None:
+        def get(target: str, timeout: float = timeout) -> Any:
+            return requests.get(
+                target,
+                timeout=timeout,
+                headers={
+                    "User-Agent": "Mozilla/5.0 (compatible; AnataOutbound/1.0)",
+                    "Accept": "application/json",
+                },
+                allow_redirects=False,
+            )
+    for _hop in range(3):
+        try:
+            response = get(current, timeout=timeout)
+        except Exception:  # noqa: BLE001 — timeout or a store that is not Shopify
+            logger.info("[outbound] catalog unreadable for %s", host)
+            return None
+        status = int(getattr(response, "status_code", 0) or 0)
+        if status in {301, 302, 303, 307, 308}:
+            headers = getattr(response, "headers", {}) or {}
+            location = str(headers.get("location") or headers.get("Location") or "").strip()
+            nxt = public_http_url(urljoin(current, location)) if location else ""
+            if not nxt:
+                return None
+            current = nxt
+            continue
+        return _products_from_catalog_response(response)
+    return None
 
 
 def lookup_domains(

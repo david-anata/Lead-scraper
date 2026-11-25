@@ -196,6 +196,12 @@ def rejection_reason(lead: dict[str, Any], *, suppressed: set[str],
             return "bounced"
     except (TypeError, ValueError):
         pass
+    if "catalog" in lead:
+        from outbound_pipeline import digital_product_reason
+
+        ship = digital_product_reason(lead, lead.get("catalog"))
+        if ship:
+            return ship
     return ""
 
 
@@ -466,6 +472,7 @@ def run_weekly_topup(*, post: Any = None, suppressed: Optional[set[str]] = None,
             out["reason"] = "StoreLeads country could not be checked"
             return out
         found = pipeline.lookup_domains(store_key, domains)
+        store_rows = found if isinstance(found, dict) else {}
         for domain_key, (code, reason) in pipeline.eligibility_country_by_domain(found).items():
             if "unknown; kept" in reason:
                 kept_unknown.add(domain_key)
@@ -485,7 +492,10 @@ def run_weekly_topup(*, post: Any = None, suppressed: Optional[set[str]] = None,
         out["dry_run"] = False
         out["reason"] = "StoreLeads returned no country"
         return out
+    if "store_rows" not in locals():
+        store_rows = {}
     import outbound_contacts as contacts
+    import outbound_pipeline as pipeline
 
     for item in collected:
         domain = contacts.company_domain(_email_domain(str(item.get("email") or "")))
@@ -493,6 +503,40 @@ def run_weekly_topup(*, post: Any = None, suppressed: Optional[set[str]] = None,
             item["hq_unknown_kept"] = True
             continue
         item["country_code"] = countries.get(domain, "")
+    # Future loads only. People already in the re-engage campaign are not
+    # paused or removed. The first pass finds who would be loaded; the
+    # second pass applies the ship gate to those domains.
+    first = select_topup(
+        collected, suppressed=suppressed, in_reengage=in_reengage, active_elsewhere=elsewhere,
+    )
+    eligible_emails = {str(row.get("email") or "") for row in first["eligible"]}
+    catalog_cache: dict[str, Any] = {}
+    for item in collected:
+        email = str(item.get("email") or "").strip().lower()
+        if email not in eligible_emails:
+            continue
+        domain = contacts.company_domain(_email_domain(email))
+        website = str(item.get("website") or item.get("company_domain") or "").strip()
+        cache_key = website or domain
+        if cache_key not in catalog_cache:
+            try:
+                catalog_cache[cache_key] = (
+                    pipeline.fetch_public_catalog(cache_key) if cache_key else None
+                )
+            except Exception:  # noqa: BLE001 — a dead store must not stop the Monday load
+                logger.info("[outbound-reengage] catalog unreadable for %s", cache_key)
+                catalog_cache[cache_key] = None
+        item["catalog"] = catalog_cache.get(cache_key)
+        if website and website != domain:
+            item["catalog_host"] = website
+        store = store_rows.get(domain) or {}
+        if isinstance(store, dict):
+            for field in (
+                "avg_weight", "max_weight", "min_weight", "apps",
+                "description", "categories", "tags", "merchant_name",
+            ):
+                if store.get(field) not in (None, "", []):
+                    item.setdefault(field, store.get(field))
     chosen = select_topup(
         collected, suppressed=suppressed, in_reengage=in_reengage, active_elsewhere=elsewhere,
     )

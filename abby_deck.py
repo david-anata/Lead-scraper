@@ -26,6 +26,29 @@ class ProspectDeck:
     market_evidence_reason: str = ""
 
 
+def _ship_gate(domain: str, company: str) -> str:
+    """``digital`` or ``no_shippable_goods`` before a deck is built.
+
+    An unreadable catalog does not hold the deck by itself. The StoreLeads
+    fallback still applies when the company record carries it.
+    """
+
+    host = (domain or "").strip()
+    if not host or " " in host or "." not in host.split("://", 1)[-1]:
+        return ""
+    try:
+        from outbound_pipeline import digital_product_reason, fetch_public_catalog
+
+        catalog = fetch_public_catalog(host)
+        return digital_product_reason(
+            {"domain": host, "merchant_name": company, "name": company},
+            catalog,
+        )
+    except Exception:  # noqa: BLE001 — a catalog miss must not look like a built deck
+        logger.info("[abby] catalog unreadable for %s", host)
+        return ""
+
+
 def _target(domain: str, product: str, asin: str) -> str:
     token = (asin or "").strip()
     if token:
@@ -52,6 +75,20 @@ def build_prospect_deck(*, lead: str = "", company: str = "", domain: str = "",
     target = _target(domain, product, asin)
     if not target:
         return ""
+    host = (domain or "").strip()
+    if not host and target.startswith("http"):
+        host = target
+    ship = _ship_gate(host, company)
+    if ship:
+        logger.info("[abby] holding deck for %s: %s", host or company, ship)
+        return ProspectDeck(
+            view_url="",
+            content_gate_passed=False,
+            content_gate_findings=(ship,),
+            evidence_status="held",
+            market_evidence_sufficient=False,
+            market_evidence_reason=ship,
+        )
     try:
         if settings is None:
             from sales_support_agent.config import load_settings

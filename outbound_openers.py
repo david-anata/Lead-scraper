@@ -1837,6 +1837,10 @@ def store_verified_facts(lead: Optional[dict[str, Any]]) -> list[str]:
             return
         if " bio:" in text.lower():
             return
+        from outbound_pipeline import names_non_shipping_product
+
+        if names_non_shipping_product(text):
+            return
         lowered = " ".join(text.lower().split())
         if lowered in categories or lowered in broad or lowered in _GENERIC_RETAIL_FACTS:
             return
@@ -2017,6 +2021,10 @@ def shopper_lines(lead: dict[str, Any]) -> tuple[str, str]:
         if low in _GENERIC_RETAIL_FACTS or low.startswith("sells on ") or "retail stores" in low:
             continue
         if " bio:" in low or low.endswith("followers") or is_platform_copy(fact) or is_promo_title(fact):
+            continue
+        from outbound_pipeline import names_non_shipping_product
+
+        if names_non_shipping_product(fact):
             continue
         if (
             low.startswith("recent product")

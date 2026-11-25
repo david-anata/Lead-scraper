@@ -666,6 +666,38 @@ def test_yes_holds_when_the_deck_content_gate_fails():
     assert status == "held" and url == DECK and "$0" in detail
 
 
+def test_yes_holds_a_digital_goods_gate_without_calling_it_a_generation_failure():
+    engine = create_engine("sqlite://")
+    message = email()
+    client = FakeClient([message], {"t1": [message]})
+    built = []
+
+    class DigitalHold:
+        view_url = ""
+        content_gate_passed = False
+        content_gate_findings = ("digital",)
+
+    def build_deck(**_kwargs):
+        built.append(True)
+        return DigitalHold()
+
+    out = runner.handle_email(
+        engine, message, client=client, campaign_id="camp", now=NOW, think=abby.think,
+        post_slack=lambda _text: None,
+        lead_info=lambda _e: {"first_name": "Ann", "company": "Designer's Oasis", "domain": "shop.designersoasis.com"},
+        run_mode="live", build_deck=build_deck,
+    )
+    assert built == [True]
+    assert client.replies == []
+    assert out["held"] == 1 and out["replied"] == 0
+    with engine.connect() as conn:
+        status, detail = conn.execute(text(
+            "SELECT status, detail FROM abby_deck_sends"
+        )).one()
+    assert status == "held" and "digital" in detail
+    assert "deck generation failed" not in detail
+
+
 def test_yes_holds_when_the_public_page_would_block_an_amazon_gap():
     engine = create_engine("sqlite://")
     message = email()
