@@ -2,17 +2,20 @@
 
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import patch
 
 from fastapi.testclient import TestClient
 import pytest
+from sqlalchemy import text
 
 from sales_support_agent.models import database
 from sales_support_agent.models.database import create_session_factory, init_database
 from sales_support_agent.services.job_lease import (
     claim_scheduled_job,
     ensure_job_lease_schema,
+    expire_stale_scheduled_jobs,
     finish_scheduled_job,
 )
 from sales_support_agent.services.website_ops_storage import (
@@ -192,3 +195,195 @@ def test_runtime_cache_transaction_never_rehydrates_stale_database_state(
 
     restore.assert_not_called()
     snapshot.assert_called_once_with(engine, root)
+
+
+def _insert_lease(
+    engine,
+    *,
+    job_key: str,
+    run_key: str,
+    status: str,
+    lease_expires_at: str,
+) -> None:
+    with engine.begin() as connection:
+        connection.execute(
+            text(
+                """
+                INSERT INTO scheduled_job_runs (
+                    job_key, run_key, status, owner_token, started_at,
+                    lease_expires_at, details_json
+                ) VALUES (
+                    :job_key, :run_key, :status, 'owner', :started_at,
+                    :lease_expires_at, '{}'
+                )
+                """
+            ),
+            {
+                "job_key": job_key,
+                "run_key": run_key,
+                "status": status,
+                "started_at": "2026-11-26T12:00:00+00:00",
+                "lease_expires_at": lease_expires_at,
+            },
+        )
+
+
+def _lease_status(engine, run_key: str) -> str:
+    with engine.connect() as connection:
+        row = connection.execute(
+            text(
+                """
+                SELECT status FROM scheduled_job_runs WHERE run_key = :run_key
+                """
+            ),
+            {"run_key": run_key},
+        ).one()
+    return str(row[0])
+
+
+def test_expire_stale_scheduled_jobs_fails_only_expired_running_rows(
+    tmp_path: Path,
+) -> None:
+    factory = create_session_factory(f"sqlite:///{tmp_path / 'lease.db'}")
+    engine = factory.kw["bind"]
+    ensure_job_lease_schema(engine)
+    now = datetime(2026, 11, 26, 18, 0, tzinfo=timezone.utc)
+    past = (now - timedelta(minutes=5)).isoformat()
+    future = (now + timedelta(minutes=30)).isoformat()
+    _insert_lease(
+        engine,
+        job_key="website_ops",
+        run_key="stale-running",
+        status="running",
+        lease_expires_at=past,
+    )
+    _insert_lease(
+        engine,
+        job_key="website_ops",
+        run_key="live-running",
+        status="running",
+        lease_expires_at=future,
+    )
+    _insert_lease(
+        engine,
+        job_key="website_ops",
+        run_key="boundary-running",
+        status="running",
+        lease_expires_at=now.isoformat(),
+    )
+    _insert_lease(
+        engine,
+        job_key="website_ops",
+        run_key="already-succeeded",
+        status="succeeded",
+        lease_expires_at=past,
+    )
+    _insert_lease(
+        engine,
+        job_key="outbound_morning",
+        run_key="other-job",
+        status="running",
+        lease_expires_at=past,
+    )
+
+    expired = expire_stale_scheduled_jobs(
+        engine,
+        now=now,
+        job_key="website_ops",
+    )
+
+    assert expired == 1
+    assert _lease_status(engine, "stale-running") == "failed"
+    assert _lease_status(engine, "live-running") == "running"
+    assert _lease_status(engine, "boundary-running") == "running"
+    assert _lease_status(engine, "already-succeeded") == "succeeded"
+    assert _lease_status(engine, "other-job") == "running"
+    with engine.connect() as connection:
+        details = connection.execute(
+            text(
+                """
+                SELECT completed_at, details_json
+                  FROM scheduled_job_runs
+                 WHERE run_key = 'stale-running'
+                """
+            )
+        ).one()
+    assert details[0]
+    assert "Stale running lease expired" in str(details[1])
+    engine.dispose()
+
+
+def test_snapshot_uploads_only_changed_files(tmp_path: Path) -> None:
+    factory = create_session_factory(f"sqlite:///{tmp_path / 'mirror.db'}")
+    engine = factory.kw["bind"]
+    ensure_website_ops_storage_schema(engine)
+    source = tmp_path / "source"
+    (source / "state").mkdir(parents=True)
+    target_file = source / "state" / "run.json"
+    target_file.write_text('{"status":"ready"}', encoding="utf-8")
+    first = snapshot_website_ops_root(engine, source)
+    assert first["files"] == 1
+    second = snapshot_website_ops_root(engine, source)
+    assert second["files"] == 0
+    assert second["unchanged"] == 1
+    target_file.write_text('{"status":"changed"}', encoding="utf-8")
+    third = snapshot_website_ops_root(engine, source)
+    assert third["files"] == 1
+    restored = restore_website_ops_root(engine, tmp_path / "target")
+    assert restored["files"] == 1
+    assert (tmp_path / "target" / "state" / "run.json").read_text(encoding="utf-8") == (
+        '{"status":"changed"}'
+    )
+    engine.dispose()
+
+
+def test_cold_start_restores_the_mirror_only_for_website_ops_routes(
+    tmp_path: Path,
+) -> None:
+    from sales_support_agent.services import website_ops_storage as storage
+
+    storage._RESTORED_CACHE_KEYS.clear()
+    env = {
+        "SALES_AGENT_DB_URL": f"sqlite:///{tmp_path / 'startup.db'}",
+        "AGENT_PREPARE_DATABASE_ON_STARTUP": "false",
+        "WEBSITE_OPS_DATABASE_MIRROR": "true",
+    }
+    from sales_support_agent import main as agent_main
+
+    with (
+        patch.dict("os.environ", env, clear=False),
+        patch(
+            "sales_support_agent.services.website_ops_storage.restore_website_ops_root",
+            return_value={"files": 0, "bytes": 0, "skipped": 0},
+        ) as restore,
+        patch(
+            "sales_support_agent.services.website_ops_storage.synchronize_website_ops_cache"
+        ) as synchronize,
+    ):
+        app = agent_main.create_app()
+        with TestClient(app) as client:
+            live = client.get("/health/live")
+            assert live.status_code == 200
+            assert restore.call_count == 0
+            assert synchronize.call_count == 0
+            client.get("/api/jobs/website-ops/health")
+            assert restore.call_count == 1
+            client.get("/api/jobs/website-ops/health")
+            assert restore.call_count == 1
+    app.state.session_factory.kw["bind"].dispose()
+
+
+def test_website_ops_render_cron_curl_stops_before_the_vercel_wall() -> None:
+    import json
+    import re
+
+    blueprint = Path("render.yaml").read_text(encoding="utf-8")
+    section = blueprint.split("name: website-ops-scheduler", 1)[1].split(
+        "\n  - type:", 1
+    )[0]
+    match = re.search(r"--max-time\s+(\d+)", section)
+    assert match is not None
+    assert int(match.group(1)) < 800
+    assert "name: website-ops-scheduler" in blueprint
+    vercel = json.loads(Path("vercel.json").read_text(encoding="utf-8"))
+    assert any(item["path"] == "/api/jobs/website-ops/run" for item in vercel["crons"])
