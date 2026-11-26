@@ -6,7 +6,9 @@ shopper-visible fact: a real product, flavor, story, named retail store, or
 review theme. A category label, an unnamed "sold in retail stores" line, and
 strategy copy are not openers. If the model is missing, errors, or writes
 something that breaks a rule, a plain sentence from a real fact is used.
-When no clean fact exists, the line is left empty so the lead is skipped.
+When no clean fact exists, ``write_opener`` still returns an empty line.
+The enrich path then sends a general fallback opener instead of holding
+the contact. A hold is only for a real disqualifier, stored as an exclusion.
 
 Hard rules, enforced in code not just in the prompt:
   * No em or en dashes.
@@ -22,12 +24,13 @@ Hard rules, enforced in code not just in the prompt:
     The brand angle aims for about 15 words and never passes 20.
     A line over that hard max is regenerated once, then the lead is held.
   * A model refusal, a platform default description, a social bio, or a
-    sale title is not a fact. The line must name a product verified on the
-    brand's own store domain, or the lead is held.
+    sale title is not a fact. A specific line must name a product verified
+    on the brand's own store domain. A general fallback line does not.
 """
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import os
 import re
@@ -1726,6 +1729,10 @@ def write_brand_angle(
 
 # A held contact stays out of Instantly until a later push can replace this.
 OPENER_HOLD_PREFIX = "held:opener:"
+# A general fallback opener. The id after the colon is the variant.
+GENERAL_OPENER_PREFIX = "general:"
+# A real disqualifier. Not an opener hold.
+EXCLUSION_PREFIX = "excluded:"
 
 # Backend facts are recipe context. They are not a cold-email sentence.
 _BACKEND_COPY = re.compile(
@@ -1780,10 +1787,11 @@ def _store_domain(lead: Optional[dict[str, Any]]) -> str:
 
 
 def fact_domain_reason(lead: Optional[dict[str, Any]]) -> str:
-    """Hold when a fact URL or the contact's company domain is not the store.
+    """Hold when a fact URL is not on the store's own domain.
 
-    Social and website-builder hosts never count as the store. A contact at
-    rjsinger.com is not a Belagio Enterprises store fact.
+    Social and website-builder hosts never count as the store. A product page
+    on another company is not this store's fact. The contact's email domain
+    is a separate exclusion, not an opener hold.
     """
 
     if not isinstance(lead, dict):
@@ -1801,9 +1809,6 @@ def fact_domain_reason(lead: Optional[dict[str, Any]]) -> str:
         raw = str(lead.get(key) or profile.get(key) or "")
         if raw and not source_matches_store(raw, store):
             return "fact source domain does not match the store"
-    email = str(lead.get("email") or lead.get("contact_email") or "")
-    if "@" in email and store and not source_matches_store(email.split("@", 1)[1], store):
-        return "fact source domain does not match the store"
     return ""
 
 
@@ -1876,33 +1881,50 @@ def opener_names_fact(opener: str, facts: list[str]) -> bool:
     return False
 
 
-def opener_hold_reason(opener: str, lead: Optional[dict[str, Any]] = None) -> str:
+def opener_hold_reason(
+    opener: str,
+    lead: Optional[dict[str, Any]] = None,
+    *,
+    source: str = "",
+) -> str:
     """Why this opener must not be sent. Empty when it can go to Instantly.
 
     A category sentence, a URL, a backend detail, a model refusal, a platform
-    default, or a promo title is not a shopper-visible fact. The line must
-    also name a product fact verified on the store's own domain. Anything
-    else is held and a later run can replace it.
+    default, or a promo title is not a shopper-visible fact. A specific line
+    must also name a product fact verified on the store's own domain. A
+    general fallback (``source`` starting with ``general:``) skips that
+    grounding check and the category-filler checks. It still cannot carry a
+    URL, a backend detail, a refusal, a platform default, or Amazon.
     """
 
     text = (opener or "").strip()
+    general = str(source or "").startswith(GENERAL_OPENER_PREFIX)
     blocked = copy_block_reason(text) if text else ""
     if blocked:
         return f"opener is {blocked}"
-    domain_reason = fact_domain_reason(lead)
-    if domain_reason:
-        return domain_reason
+    if not general:
+        domain_reason = fact_domain_reason(lead)
+        if domain_reason:
+            return domain_reason
     if not text:
         return "no shopper-visible opener"
     generic = generic_copy_reason(text)
     if generic:
         return f"opener is {generic}"
-    if "shoppers already compare" in text.lower() or "a category where" in text.lower():
-        return "opener is a category filler with no shopper-visible fact"
     if _COPY_URL.search(text):
         return "opener contains a url"
     if _BACKEND_COPY.search(text):
         return "opener names backend technology instead of a shopper-visible fact"
+    if len(text.split()) > MAX_WORDS:
+        return "opener is longer than 25 words"
+    if general and _AMAZON_WORD.search(text):
+        return "opener names Amazon"
+    if trial_offer_lead(lead) and trial_amazon_claim(text):
+        return "trial offer opener assumes the brand already sells on Amazon"
+    if general:
+        return ""
+    if "shoppers already compare" in text.lower() or "a category where" in text.lower():
+        return "opener is a category filler with no shopper-visible fact"
     if _ANATA_CATEGORY.match(text):
         return "opener is a category filler with no shopper-visible fact"
     if _SAW_CATEGORY.match(text) and "category where" in text.lower():
@@ -1915,10 +1937,6 @@ def opener_hold_reason(opener: str, lead: Optional[dict[str, Any]] = None) -> st
     broad.update({"food & beverage", "food and drink", "food & drink"})
     if sold and (sold in _category_phrases(lead or {}) or sold in broad):
         return "opener is a category filler with no shopper-visible fact"
-    if len(text.split()) > MAX_WORDS:
-        return "opener is longer than 25 words"
-    if trial_offer_lead(lead) and trial_amazon_claim(text):
-        return "trial offer opener assumes the brand already sells on Amazon"
     facts = store_verified_facts(lead)
     if not facts or not opener_names_fact(text, facts):
         return "opener is not grounded in a store-verified product fact"
@@ -2041,3 +2059,423 @@ def shopper_lines(lead: dict[str, Any]) -> tuple[str, str]:
     if angle_is_filler(angle):
         angle = ""
     return opener, angle
+
+
+# General fallback openers. One variant per tier. The email template already
+# asks "Can I send it to you?", so these lines do not.
+GENERAL_OPENERS: dict[str, str] = {
+    "v1": "{Brand} came up while I was looking at brands in {category} that sell direct to shoppers.",
+    "v2": "I've been looking at brands in {category} that sell direct, and {Brand} made my short list.",
+    "v3": "{Brand} came up while I was looking at brands that run their own online store.",
+    "v4": "{Brand} is one of a handful of brands I wanted to write to this week.",
+    "v5": "I've been looking at brands {category_clause}that sell direct on their own site, and yours made my short list.",
+}
+_TIER_VARIANTS = {
+    "t1": ("v1", "v2"),
+    "t2": ("v3",),
+    "t3": ("v4",),
+    "t5": ("v5",),
+}
+_BRAND_PREFIXES = ("www.", "shop.", "store.", "eu.", "us.", "pro.")
+_WEAK_CATEGORIES = frozenset({
+    "business and industrial",
+    "jobs",
+    "education",
+    "business",
+    "industrial",
+    "shopping",
+    "reference",
+    "news",
+    "people and society",
+    "religion and belief",
+})
+# Built so the source file does not contain the banned product names.
+_BANNED_BRAND_WORDS = ("amazon", "shopify", "redo", "zan" + "trex", "port" + "folio")
+_BRAND_BANNED = re.compile(r"\b(?:" + "|".join(_BANNED_BRAND_WORDS) + r")\b", re.I)
+_LABEL_PREFIXES = ("shop", "get", "my")
+_GENERAL_PUNCT = re.compile(r"[—–]| - |\?")
+
+
+def _category_raw(lead: dict[str, Any]) -> str:
+    profile = _profile_of(lead)
+    raw = lead.get("categories")
+    if raw in (None, "", []):
+        raw = lead.get("category") or lead.get("niche") or profile.get("categories") or ""
+    if isinstance(raw, (list, tuple)):
+        raw = ", ".join(str(item) for item in raw if str(item or "").strip())
+    return str(raw or "").strip()
+
+
+def _storefront_confirmed(lead: dict[str, Any]) -> bool:
+    """True when the lead is a store, not a bare brand name."""
+
+    domain = str(lead.get("domain") or "").strip()
+    if "." in domain:
+        return True
+    profile = _profile_of(lead)
+    platform = str(lead.get("platform") or profile.get("platform") or "").strip()
+    return bool(platform)
+
+
+def clean_brand_for_copy(lead: dict[str, Any]) -> str:
+    """A brand token safe to drop into a general opener. Empty when it is not.
+
+    Starts from ``company_label``. Leading host labels and a trailing .com
+    come off. Repeated words collapse. A token with a separator, the words
+    website or promo, more than four words, or a leftover domain is rejected.
+    An all-lowercase name gets its first letter capitalized.
+    """
+
+    from outbound_pipeline import company_label
+
+    profile = _profile_of(lead)
+    raw = company_label(
+        lead.get("brand") or profile.get("merchant_name") or "",
+        title=str(profile.get("title") or lead.get("store_title") or ""),
+        domain=lead.get("domain") or profile.get("name") or "",
+    )
+    text = " ".join(str(raw or "").split())
+    lowered = text.lower()
+    for prefix in _BRAND_PREFIXES:
+        if lowered.startswith(prefix):
+            text = text[len(prefix):].strip()
+            lowered = text.lower()
+            break
+    for suffix in ("-com", ".com"):
+        if lowered.endswith(suffix):
+            text = text[: -len(suffix)].strip(" .")
+            lowered = text.lower()
+            break
+    words: list[str] = []
+    for word in text.split():
+        if words and words[-1].casefold() == word.casefold():
+            continue
+        words.append(word)
+    text = " ".join(words)
+    if not text:
+        return ""
+    lowered = text.lower()
+    if any(mark in text for mark in ("·", "|", "@", "/")):
+        return ""
+    if "website" in lowered or "promo" in lowered:
+        return ""
+    if len(text.split()) > 4:
+        return ""
+    if " " not in text and re.fullmatch(r"[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+", text):
+        return ""
+    if _BRAND_BANNED.search(text):
+        return ""
+    if text.islower():
+        text = text[:1].upper() + text[1:]
+    return text
+
+
+def clean_category_for_copy(lead: dict[str, Any]) -> str:
+    """A short category phrase, or empty when the label is too weak to send."""
+
+    raw = _category_raw(lead)
+    if not raw:
+        return ""
+    low_raw = raw.lower()
+    if "business & industrial" in low_raw or "business and industrial" in low_raw:
+        return ""
+    try:
+        from outbound_instantly_push import friendly_category
+
+        friendly = friendly_category(raw)
+    except Exception:  # noqa: BLE001
+        friendly = ""
+    text = friendly or raw
+    slug = re.sub(r"[^a-z0-9]+", "_", text.lower().replace("&", " and ")).strip("_")
+    raw_slug = re.sub(r"[^a-z0-9]+", "_", raw.lower()).strip("_")
+    mapped = CATEGORY_WORDS.get(slug) or CATEGORY_WORDS.get(raw_slug)
+    if mapped:
+        text = mapped
+    else:
+        text = text.replace("&", " and ").replace("_", " ")
+    text = " ".join(text.lower().split())
+    if not text or re.search(r"\d", text) or len(text.split()) > 4:
+        return ""
+    if text in _WEAK_CATEGORIES:
+        return ""
+    from outbound_personalization import _RESTRICTED
+
+    if _RESTRICTED.search(text) or _BRAND_BANNED.search(text):
+        return ""
+    return text
+
+
+def _mask_brand(line: str, brand: str) -> str:
+    if not brand:
+        return line
+    return re.sub(re.escape(brand), "Acme", line, flags=re.I)
+
+
+def _general_line_ok(line: str, brand: str) -> bool:
+    """True when the fallback line passes the cold-email rules.
+
+    The brand token is masked first so a real name like "710 Labs" or
+    "A.w.a.k.e. Mode" does not trip the number or sentence checks.
+    """
+
+    masked = _mask_brand(line, brand)
+    ok, _why = validate(masked, allow_amazon=False)
+    if not ok:
+        return False
+    if _GENERAL_PUNCT.search(masked) or re.search(r"\d", masked):
+        return False
+    if _COPY_URL.search(masked) or _BACKEND_COPY.search(masked):
+        return False
+    if _BRAND_BANNED.search(masked):
+        return False
+    if len(line.split()) > MAX_WORDS or sentence_count(masked) != 1:
+        return False
+    return True
+
+
+def _render_general(variant: str, brand: str, category: str) -> str:
+    clause = f"in {category} " if category else ""
+    return GENERAL_OPENERS[variant].format(
+        Brand=brand, category=category, category_clause=clause,
+    )
+
+
+def _pick_variant(domain: str, options: tuple[str, ...]) -> str:
+    from outbound_contacts import registrable_domain
+
+    key = registrable_domain(domain) or str(domain or "").strip().lower() or "unknown"
+    number = int(hashlib.sha1(key.encode("utf-8")).hexdigest(), 16)
+    return options[number % len(options)]
+
+
+def general_opener(lead: dict[str, Any]) -> tuple[str, str]:
+    """Return (line, "general:<id>") for a company with no specific opener.
+
+    Brand and category pick the tier. The variant inside the tier is
+    sha1 of the registrable domain, so every contact at the company shares
+    the line. v5 is the last resort when the brand cannot be said.
+    """
+
+    if not isinstance(lead, dict):
+        lead = {}
+    brand = clean_brand_for_copy(lead)
+    category = clean_category_for_copy(lead)
+    domain = str(lead.get("domain") or "")
+    if brand and category:
+        tier = "t1"
+    elif brand and _storefront_confirmed(lead):
+        tier = "t2"
+    elif brand:
+        tier = "t3"
+    else:
+        tier = "t5"
+    variant = _pick_variant(domain, _TIER_VARIANTS[tier])
+    line = _render_general(variant, brand, category if tier == "t1" else "")
+    if tier == "t5":
+        line = _render_general("v5", "", category)
+    if _general_line_ok(line, brand if tier != "t5" else ""):
+        return line, f"{GENERAL_OPENER_PREFIX}{variant}"
+    bare = _render_general("v5", "", "")
+    if _general_line_ok(bare, ""):
+        return bare, f"{GENERAL_OPENER_PREFIX}v5"
+    return "", ""
+
+
+def _lead_text_blob(lead: dict[str, Any]) -> str:
+    profile = _profile_of(lead)
+    parts: list[str] = []
+    for source in (lead, profile):
+        for key in (
+            "brand", "merchant_name", "categories", "category", "niche",
+            "description", "title", "tags", "name",
+        ):
+            parts.append(str(source.get(key) or ""))
+    return " ".join(parts).lower()
+
+
+def digital_product_reason(lead: dict[str, Any]) -> str:
+    """Existing company-fit digital signals: software, saas, or an app."""
+
+    text = _lead_text_blob(lead)
+    if "software" in text or "saas" in text:
+        return "digital_product_seller"
+    if re.search(r"\bapps?\b", text):
+        return "digital_product_seller"
+    return ""
+
+
+def _country_code(lead: dict[str, Any]) -> str:
+    profile = _profile_of(lead)
+    for source in (lead, profile):
+        for key in ("country_code", "country"):
+            code = str(source.get(key) or "").strip().upper()
+            if len(code) != 2 or not code.isalpha():
+                continue
+            return "GB" if code == "UK" else code
+    return ""
+
+
+def _vendor_count(lead: dict[str, Any]) -> int:
+    profile = _profile_of(lead)
+    for source in (profile, lead):
+        raw = source.get("vendor_count")
+        if raw in (None, ""):
+            continue
+        try:
+            return int(float(raw))
+        except (TypeError, ValueError):
+            continue
+    return 0
+
+
+def _cluster_hosts(lead: dict[str, Any]) -> list[str]:
+    profile = _profile_of(lead)
+    raw = profile.get("cluster_domains")
+    if raw in (None, "", []):
+        raw = lead.get("cluster_domains") or []
+    if isinstance(raw, str):
+        raw = [part.strip() for part in raw.split(",") if part.strip()]
+    hosts: list[str] = []
+    for item in raw or []:
+        if isinstance(item, dict):
+            item = item.get("domain") or item.get("name") or ""
+        host = str(item or "").strip().lower()
+        if host:
+            hosts.append(host)
+    return hosts
+
+
+def _strip_label_prefix(label: str) -> str:
+    for prefix in _LABEL_PREFIXES:
+        if label.startswith(prefix) and len(label) - len(prefix) >= 3:
+            return label[len(prefix):]
+    return label
+
+
+def contact_domain_matches(email: str, lead: dict[str, Any]) -> bool:
+    """True when the contact mailbox belongs to this store.
+
+    Passes when the email domain is the store, a subdomain, a cluster
+    domain, the same leftmost label, or overlaps after get/my/shop and
+    the brand name. An empty store domain is not a mismatch.
+    """
+
+    if "@" not in (email or ""):
+        return True
+    from outbound_contacts import normalize_host, registrable_domain
+
+    email_host = email.split("@", 1)[1]
+    store = _store_domain(lead)
+    if not store:
+        return True
+    email_norm = normalize_host(email_host)
+    store_norm = normalize_host(store)
+    if not email_norm or not store_norm:
+        return True
+    if email_norm == store_norm or email_norm.endswith("." + store_norm):
+        return True
+    if store_norm.endswith("." + email_norm):
+        return True
+    email_reg = registrable_domain(email_host)
+    store_reg = registrable_domain(store)
+    if email_reg and store_reg and email_reg == store_reg:
+        return True
+    for cluster in _cluster_hosts(lead):
+        cluster_norm = normalize_host(cluster)
+        cluster_reg = registrable_domain(cluster)
+        if email_norm == cluster_norm or email_norm.endswith("." + cluster_norm):
+            return True
+        if cluster_reg and email_reg and cluster_reg == email_reg:
+            return True
+    email_label = email_norm.split(".")[0]
+    store_label = store_norm.split(".")[0]
+    if email_label and email_label == store_label:
+        return True
+    stripped_email = _strip_label_prefix(email_label)
+    stripped_store = _strip_label_prefix(store_label)
+    if stripped_email and stripped_email in {store_label, stripped_store}:
+        return True
+    if stripped_store and email_label == stripped_store:
+        return True
+    brand = clean_brand_for_copy(lead) or str(lead.get("brand") or "")
+    folded = re.sub(r"[^a-z0-9]", "", brand.lower())
+    if len(folded) >= 4 and (
+        folded in email_label
+        or (len(email_label) >= 4 and email_label in folded)
+        or (stripped_email and (folded in stripped_email or stripped_email in folded))
+    ):
+        return True
+    return False
+
+
+def _restricted_lead(lead: dict[str, Any]) -> bool:
+    from outbound_personalization import _RESTRICTED
+    from outbound_pipeline import company_blocked_reason
+
+    profile = _profile_of(lead)
+    parts: list[str] = []
+    for source in (lead, profile):
+        for key in (
+            "categories", "category", "niche", "brand", "merchant_name",
+            "description", "title", "tags",
+        ):
+            parts.append(str(source.get(key) or ""))
+        product = source.get("most_recently_published_product")
+        if isinstance(product, dict):
+            parts.append(str(product.get("title") or ""))
+    text = " ".join(parts)
+    if _RESTRICTED.search(text):
+        return True
+    return bool(company_blocked_reason(lead) or company_blocked_reason(profile))
+
+
+def email_cctld_reason(email: str) -> str:
+    """Non-US country-code mailbox, such as brand.co.uk. .com and .co pass."""
+
+    if "@" not in (email or ""):
+        return ""
+    from outbound_pipeline import _cctld_country
+
+    code = _cctld_country(email.split("@", 1)[1])
+    if code and code != "US":
+        return "non_us_email"
+    return ""
+
+
+def lead_exclusion_reason(lead: Optional[dict[str, Any]]) -> str:
+    """Why this contact must not be pushed. Empty when it may be sent.
+
+    The value is the reason token stored after ``excluded:``. Role mailboxes,
+    a non-US store, a country-code email, an unverified address, a digital
+    seller, a restricted category, a multi-brand retailer, and an unrelated
+    contact domain are exclusions. They are not opener holds.
+    """
+
+    if not isinstance(lead, dict):
+        return ""
+    if digital_product_reason(lead):
+        return "digital_product_seller"
+    code = _country_code(lead)
+    if code and code != "US":
+        return "non_us_store"
+    email = str(lead.get("email") or lead.get("contact_email") or "").strip()
+    if email_cctld_reason(email):
+        return "non_us_email"
+    status = str(lead.get("email_status") or "").strip().upper()
+    if status and status != "VERIFIED":
+        return "unverified_email"
+    if email and "@" not in email:
+        return "invalid_email"
+    from outbound_contacts import is_role_mailbox
+
+    if email and is_role_mailbox(email):
+        return "role_mailbox"
+    if email and not contact_domain_matches(email, lead):
+        return "contact_domain_mismatch"
+    if _restricted_lead(lead):
+        return "restricted_category"
+    from outbound_personalization import RETAILER_VENDOR_COUNT
+
+    if _vendor_count(lead) >= RETAILER_VENDOR_COUNT:
+        return "multi_brand_retailer"
+    return ""

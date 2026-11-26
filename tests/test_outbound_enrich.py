@@ -481,7 +481,7 @@ def test_departed_contact_is_left_out_of_future_pushes(engine):
         reason = conn.execute(text(
             "SELECT skip_reason FROM outbound_enriched_contacts WHERE email = 'gone@a.com'"
         )).scalar()
-    assert str(reason).startswith("suppressed:departed:gone@a.com")
+    assert str(reason).startswith("excluded:departed")
 
 
 def test_role_mailbox_is_left_out_of_the_push(engine):
@@ -499,28 +499,27 @@ def test_role_mailbox_is_left_out_of_the_push(engine):
 
     out = oe.push_pending(engine, "camp", dry_run=False, push=capture)
     assert seen["emails"] == ["jane.smith@box.com"]
-    assert out["suppressed"] == 1 and out["pushed"] == 1
+    assert out["pushed"] == 1
+    assert "info@box.com" not in seen["emails"]
     with engine.connect() as conn:
         reason = conn.execute(text(
             "SELECT skip_reason FROM outbound_enriched_contacts WHERE email = 'info@box.com'"
         )).scalar()
-    assert str(reason).startswith("suppressed:role:info@box.com")
+    assert str(reason).startswith("excluded:role_mailbox")
 
 
-def test_category_filler_is_held_and_retried_when_a_product_fact_exists(engine, monkeypatch):
-    """A category slogan is not sent. A later product fact releases the same contact."""
+def test_category_filler_uses_a_general_opener_instead_of_a_hold(engine, monkeypatch):
+    """A lead with no product fact is sent with a general opener, not held."""
     from sqlalchemy import text
-
-    from sales_support_agent.services import outbound_memory as memory
 
     monkeypatch.setattr(
         "sales_support_agent.services.llm_client.llm_available",
         lambda **_kwargs: False,
     )
-    sent: list[list[str]] = []
+    sent: list[list[dict]] = []
 
     def capture(payload, cid, dry_run=False, **k):
-        sent.append([str(row.get("personalization") or "") for row in payload])
+        sent.append(payload)
         return push.PushOutcome(attempted=len(payload), created=len(payload), dry_run=False)
 
     food = lead("food.com", "Kalm")
@@ -532,35 +531,22 @@ def test_category_filler_is_held_and_retried_when_a_product_fact_exists(engine, 
         engine, [food], api_key="k", find=finder({"food.com": ["ada@food.com"]}),
         dry_run=False, push=capture,
     )
-    assert sent == []
-    assert result.pushed == 0
-    assert "shopper-visible opener" in result.push_note
+    assert result.pushed == 1 and sent
+    assert "shopper-visible opener" not in result.push_note
+    assert "Held contacts waiting" not in result.push_note
+    line = sent[-1][0]["personalization"]
+    variables = sent[-1][0]["custom_variables"]
+    assert variables["opener_type"] == "general"
+    assert str(variables["opener_variant"]).startswith("v")
+    assert "Kalm" in line
     assert oe.unpushed(engine) == []
     with engine.connect() as conn:
-        reason = conn.execute(text(
-            "SELECT skip_reason FROM outbound_enriched_contacts WHERE email = 'ada@food.com'"
-        )).scalar()
-    assert str(reason).startswith("held:opener:")
-    assert "shopper-visible" in str(reason)
-
-    assert memory.save_store_profiles(engine, [{
-        "domain": "food.com",
-        "store_profile": {
-            "merchant_name": "Kalm",
-            "most_recently_published_product": {"title": "Green Chile Salsa"},
-            "description": "Roasted green chile salsa",
-        },
-    }]) == 1
-    again = oe.push_pending(engine, "camp", dry_run=False, push=capture)
-    assert again["pushed"] == 1
-    assert sent and "Green Chile Salsa" in sent[-1][0]
-    assert "http" not in sent[-1][0].lower() and "www." not in sent[-1][0].lower()
-    assert "shopify" not in sent[-1][0].lower()
-    with engine.connect() as conn:
-        cleared = conn.execute(text(
-            "SELECT skip_reason FROM outbound_enriched_contacts WHERE email = 'ada@food.com'"
-        )).scalar()
-    assert cleared in ("", None)
+        source, reason = conn.execute(text(
+            "SELECT opener_source, skip_reason FROM outbound_enriched_contacts "
+            "WHERE email = 'ada@food.com'"
+        )).one()
+    assert str(source).startswith("general:")
+    assert reason in ("", None)
 
 
 def test_missing_store_profile_table_keeps_the_lead(engine, monkeypatch):

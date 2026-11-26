@@ -19,7 +19,9 @@ from __future__ import annotations
 import json
 import logging
 from dataclasses import dataclass, field
+from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Iterable, Optional
+from zoneinfo import ZoneInfo
 
 from sqlalchemy import text
 
@@ -258,7 +260,8 @@ def unpushed(engine, limit: int = 500, *,
     params: dict[str, Any] = {"n": limit}
     sql = (
         "SELECT email, domain, first_name, last_name, title, opener, brand, category, "
-        f"recipe, tier, brand_angle FROM {_PEOPLE} WHERE pushed_at IS NULL "
+        f"recipe, tier, brand_angle, opener_source, email_status FROM {_PEOPLE} "
+        "WHERE pushed_at IS NULL "
         "AND COALESCE(skip_reason, '') = '' "
     )
     if excluded:
@@ -271,8 +274,10 @@ def unpushed(engine, limit: int = 500, *,
     sql += "ORDER BY created_at LIMIT :n"
     with engine.connect() as conn:
         rows = conn.execute(text(sql), params).fetchall()
-    return [dict(zip(("email", "domain", "first_name", "last_name", "title", "opener", "brand",
-                      "category", "recipe", "tier", "brand_angle"), r)) for r in rows]
+    return [dict(zip((
+        "email", "domain", "first_name", "last_name", "title", "opener", "brand",
+        "category", "recipe", "tier", "brand_angle", "opener_source", "email_status",
+    ), r)) for r in rows]
 
 
 def _count_unpushed_recipes(engine, recipes: Iterable[str]) -> int:
@@ -795,6 +800,7 @@ def run_enrichment(
                     profile = lead["store_profile"]
                 opener_lead = {
                     **lead, "domain": domain, "store_profile": profile, "email": c.email,
+                    "email_status": getattr(c, "email_status", "") or "",
                 }
                 if profile and _openers.rich_personalization_enabled():
                     opener_lead["rich_personalization"] = True
@@ -806,15 +812,28 @@ def run_enrichment(
                     angle, angle_src = shop_angle, "shopper" if shop_angle else "none"
                 if _openers.angle_is_filler(angle):
                     angle, angle_src = "", "none"
-                hold = _openers.opener_hold_reason(line, opener_lead)
-                if hold:
+                exclusion = _openers.lead_exclusion_reason(opener_lead)
+                if exclusion:
                     logger.info(
-                        "[outbound-enrich] holding %s at %s: %s",
-                        c.email, domain, hold,
+                        "[outbound-enrich] excluding %s at %s: %s",
+                        c.email, domain, exclusion,
                     )
+                else:
+                    hold = _openers.opener_hold_reason(line, opener_lead)
+                    if hold:
+                        general_line, general_src = _openers.general_opener(opener_lead)
+                        if general_line and not _openers.opener_hold_reason(
+                            general_line, opener_lead, source=general_src,
+                        ):
+                            line, src = general_line, general_src
+                            angle, angle_src = "", "none"
+                            logger.info(
+                                "[outbound-enrich] general opener for %s at %s (%s)",
+                                c.email, domain, general_src,
+                            )
                 _record_person(engine, c, line, src, lead, brand_angle=angle)
-                if hold:
-                    _set_opener_hold(engine, c.email, hold)
+                if exclusion:
+                    _set_exclusion(engine, c.email, exclusion)
                 emails_seen.add(c.email)
                 report.contacts_found += 1
                 provider = _contact_provider(c)
@@ -916,10 +935,31 @@ def _set_opener_hold(engine, email: str, reason: str) -> None:
         ), {"r": stored, "e": email})
 
 
-def release_held_openers(engine) -> int:
-    """Send a held contact forward once a shopper-visible fact exists.
+def _set_exclusion(engine, email: str, reason: str) -> None:
+    """Record a disqualifier. The contact is not an opener hold."""
 
-    A missing profile table leaves the hold in place. Nothing is pushed here.
+    stored = f"{_openers.EXCLUSION_PREFIX}{reason}"[:200]
+    with engine.begin() as conn:
+        conn.execute(text(
+            f"UPDATE {_PEOPLE} SET skip_reason = :r WHERE email = :e AND pushed_at IS NULL"
+        ), {"r": stored, "e": email})
+
+
+def _store_opener(engine, email: str, opener: str, source: str, angle: str) -> None:
+    """Save the line that a live push is about to send."""
+
+    with engine.begin() as conn:
+        conn.execute(text(
+            f"UPDATE {_PEOPLE} SET opener = :o, opener_source = :s, brand_angle = :a "
+            "WHERE email = :e AND pushed_at IS NULL"
+        ), {"o": opener, "s": source, "a": angle, "e": email})
+
+
+def release_held_openers(engine, *, dry_run: bool = False) -> int:
+    """Replace a held opener with a shopper fact or a general fallback.
+
+    A disqualifier becomes ``excluded:<reason>`` and stays unpushed. A dry
+    run does not write. Nothing is pushed here.
     """
 
     if engine is None:
@@ -927,7 +967,8 @@ def release_held_openers(engine) -> int:
     try:
         with engine.connect() as conn:
             rows = conn.execute(text(
-                f"SELECT email, domain, brand, category, recipe, tier FROM {_PEOPLE} "
+                f"SELECT email, domain, brand, category, recipe, tier, email_status "
+                f"FROM {_PEOPLE} "
                 "WHERE pushed_at IS NULL AND COALESCE(skip_reason, '') LIKE :prefix"
             ), {"prefix": _openers.OPENER_HOLD_PREFIX + "%"}).fetchall()
     except Exception:  # noqa: BLE001
@@ -941,43 +982,66 @@ def release_held_openers(engine) -> int:
 
         profiles = load_store_profiles(engine, [str(row[1] or "") for row in rows])
     except Exception:  # noqa: BLE001
-        logger.info("[outbound-enrich] store profiles could not be read; opener holds stay")
+        logger.info("[outbound-enrich] store profiles could not be read; using general openers")
         profiles = {}
     released = 0
-    for email, domain, brand, category, recipe, tier in rows:
+    for email, domain, brand, category, recipe, tier, email_status in rows:
         domain_key = str(domain or "").strip().lower()
+        profile = profiles.get(domain_key) or {}
         lead = {
             "domain": domain_key, "email": email, "brand": brand, "categories": category,
-            "recipe": recipe, "tier": tier,
-            "store_profile": profiles.get(domain_key) or {},
+            "recipe": recipe, "tier": tier, "email_status": email_status or "",
+            "store_profile": profile,
+            "country_code": profile.get("country_code") or profile.get("country") or "",
+            "vendor_count": profile.get("vendor_count"),
         }
-        opener, angle = _openers.shopper_lines(lead)
-        if _openers.opener_hold_reason(opener, lead):
+        exclusion = _openers.lead_exclusion_reason(lead)
+        if exclusion:
+            if not dry_run:
+                _set_exclusion(engine, email, exclusion)
+            logger.info(
+                "[outbound-enrich] %s at %s excluded while releasing: %s",
+                email, domain_key, exclusion,
+            )
             continue
-        if _openers.angle_is_filler(angle):
+        opener, angle = _openers.shopper_lines(lead)
+        source = "shopper"
+        if not opener or _openers.opener_hold_reason(opener, lead):
+            opener, source = _openers.general_opener(lead)
             angle = ""
+        if not opener or _openers.opener_hold_reason(opener, lead, source=source):
+            continue
+        if _openers.angle_is_filler(angle) or len(str(angle or "").split()) > _openers.ANGLE_MAX_WORDS:
+            angle = ""
+        if dry_run:
+            released += 1
+            continue
         with engine.begin() as conn:
             conn.execute(text(
-                f"UPDATE {_PEOPLE} SET opener = :o, opener_source = 'shopper', "
+                f"UPDATE {_PEOPLE} SET opener = :o, opener_source = :s, "
                 "brand_angle = :a, skip_reason = '' "
                 "WHERE email = :e AND pushed_at IS NULL"
-            ), {"o": opener, "a": angle, "e": email})
+            ), {"o": opener, "s": source, "a": angle, "e": email})
         logger.info(
-            "[outbound-enrich] %s at %s retrying: shopper-visible opener is ready",
-            email, domain_key,
+            "[outbound-enrich] %s at %s released with %s",
+            email, domain_key, source,
         )
         released += 1
     return released
 
 
 def _mark_skipped(engine, people: list[dict[str, Any]]) -> None:
-    """Keep a suppressed contact out of the unpushed queue without deleting it."""
+    """Keep a blocked contact out of the unpushed queue without deleting it."""
     with engine.begin() as conn:
         for person in people:
+            explicit = str(person.get("exclusion_reason") or "").strip()
+            if explicit:
+                reason = f"{_openers.EXCLUSION_PREFIX}{explicit}"[:200]
+            else:
+                reason = f"suppressed:{person.get('suppressed_match') or 'match'}"[:200]
             conn.execute(text(
                 f"UPDATE {_PEOPLE} SET skip_reason = :r WHERE email = :e AND pushed_at IS NULL"),
-                {"r": f"suppressed:{person.get('suppressed_match') or 'match'}"[:200],
-                 "e": person.get("email")})
+                {"r": reason, "e": person.get("email")})
 
 
 def _empty_push(*, dry_run: bool, suppressed: int = 0, excluded: int = 0,
@@ -1083,6 +1147,22 @@ def departed_emails(engine) -> set[str]:
     return found
 
 
+def _push_opener_mix(groups: dict[str, list[tuple[dict[str, Any], dict[str, Any]]]]) -> str:
+    """Specific versus general counts for the leads in this push."""
+
+    specific = general = 0
+    for items in groups.values():
+        for _person, body in items:
+            kind = str((body.get("custom_variables") or {}).get("opener_type") or "")
+            if kind == "general":
+                general += 1
+            elif kind == "specific":
+                specific += 1
+    if not specific and not general:
+        return ""
+    return f"Openers in this push: {specific} specific, {general} general."
+
+
 def push_pending(engine, campaign_id: str, *, dry_run: bool = True, limit: int = 500,
                  push: Optional[Callable[..., _push.PushOutcome]] = None) -> dict[str, Any]:
     """Add not-yet-pushed contacts to Instantly, one campaign per recipe group.
@@ -1101,7 +1181,7 @@ def push_pending(engine, campaign_id: str, *, dry_run: bool = True, limit: int =
     """
     push = push or _push.push_leads
     try:
-        release_held_openers(engine)
+        release_held_openers(engine, dry_run=dry_run)
     except Exception:  # noqa: BLE001
         logger.exception("[outbound-enrich] could not retry held openers")
     try:
@@ -1109,6 +1189,9 @@ def push_pending(engine, campaign_id: str, *, dry_run: bool = True, limit: int =
         pending = unpushed(engine, limit, exclude_recipes=_push.PUSH_EXCLUDED_RECIPES)
         import outbound_suppression as suppression
         allowed, blocked = suppression.partition(engine, pending)
+        for person in blocked:
+            match = str(person.get("suppressed_match") or "match")
+            person["exclusion_reason"] = f"suppressed:{match}"
         left = departed_emails(engine)
         still: list[dict[str, Any]] = []
         domains = [str(person.get("domain") or "") for person in allowed]
@@ -1131,13 +1214,22 @@ def push_pending(engine, campaign_id: str, *, dry_run: bool = True, limit: int =
             )
             country = countries.get(domain, "")
             if quality == "role mailbox":
-                blocked.append({**person, "suppressed_match": f"role:{email}"})
+                blocked.append({
+                    **person, "suppressed_match": f"role:{email}",
+                    "exclusion_reason": "role_mailbox",
+                })
             elif quality:
                 blocked.append({**person, "suppressed_match": quality})
             elif country and country != "US":
-                blocked.append({**person, "suppressed_match": f"country:{country}"})
+                blocked.append({
+                    **person, "suppressed_match": f"country:{country}",
+                    "exclusion_reason": "non_us_store",
+                })
             elif email and email in left:
-                blocked.append({**person, "suppressed_match": f"departed:{email}"})
+                blocked.append({
+                    **person, "suppressed_match": f"departed:{email}",
+                    "exclusion_reason": "departed",
+                })
             else:
                 still.append(person)
         allowed = still
@@ -1176,23 +1268,66 @@ def push_pending(engine, campaign_id: str, *, dry_run: bool = True, limit: int =
             "brand": person.get("brand"),
             "domain": domain_key,
             "email": person.get("email"),
+            "email_status": person.get("email_status") or "",
             "categories": person.get("category"),
             "recipe": person.get("recipe"),
             "campaign_id": person.get("campaign_id"),
             "campaign_name": person.get("campaign_name"),
             "store_profile": profile,
+            "country_code": profile.get("country_code") or profile.get("country") or "",
+            "vendor_count": profile.get("vendor_count"),
         }
-        copy_reason = _openers.opener_hold_reason(
-            str(person.get("opener") or ""), copy_lead,
-        ) or _openers.angle_hold_reason(str(person.get("brand_angle") or ""), copy_lead)
-        if copy_reason:
+        exclusion = _openers.lead_exclusion_reason(copy_lead)
+        if exclusion:
+            logger.info(
+                "[outbound-enrich] excluding %s: %s",
+                person.get("email"), exclusion,
+            )
+            if not dry_run:
+                _set_exclusion(engine, str(person.get("email") or ""), exclusion)
+            continue
+        source = str(person.get("opener_source") or "")
+        opener_reason = _openers.opener_hold_reason(
+            str(person.get("opener") or ""), copy_lead, source=source,
+        )
+        angle_reason = _openers.angle_hold_reason(str(person.get("brand_angle") or ""), copy_lead)
+        if opener_reason:
+            general_line, general_src = _openers.general_opener(copy_lead)
+            if general_line and not _openers.opener_hold_reason(
+                general_line, copy_lead, source=general_src,
+            ):
+                person = {
+                    **person, "opener": general_line, "opener_source": general_src,
+                    "brand_angle": "",
+                }
+                opener_reason = ""
+                angle_reason = ""
+                logger.info(
+                    "[outbound-enrich] general opener for %s (%s)",
+                    person.get("email"), general_src,
+                )
+                if not dry_run:
+                    _store_opener(engine, str(person.get("email") or ""), general_line, general_src, "")
+        if angle_reason and "longer than 20 words" in angle_reason:
+            person = {**person, "brand_angle": ""}
+            angle_reason = ""
+            logger.info(
+                "[outbound-enrich] cleared long brand angle for %s",
+                person.get("email"),
+            )
+            if not dry_run:
+                _store_opener(
+                    engine, str(person.get("email") or ""),
+                    str(person.get("opener") or ""), str(person.get("opener_source") or ""), "",
+                )
+        if opener_reason or angle_reason:
             held_copy += 1
             logger.info(
                 "[outbound-enrich] holding %s: %s",
-                person.get("email"), copy_reason,
+                person.get("email"), opener_reason or angle_reason,
             )
             if not dry_run:
-                _set_opener_hold(engine, str(person.get("email") or ""), copy_reason)
+                _set_opener_hold(engine, str(person.get("email") or ""), opener_reason or angle_reason)
             continue
         if _openers.angle_is_filler(str(person.get("brand_angle") or "")):
             person = {**person, "brand_angle": ""}
@@ -1219,7 +1354,7 @@ def push_pending(engine, campaign_id: str, *, dry_run: bool = True, limit: int =
         profile = profiles.get(domain_key) or {}
         lead = {"domain": person["domain"], "brand": person["brand"], "categories": person["category"],
                 "recipe": route_name or recipe_name, "tier": person["tier"],
-                "store_profile": profile}
+                "store_profile": profile, "opener_source": person.get("opener_source") or ""}
         body = _push.build_lead(person, lead, person["opener"])
         if route_name and route_name != recipe_name:
             body["custom_variables"]["source_recipe"] = recipe_name
@@ -1234,9 +1369,9 @@ def push_pending(engine, campaign_id: str, *, dry_run: bool = True, limit: int =
             bits.append(f"Queued {queued} contacts. {_push.QUEUED_NOTE}")
         if held:
             bits.append(f"Held {held} contacts whose campaign is cut or proposed.")
-        waiting = max(held_copy, _count_opener_holds(engine))
+        waiting = held_copy
         if waiting:
-            bits.append(f"Held {waiting} contacts with no shopper-visible opener.")
+            bits.append(f"Held {waiting} contacts.")
         return _empty_push(
             dry_run=dry_run, suppressed=len(blocked), excluded=excluded,
             held=held + waiting,
@@ -1286,9 +1421,12 @@ def push_pending(engine, campaign_id: str, *, dry_run: bool = True, limit: int =
         note = f"{note} Queued {queued} contacts. {_push.QUEUED_NOTE}".strip()
     if held:
         note = f"{note} Held {held} contacts whose campaign is cut or proposed.".strip()
-    waiting = max(held_copy, _count_opener_holds(engine))
+    waiting = held_copy
     if waiting:
-        note = f"{note} Held {waiting} contacts with no shopper-visible opener.".strip()
+        note = f"{note} Held {waiting} contacts.".strip()
+    mix = _push_opener_mix(groups)
+    if mix:
+        note = f"{note} {mix}".strip()
     return {
         "pending": sum(len(items) for items in groups.values()),
         "pushed": pushed, "created": created, "skipped": skipped,
@@ -1297,6 +1435,148 @@ def push_pending(engine, campaign_id: str, *, dry_run: bool = True, limit: int =
         "queued": queued, "dry_run": stayed_dry, "errors": errors, "note": note,
         "preview": preview, "campaigns": campaigns,
     }
+
+
+def _db_moment(value: Any) -> Optional[datetime]:
+    """UTC moment for a stored timestamp. Naive values are UTC."""
+
+    if value is None or value == "":
+        return None
+    if isinstance(value, datetime):
+        moment = value
+    else:
+        raw = str(value).strip().replace("T", " ").replace("Z", "")
+        raw = raw.split("+")[0].strip()
+        moment = None
+        for fmt in ("%Y-%m-%d %H:%M:%S.%f", "%Y-%m-%d %H:%M:%S"):
+            try:
+                moment = datetime.strptime(raw[:26], fmt)
+                break
+            except ValueError:
+                continue
+        if moment is None:
+            return None
+    if moment.tzinfo is None:
+        moment = moment.replace(tzinfo=timezone.utc)
+    return moment.astimezone(timezone.utc)
+
+
+def _denver_bounds(now: Optional[datetime]) -> tuple[datetime, datetime]:
+    tz = ZoneInfo("America/Denver")
+    if now is None:
+        moment = datetime.now(tz)
+    elif now.tzinfo is None:
+        moment = now.replace(tzinfo=tz)
+    else:
+        moment = now.astimezone(tz)
+    start = moment.replace(hour=0, minute=0, second=0, microsecond=0)
+    return start, start + timedelta(days=1)
+
+
+def _on_denver_day(value: Any, start: datetime, end: datetime) -> bool:
+    moment = _db_moment(value)
+    if moment is None:
+        return False
+    local = moment.astimezone(start.tzinfo)
+    return start <= local < end
+
+
+def opener_daily_counts(engine, now: Optional[datetime] = None) -> dict[str, Any]:
+    """Specific, general, variant, recipe, and exclusion counts for one Denver day.
+
+    Created and pushed are counted separately. A contact created and pushed
+    on the same day is in both. Exclusions are contacts created that day.
+    """
+
+    empty: dict[str, Any] = {
+        "created_specific": 0,
+        "created_general": 0,
+        "pushed_specific": 0,
+        "pushed_general": 0,
+        "variants": {},
+        "excluded": {},
+        "recipes": {},
+    }
+    if engine is None:
+        return empty
+    start, end = _denver_bounds(now)
+    since = (start.astimezone(timezone.utc) - timedelta(days=2)).strftime("%Y-%m-%d %H:%M:%S")
+    try:
+        with engine.connect() as conn:
+            rows = conn.execute(text(
+                f"SELECT opener_source, recipe, skip_reason, created_at, pushed_at "
+                f"FROM {_PEOPLE} WHERE created_at >= :since OR pushed_at >= :since"
+            ), {"since": since}).fetchall()
+    except Exception:  # noqa: BLE001
+        logger.exception("[outbound-enrich] opener counts could not be read")
+        return empty
+    variants: dict[str, int] = {}
+    excluded: dict[str, int] = {}
+    recipes: dict[str, dict[str, int]] = {}
+    for source, recipe, skip, created_at, pushed_at in rows:
+        src = str(source or "")
+        kind = ""
+        if src.startswith(_openers.GENERAL_OPENER_PREFIX):
+            kind = "general"
+        elif src in {"ai", "fallback", "shopper"}:
+            kind = "specific"
+        created = _on_denver_day(created_at, start, end)
+        pushed = _on_denver_day(pushed_at, start, end)
+        recipe_name = str(recipe or "").strip() or "unknown"
+        if created and kind:
+            if kind == "general":
+                empty["created_general"] += 1
+                variant = src.split(":", 1)[1] or "unknown"
+                variants[variant] = variants.get(variant, 0) + 1
+            else:
+                empty["created_specific"] += 1
+            bucket = recipes.setdefault(recipe_name, {"specific": 0, "general": 0})
+            bucket[kind] += 1
+        if pushed and kind:
+            if kind == "general":
+                empty["pushed_general"] += 1
+            else:
+                empty["pushed_specific"] += 1
+        reason = str(skip or "")
+        if created and reason.startswith(_openers.EXCLUSION_PREFIX):
+            token = reason[len(_openers.EXCLUSION_PREFIX):].split(":", 1)[0] or "unknown"
+            excluded[token] = excluded.get(token, 0) + 1
+    empty["variants"] = variants
+    empty["excluded"] = excluded
+    empty["recipes"] = recipes
+    return empty
+
+
+def format_opener_daily(stats: dict[str, Any]) -> str:
+    """One status line: created mix, pushed mix, exclusions, and recipes."""
+
+    variants = stats.get("variants") or {}
+    variant_text = ", ".join(f"{name} {variants[name]}" for name in sorted(variants))
+    general = f"{int(stats.get('created_general') or 0)} general"
+    if variant_text:
+        general += f" ({variant_text})"
+    excluded = stats.get("excluded") or {}
+    if excluded:
+        excluded_text = ", ".join(f"{name} {excluded[name]}" for name in sorted(excluded))
+    else:
+        excluded_text = "none"
+    line = (
+        f"Openers today: {int(stats.get('created_specific') or 0)} specific, {general}. "
+        f"Pushed today: {int(stats.get('pushed_specific') or 0)} specific, "
+        f"{int(stats.get('pushed_general') or 0)} general. "
+        f"Excluded today: {excluded_text}."
+    )
+    recipes = stats.get("recipes") or {}
+    if recipes:
+        bits = []
+        for name in sorted(recipes):
+            item = recipes[name]
+            bits.append(
+                f"{name} {int(item.get('specific') or 0)} specific "
+                f"{int(item.get('general') or 0)} general"
+            )
+        line += " Recipes: " + ", ".join(bits) + "."
+    return line
 
 
 def enriched_since(engine, since_utc) -> dict[str, int]:

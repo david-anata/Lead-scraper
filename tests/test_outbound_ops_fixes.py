@@ -43,12 +43,15 @@ def test_zero_company_and_recipe_errors_alert_sales_and_a_good_batch_does_not():
             return {"ok": True}
 
     empty = SimpleNamespace(id=11, business_date="2026-11-10", unique_companies=0)
-    out = jobs.post_sales_alert(empty, [], slack=Slack(), held=2)
+    opener_line = "Openers today: 1 specific, 2 general (v1 2). Excluded today: none."
+    out = jobs.post_sales_alert(empty, [], slack=Slack(), opener_line=opener_line)
     assert out["posted"] is True
     assert posted[0][0] == jobs.SALES_SLACK_CHANNEL
     assert "batch 11" in posted[0][1]
     assert "0 companies" in posted[0][1]
-    assert "2" in posted[0][1]
+    assert "Openers today" in posted[0][1]
+    assert "2 general" in posted[0][1]
+    assert "Held contacts waiting" not in posted[0][1]
 
     posted.clear()
     full = SimpleNamespace(id=12, business_date="2026-11-10", unique_companies=4)

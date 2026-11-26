@@ -232,16 +232,17 @@ def test_skipped_lead_stays_unpushed_with_a_reason():
     result = oe.run_enrichment(
         engine, [food], api_key="k", find=find, dry_run=False, push=capture,
     )
-    assert result.pushed == 0 and sent == []
+    assert result.pushed == 1 and sent
     assert oe.unpushed(engine) == []
     with engine.connect() as conn:
         row = conn.execute(text(
-            "SELECT opener, skip_reason FROM outbound_enriched_contacts "
+            "SELECT opener, opener_source, skip_reason FROM outbound_enriched_contacts "
             "WHERE email = 'ada@cmycubes.com'"
         )).one()
-    assert row[0] in ("", None)
-    assert str(row[1]).startswith("held:opener:")
-    assert "shopper-visible" in str(row[1])
+    assert row[0]
+    assert str(row[1]).startswith("general:")
+    assert row[2] in ("", None)
+    assert sent[0][0]["custom_variables"]["opener_type"] == "general"
 
 
 REFUSAL = (

@@ -25,8 +25,8 @@ OPENER_MAX_WORDS = 25
 ANGLE_MAX_WORDS = 20
 
 _RESTRICTED = re.compile(
-    r"\b(?:wines?|alcohol|beer|spirits|liquor|cannabis|marijuana|cbd|tobacco|vapes?|vaping|"
-    r"firearms?|weapons?|ammunition|adult)\b",
+    r"\b(?:wines?|alcohol(?:ic)?|beers?|spirits|liquor|cannabis|marijuana|cbd|tobacco|"
+    r"vapes?|vaping|firearms?|weapons?|ammunition|adult|distiller(?:y|ies))\b",
     re.I,
 )
 _PROMO = re.compile(
