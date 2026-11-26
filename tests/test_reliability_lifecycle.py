@@ -176,25 +176,41 @@ def test_website_ops_disk_mirror_round_trip(tmp_path: Path) -> None:
     engine.dispose()
 
 
-def test_runtime_cache_transaction_never_rehydrates_stale_database_state(
+def test_runtime_cache_transaction_hydrates_once_before_embedded_work(
     tmp_path: Path,
 ) -> None:
+    from sales_support_agent.services import website_ops_storage as storage
+
     root = tmp_path / "runtime"
     root.mkdir()
+    storage._RESTORED_CACHE_KEYS.discard(str(root.resolve()))
     engine = object()
+    order: list[str] = []
+
+    def restore(*args, **kwargs):
+        order.append("restore")
+        assert not (root / "run.json").exists()
+        return {"files": 0, "bytes": 0, "skipped": 0}
+
     with (
         patch(
-            "sales_support_agent.services.website_ops_storage.restore_website_ops_root"
-        ) as restore,
+            "sales_support_agent.services.website_ops_storage.restore_website_ops_root",
+            side_effect=restore,
+        ) as restore_mock,
         patch(
             "sales_support_agent.services.website_ops_storage.snapshot_website_ops_root"
         ) as snapshot,
     ):
         with website_ops_cache_transaction(engine, root):
-            (root / "run.json").write_text('{"status":"running"}')
+            order.append("body")
+            (root / "run.json").write_text('{"status":"running"}', encoding="utf-8")
+        with website_ops_cache_transaction(engine, root):
+            order.append("body-again")
+            assert (root / "run.json").read_text(encoding="utf-8") == '{"status":"running"}'
 
-    restore.assert_not_called()
-    snapshot.assert_called_once_with(engine, root)
+    assert order == ["restore", "body", "body-again"]
+    restore_mock.assert_called_once()
+    assert snapshot.call_count == 2
 
 
 def _insert_lease(

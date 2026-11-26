@@ -2079,6 +2079,9 @@ def run_website_ops(
             visible_feedback_entries = _mvp_filter_feedback_records(feedback_entries)
             monitored_urls = discover_website_ops_urls(settings)
             _report_still_current()
+            # The pipeline writes the day's JSON, Markdown, and HTML when
+            # persist is left on. A worker that outlives the stage timeout
+            # must not do that after the pulse has already paused.
             pipeline = website_ops.run_daily_report_pipeline(
                 list(monitored_urls),
                 config=config,
@@ -2096,7 +2099,9 @@ def run_website_ops(
                 ],
                 report_date=run_date,
                 executed_actions=executed_actions,
+                persist=False,
             )
+            _report_still_current()
             observations = [
                 dict(item)
                 for item in (pipeline.get("observations") or [])

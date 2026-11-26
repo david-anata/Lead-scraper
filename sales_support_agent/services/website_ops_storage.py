@@ -178,11 +178,11 @@ def restore_website_ops_root(engine: Any, root: Path) -> dict[str, int]:
 
 
 def ensure_website_ops_mirror(engine: Any, root: Path) -> dict[str, int]:
-    """Restore the mirror once per process for a Website Ops request.
+    """Restore the mirror once per process before Website Ops reads it.
 
     Cold starts of unrelated routes must not download the mirror. The first
-    Website Ops request on this instance materializes it; later requests reuse
-    the local cache.
+    Website Ops request, or the embedded scheduler's first pulse, materializes
+    it. Later work reuses the local cache and does not hydrate again.
     """
 
     root = Path(root)
@@ -235,12 +235,14 @@ def synchronize_website_ops_cache(settings: Any, engine: Any) -> dict[str, int]:
 def website_ops_cache_transaction(engine: Any, root: Path):
     """Own a cache write/snapshot cycle without request clobbering.
 
-    The first Website Ops request restores the mirror. This transaction only
-    snapshots changed files on the way out, so it cannot replace newer
-    in-process work with an older database snapshot.
+    The embedded scheduler uses this before any HTTP request. The first cycle
+    on this process restores the mirror under the cache lock, before the body
+    reads state. Later cycles only snapshot changed files, so they cannot
+    replace newer in-process work with an older database snapshot.
     """
 
     with _CACHE_SYNC_LOCK:
+        ensure_website_ops_mirror(engine, root)
         try:
             yield
         finally:

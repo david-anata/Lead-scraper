@@ -926,6 +926,56 @@ def test_stage_inner_timeout_aborts_well_under_the_vercel_wall(tmp_path, monkeyp
     assert result.report["run_outcome"]["last_stage"] == "report"
 
 
+def test_timed_out_report_worker_does_not_write_artifacts(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(
+        "sales_support_agent.services.website_ops.WEBSITE_OPS_STAGE_INNER_TIMEOUT_SECONDS",
+        0.2,
+    )
+    root = tmp_path / "ops"
+    settings = _settings(root)
+    release = Event()
+    seen: dict[str, object] = {}
+
+    def slow_pipeline(*args, **kwargs):
+        seen["persist"] = kwargs.get("persist", True)
+        release.wait(30)
+        if kwargs.get("persist", True):
+            output = root / "reports" / "daily"
+            output.mkdir(parents=True, exist_ok=True)
+            (output / "late.json").write_text("late", encoding="utf-8")
+        return {"report": _fake_report(), "observations": [], "artifacts": {}}
+
+    started = time.monotonic()
+    try:
+        with (
+            patch(
+                "sales_support_agent.services.website_ops.discover_website_ops_urls",
+                return_value=("https://example.com/",),
+            ),
+            patch(
+                "sales_support_agent.services.website_ops.website_ops.run_daily_report_pipeline",
+                side_effect=slow_pipeline,
+            ),
+        ):
+            result = run_website_ops(
+                settings,
+                mode="daily",
+                deadline=started + 500,
+                clock=time.monotonic,
+                business_date=date(2026, 11, 26),
+            )
+    finally:
+        release.set()
+    time.sleep(0.3)
+
+    assert seen["persist"] is False
+    assert result.report["run_outcome"]["resume_required"] is True
+    late = root / "reports" / "daily" / "late.json"
+    assert not late.exists()
+    report_dir = root / "reports" / "daily"
+    assert not report_dir.exists() or not any(report_dir.glob("*.json"))
+
+
 def test_http_trigger_labels_vercel_get_and_render_post(tmp_path, monkeypatch) -> None:
     monkeypatch.setattr(
         "sales_support_agent.api.website_ops_jobs_router.WEBSITE_OPS_PULSE_HOURS",
