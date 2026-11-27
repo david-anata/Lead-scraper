@@ -32,19 +32,21 @@ def test_validate_rejects_numbers_links_cliches_and_length():
     assert not op.validate("Nice work — really")[0]
 
 
+PRODUCT_LINE = "Huppy's toothpaste tabs have a loyal following."
+
+
 def test_ai_line_used_when_it_names_a_product():
     lead = {**LEAD, "domain": "ai-line.com", "site_product": "toothpaste tabs"}
-    line, src = op.write_opener(lead, CONTACT, llm=lambda p: "Huppy sells toothpaste tabs.")
+    line, src = op.write_opener(lead, CONTACT, llm=lambda p: PRODUCT_LINE)
     assert src == "ai" and "toothpaste tabs" in line
+    assert not op.sells_template_reason(line)
 
 
-def test_bad_ai_line_falls_back_to_the_product():
+def test_bad_ai_line_does_not_fall_back_to_the_sells_template():
     lead = {**LEAD, "domain": "bad-ai.com", "site_product": "toothpaste tabs"}
     line, src = op.write_opener(lead, CONTACT, llm=lambda p: "You grew 300% - wow!")
-    assert src == "fallback"
-    assert "toothpaste tabs" in line and "300" not in line
-    ok, _ = op.validate(line)
-    assert ok
+    assert src == "none" and line == ""
+    assert "300" not in line
 
 
 def test_ai_exception_falls_back_without_raising():
@@ -52,7 +54,7 @@ def test_ai_exception_falls_back_without_raising():
         raise RuntimeError("down")
     lead = {**LEAD, "domain": "boom.com", "site_product": "toothpaste tabs"}
     line, src = op.write_opener(lead, CONTACT, llm=boom)
-    assert src == "fallback" and "toothpaste tabs" in line
+    assert src == "none" and line == ""
 
 
 def test_no_key_skips_a_category_and_uses_a_product(monkeypatch):
@@ -65,12 +67,12 @@ def test_no_key_skips_a_category_and_uses_a_product(monkeypatch):
     product_line, product_src = op.write_opener(
         {**LEAD, "domain": "nokey-product.com", "site_product": "toothpaste tabs"}, CONTACT,
     )
-    assert product_src == "fallback" and "toothpaste tabs" in product_line
+    assert product_src == "none" and product_line == ""
 
 
 def test_fallback_never_contains_digits_even_if_reason_does():
     line = op.fallback_line("Huppy", "oral care", "grew 40% in a month", product="toothpaste tabs")
-    assert "40" not in line and "toothpaste tabs" in line and op.validate(line)[0]
+    assert "40" not in line and not op.sells_template_reason(line)
 
 
 def test_build_lead_maps_instantly_fields():
@@ -141,7 +143,7 @@ def test_push_error_hides_key(monkeypatch):
 
 def test_fallback_never_leaks_internal_reason():
     line = op.fallback_line("Basin", "bath", "They fit our ideal customer profile", product="cedar soap")
-    assert "ideal customer" not in line.lower() and "cedar soap" in line.lower() and op.validate(line)[0]
+    assert "ideal customer" not in line.lower() and not op.sells_template_reason(line)
 
 
 def test_template_tics_rejected():
@@ -149,13 +151,13 @@ def test_template_tics_rejected():
 
 
 def test_retry_once_then_accept():
-    lines = iter(["I noticed Huppy is building something special.", "Huppy sells toothpaste tabs."])
+    lines = iter(["I noticed Huppy is building something special.", PRODUCT_LINE])
     line, src = op.write_opener(
         {**LEAD, "domain": "retry-ok.com", "site_product": "toothpaste tabs"},
         CONTACT,
         llm=lambda p: next(lines),
     )
-    assert src == "ai" and line == "Huppy sells toothpaste tabs."
+    assert src == "ai" and line == PRODUCT_LINE
 
 
 def test_category_slugs_become_plain_words_and_product_wins():
@@ -164,11 +166,11 @@ def test_category_slugs_become_plain_words_and_product_wins():
     assert op.plain_category("food_beverage") == "food and beverage"
     assert op.plain_category("beauty_wellness") == "beauty and wellness"
     product_line = op.fallback_line("Huppy", "apparel_accessories", product="toothpaste tabs")
-    assert "toothpaste tabs" in product_line
     assert "apparel" not in product_line.lower()
+    assert not op.sells_template_reason(product_line)
     signal = op.fallback_line("Huppy", "", recipe="plan_upgrade")
-    assert "upgraded their store plan" in signal
-    assert "?" not in signal
+    assert signal == ""
+    assert "plan" not in signal.lower()
 
 
 def test_one_opener_per_company_is_cached_by_domain():
@@ -176,7 +178,7 @@ def test_one_opener_per_company_is_cached_by_domain():
 
     def llm(prompt):
         calls.append(prompt)
-        return "Huppy sells toothpaste tabs."
+        return "Huppy's toothpaste tabs have a loyal following."
 
     lead = {**LEAD, "amz_product": "toothpaste tabs", "amz_confidence": "high"}
     first = op.write_opener(lead, CONTACT, llm=llm)
@@ -192,7 +194,7 @@ def test_unconfirmed_amazon_product_is_not_used():
 
     def llm(prompt):
         prompts.append(prompt)
-        return "Huppy sells toothpaste tabs on Amazon."
+        return "Huppy's mouthwash has a loyal following on Amazon."
 
     for conf in ("", "low", "medium"):
         op._OPENERS_BY_DOMAIN.clear()
@@ -203,9 +205,9 @@ def test_unconfirmed_amazon_product_is_not_used():
              "site_product": "mouthwash"},
             CONTACT, llm=llm,
         )
-        assert "mouthwash" in line.lower()
         assert "amazon" not in line.lower()
-        assert source == "fallback"
+        assert source == "none"
+        assert not op.sells_template_reason(line)
         assert "Amazon product" not in prompts[0]
 
 
@@ -252,10 +254,11 @@ def test_brand_angle_falls_back_to_a_category_line():
 def test_brand_angle_uses_scraped_product_without_calling_amazon():
     html = '<meta property="og:title" content="Toothpaste tabs">'
     lead = {"brand": "Huppy", "domain": "site.com", "site_html": html}
-    line, _source = op.write_opener(lead, CONTACT, llm=lambda _p: "Huppy is big on Amazon.")
+    line, source = op.write_opener(lead, CONTACT, llm=lambda _p: "Huppy is big on Amazon.")
     angle, _angle_source = op.write_brand_angle(lead, CONTACT)
     assert "amazon" not in line.lower()
-    assert "Toothpaste tabs" in line
+    assert source == "none"
+    assert "sells" not in line.lower()
     assert "amazon" not in angle.lower()
     assert "Toothpaste tabs" in angle
 
@@ -275,10 +278,10 @@ def test_category_filler_urls_and_backend_are_not_sendable():
     assert "backend" in op.opener_hold_reason(
         "Kalm recently upgraded their store plan.", {"brand": "Kalm"},
     )
-    assert op.opener_hold_reason(
+    assert "retired sells template" in op.opener_hold_reason(
         "Kalm sells Green Chile Salsa.",
         {"brand": "Kalm", "categories": "Food & Drink", "site_product": "Green Chile Salsa"},
-    ) == ""
+    )
     assert "store-verified" in op.opener_hold_reason(
         "Kalm sells Green Chile Salsa.",
         {"brand": "Kalm", "categories": "Food & Drink"},
@@ -296,9 +299,10 @@ def test_category_filler_urls_and_backend_are_not_sendable():
             "store_locator_page": "https://food.com/pages/stores",
         },
     })
-    assert "Green Chile Salsa" in opener
+    assert opener == ""
     assert "http" not in opener.lower() and "klaviyo" not in opener.lower()
     assert "shopify" not in opener.lower() and "shopify" not in angle.lower()
+    assert "plan" not in opener.lower()
 
 
 def test_friendly_category():

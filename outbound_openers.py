@@ -244,6 +244,9 @@ _SYSTEM = (
     "Never print a slug with underscores. Do not claim social momentum, growth, or "
     "anything that is not in the facts. Do not start with 'I noticed' or 'We noticed'. "
     "If none of those is listed, reply with an empty string and nothing else. "
+    "Never write a sentence of the form 'Brand sells something.' Never say the brand "
+    "sells to consumers online. Never mention a plan upgrade, a plan change, a store "
+    "plan, or that we noticed the store change. Write about the product or the brand. "
     "Never use the words 'curious', 'special', 'building something', or 'ideal customer "
     "profile'. No numbers. No links. No em dashes. No greeting, no sign-off."
 )
@@ -803,11 +806,6 @@ def store_fact_phrases(lead: dict[str, Any]) -> list[str]:
         else:
             phrases.append(f"previously ran on {previous}")
 
-    plan = str(profile.get("plan") or "")
-    if "plus" in plan.lower():
-        phrases.append("is on Shopify Plus")
-    elif recipe == "plan_upgrade":
-        phrases.append("recently upgraded their store plan")
     if recipe in {"replatform", "replatformed"}:
         phrases.append("recently moved their store to a new platform")
 
@@ -954,7 +952,10 @@ def rich_observations(lead: dict[str, Any]) -> dict[str, Any]:
     else:
         absent = bool(absent_raw)
     signal = str(lead.get("recipe") or "").strip()
-    if signal not in {"plan_upgrade", "replatform", "replatformed"}:
+    # A plan change is a tracked signal. It is not an opener fact.
+    if signal == "plan_upgrade":
+        signal = ""
+    elif signal not in {"replatform", "replatformed"}:
         signal = ""
     city = _no_digits(str(profile.get("city") or ""))
     if city and len(city.split()) > 3:
@@ -1249,7 +1250,7 @@ def collect_facts(lead: dict[str, Any]) -> LeadFacts:
     niche = _category_phrase(lead.get("niche") or "")
     extras = tuple(item for item in (niche,) if item and item != category)
     signal = str(lead.get("recipe") or "").strip()
-    if signal not in RECIPE_FACTS:
+    if signal == "plan_upgrade" or signal not in RECIPE_FACTS:
         signal = ""
     rich: tuple[str, ...] = ()
     rich_opener = ""
@@ -1292,6 +1293,39 @@ def _named(brand: str) -> str:
     return (brand or "").strip() or "This brand"
 
 
+_SELLS_TEMPLATE = re.compile(r"^.+\bsells\b.+\.$", re.I)
+_CONSUMERS_ONLINE = re.compile(r"\bsells to consumers online\b", re.I)
+_PLAN_SIGNAL = re.compile(
+    r"\bplan upgrades?\b"
+    r"|\bplan changes?\b"
+    r"|\bupgraded (?:their |your |the )?(?:store )?plan\b"
+    r"|\bchanged (?:their |your |the )?(?:store )?plan\b"
+    r"|\bstore plan\b"
+    r"|\brecent plan\b"
+    r"|\bshopify plus\b",
+    re.I,
+)
+
+
+def sells_template_reason(text: str) -> str:
+    """The retired '<Brand> sells <X>.' fallback, including 'sells to consumers online'."""
+
+    raw = " ".join((text or "").split())
+    if not raw:
+        return ""
+    if _CONSUMERS_ONLINE.search(raw) or _SELLS_TEMPLATE.fullmatch(raw):
+        return "retired sells template"
+    return ""
+
+
+def plan_signal_reason(text: str) -> str:
+    """A tracked plan upgrade or plan change. That is not an opener."""
+
+    if _PLAN_SIGNAL.search(text or ""):
+        return "plan change"
+    return ""
+
+
 def _generic_rich_phrase(phrase: str) -> bool:
     low = " ".join(str(phrase or "").lower().split())
     if low in _GENERIC_RETAIL_FACTS or low.startswith("sells on "):
@@ -1315,24 +1349,20 @@ def opener_line(facts: LeadFacts) -> str:
         line = _usable(f"{brand} lists {facts.amazon_product} on Amazon.", allow_amazon=True)
         if line:
             return line
-    if facts.amazon_product and facts.trial_offer:
-        line = _usable(f"{brand} sells {facts.amazon_product}.", allow_amazon=False)
-        if line:
-            return line
-    phrases = [phrase for phrase in facts.rich_phrases if phrase and not _generic_rich_phrase(phrase)]
+    phrases = [
+        phrase for phrase in facts.rich_phrases
+        if phrase and not _generic_rich_phrase(phrase) and not phrase.lower().startswith("sells ")
+        and not plan_signal_reason(phrase)
+    ]
     if phrases:
         allow_amazon = (
             not facts.trial_offer
             and any("amazon" in phrase.lower() for phrase in phrases)
         )
         line = rich_sentence(brand, phrases, allow_amazon=allow_amazon)
-        if line:
+        if line and not sells_template_reason(line) and not plan_signal_reason(line):
             return line
-    if facts.product:
-        line = _usable(f"{brand} sells {facts.product}.", allow_amazon=False)
-        if line:
-            return line
-    if facts.signal:
+    if facts.signal and facts.signal != "plan_upgrade":
         line = _usable(f"{brand} {RECIPE_FACTS[facts.signal]}.", allow_amazon=False)
         if line:
             return line
@@ -1371,7 +1401,7 @@ def brand_angle_line(facts: LeadFacts) -> str:
         )
         if line:
             return line
-    if facts.signal:
+    if facts.signal and facts.signal != "plan_upgrade":
         line = _usable(
             f"Anata helps {brand} grow after {_ANGLE_AFTER[facts.signal]}.",
             allow_amazon=False, max_words=ANGLE_MAX_WORDS,
@@ -1429,7 +1459,7 @@ def _build_prompt(facts: LeadFacts, *, closing: str) -> str:
         lines.append(f"Amazon product: {facts.amazon_product}")
     if facts.product:
         lines.append(f"Product: {facts.product}")
-    if facts.signal:
+    if facts.signal and facts.signal != "plan_upgrade":
         lines.append(f"Recent signal: {RECIPE_FACTS[facts.signal]}")
     if facts.category:
         lines.append(f"Category label, not a product: {facts.category}")
@@ -1513,7 +1543,9 @@ def _from_model(
         ok, why = validate(
             raw, allow_amazon=allow_amazon, max_words=max_words, trial_offer=trial_offer,
         )
-        if ok and concrete is not None and not _anchored(raw, concrete):
+        if ok and concrete is not None and (sells_template_reason(raw) or plan_signal_reason(raw)):
+            ok, why = False, "retired opener"
+        elif ok and concrete is not None and not _anchored(raw, concrete):
             ok, why = False, "does not name a concrete product"
         elif ok and concrete is None and not _anchored(raw, anchors):
             ok, why = False, "not grounded in a known fact"
@@ -1595,6 +1627,8 @@ def _sendable(line: str, lead: dict[str, Any], concrete: list[str]) -> bool:
     """True when the line names a real fact and is allowed to reach Instantly."""
 
     if not line or not concrete or not _anchored(line, concrete):
+        return False
+    if sells_template_reason(line) or plan_signal_reason(line):
         return False
     if generic_copy_reason(line) or opener_hold_reason(line, lead):
         return False
@@ -1915,6 +1949,8 @@ def opener_hold_reason(
         return "opener contains a url"
     if _BACKEND_COPY.search(text):
         return "opener names backend technology instead of a shopper-visible fact"
+    if plan_signal_reason(text):
+        return "opener names a plan change"
     if len(text.split()) > MAX_WORDS:
         return "opener is longer than 25 words"
     if general and _AMAZON_WORD.search(text):
@@ -1940,6 +1976,8 @@ def opener_hold_reason(
     facts = store_verified_facts(lead)
     if not facts or not opener_names_fact(text, facts):
         return "opener is not grounded in a store-verified product fact"
+    if sells_template_reason(text):
+        return "opener is a retired sells template"
     return ""
 
 
@@ -1985,10 +2023,7 @@ def _shopper_sentence(brand: str, fact: str) -> str:
     if low.startswith("sells on ") or low.startswith("has shoppers") or low.startswith("offers a subscribe"):
         return ""
     if low.startswith("recent product:"):
-        title = raw.split(":", 1)[1].strip()
-        if is_page_boilerplate(title, brand):
-            return ""
-        return _usable(f"{brand} sells {title}.", allow_amazon=False)
+        return ""
     if "reviews average" in low or low.startswith("reviews "):
         return _usable(f"{brand} {raw}.", allow_amazon=False)
     if low.startswith("sold at ") or low.startswith("is sold at "):
@@ -2000,9 +2035,8 @@ def _shopper_sentence(brand: str, fact: str) -> str:
         return ""
     if raw and not _BACKEND_COPY.search(raw) and not _COPY_URL.search(raw):
         sentence = raw if raw.endswith(".") else f"{raw}."
-        if sentence.lower().startswith(brand.lower()):
+        if sentence.lower().startswith(brand.lower()) and not sells_template_reason(sentence):
             return _usable(sentence, allow_amazon=False)
-        return _usable(f"{brand} sells {sentence[0].lower() + sentence[1:]}", allow_amazon=False)
     return ""
 
 

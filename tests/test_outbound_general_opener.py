@@ -200,7 +200,7 @@ def test_push_releases_a_held_opener_and_blanks_a_long_angle():
             ),
             (
                 'ada@salsa.com', 'salsa.com', 'Ada', 'Lee', 'Founder',
-                'Kalm sells green chile salsa.', 'fallback',
+                "Kalm's green chile salsa has a loyal following.", 'fallback',
                 :angle, 'Kalm', 'food', 'amz_on', 'A', 'VERIFIED', ''
             )
             """
@@ -321,11 +321,7 @@ def test_disqualifiers_are_excluded_and_never_pushed():
         assert not found[email].startswith("held:opener")
 
 
-def test_a_grounded_product_fact_keeps_the_specific_opener(monkeypatch):
-    monkeypatch.setattr(
-        "sales_support_agent.services.llm_client.llm_available",
-        lambda **_kwargs: False,
-    )
+def test_a_product_led_line_still_wins_over_the_general_opener():
     engine = _engine()
     sent = []
 
@@ -334,6 +330,9 @@ def test_a_grounded_product_fact_keeps_the_specific_opener(monkeypatch):
             domain=domain, first_name="Ada", last_name="Lee",
             email="ada@cedar.com", title="Founder",
         )], credits_used=1)
+
+    def write(_lead, _contact=None):
+        return "Cedar's cedar soap has a loyal following.", "ai"
 
     lead = {
         "domain": "cedar.com",
@@ -345,17 +344,87 @@ def test_a_grounded_product_fact_keeps_the_specific_opener(monkeypatch):
         "store_profile": {"description": "cedar soap", "merchant_name": "Cedar"},
     }
     oe.run_enrichment(
-        engine, [lead], api_key="k", find=find, dry_run=False, push=_push_capture(sent),
+        engine, [lead], api_key="k", find=find, dry_run=False, push=_push_capture(sent), write=write,
     )
     assert sent
-    assert "cedar soap" in sent[0]["personalization"].lower()
+    assert sent[0]["personalization"] == "Cedar's cedar soap has a loyal following."
     assert sent[0]["custom_variables"]["opener_type"] == "specific"
-    assert not str(sent[0]["custom_variables"]["opener_variant"]).startswith("general")
-    with engine.connect() as conn:
-        source = conn.execute(text(
-            "SELECT opener_source FROM outbound_enriched_contacts WHERE email = 'ada@cedar.com'"
-        )).scalar()
-    assert source in {"ai", "fallback", "shopper"}
+    assert "—" not in sent[0]["personalization"] and "http" not in sent[0]["personalization"].lower()
+
+
+def test_sells_template_and_plan_upgrade_openers_become_general_lines(monkeypatch):
+    monkeypatch.setattr(
+        "sales_support_agent.services.llm_client.llm_available",
+        lambda **_kwargs: False,
+    )
+    engine = _engine()
+    sent = []
+
+    def find(domain, *, api_key, max_contacts=2, **_kwargs):
+        return oc.FindResult(domain=domain, contacts=[oc.Contact(
+            domain=domain, first_name="Ada", last_name="Lee",
+            email=f"ada@{domain}", title="Founder",
+        )], credits_used=1)
+
+    sells = {
+        "domain": "leadoffbaseball.com",
+        "brand": "Leadoff Baseball",
+        "categories": ["sports"],
+        "recipe": "amz_on",
+        "tier": "A",
+        "site_product": "The Daily Swing Station",
+    }
+    consumers = {
+        "domain": "3sixteen.com",
+        "brand": "3sixteen",
+        "categories": ["apparel"],
+        "recipe": "amz_on",
+        "tier": "A",
+    }
+    plan = {
+        "domain": "scaled.com",
+        "brand": "Scaled",
+        "categories": ["apparel"],
+        "recipe": "plan_upgrade",
+        "tier": "A",
+        "site_product": "selvedge denim",
+    }
+
+    def write(lead, _contact=None):
+        brand = lead["brand"]
+        if brand == "Leadoff Baseball":
+            return "Leadoff Baseball sells The Daily Swing Station.", "fallback"
+        if brand == "3sixteen":
+            return "3sixteen sells to consumers online.", "fallback"
+        return "Your recent plan upgrade suggests you're scaling the store.", "ai"
+
+    oe.run_enrichment(
+        engine, [sells, consumers, plan], api_key="k", find=find,
+        dry_run=False, push=_push_capture(sent), write=write,
+    )
+    by_email = {row["email"]: row for row in sent}
+    assert set(by_email) == {
+        "ada@leadoffbaseball.com", "ada@3sixteen.com", "ada@scaled.com",
+    }
+    for row in by_email.values():
+        text = row["personalization"]
+        low = text.lower()
+        assert row["custom_variables"]["opener_type"] == "general"
+        assert str(row["custom_variables"]["opener_variant"]).startswith("v")
+        assert "sells " not in low
+        assert "plan upgrade" not in low and "plan change" not in low and "store plan" not in low
+        assert "http" not in low and "—" not in text and "–" not in text and " - " not in text
+        assert "redo" not in low
+    product_led = "The Daily Swing Station looks like a great gift for young hitters."
+    assert op.sells_template_reason(product_led) == ""
+    assert op.plan_signal_reason(product_led) == ""
+    assert op.plan_signal_reason("Your recent plan upgrade suggests you're scaling.") == "plan change"
+    kept, source = op.write_opener(
+        {**sells, "domain": "swing.example"},
+        {"email": "ada@swing.example"},
+        llm=lambda _prompt: product_led,
+    )
+    assert source == "ai" and kept == product_led
 
 
 def test_morning_status_counts_today_and_does_not_say_held_opener():

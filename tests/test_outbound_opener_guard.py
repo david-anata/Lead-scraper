@@ -106,10 +106,8 @@ def test_saw_category_lines_are_removed():
     assert source == "none" and opener == "" and angle == ""
     assert called
     plain, plain_source = op.write_opener(product_lead, CONTACT, llm=bad_model)
-    assert plain_source == "fallback"
-    assert "hibiscus rose soda" in plain.lower()
+    assert plain_source == "none" and plain == ""
     assert "shoppers already compare" not in plain.lower()
-    assert "category where" not in plain.lower()
 
 
 def test_validator_rejects_strategy_copy_and_skips_without_a_fact():
@@ -131,8 +129,7 @@ def test_validator_rejects_strategy_copy_and_skips_without_a_fact():
         CONTACT,
         llm=lambda _prompt: GENTS,
     )
-    assert kept_source == "fallback"
-    assert "cedar soap" in kept.lower()
+    assert kept_source == "none" and kept == ""
     assert "positioned" not in kept.lower() and "automation" not in kept.lower()
     assert op.validate("Gents sells hair growth serum.")[0]
 
@@ -154,8 +151,8 @@ def test_page_boilerplate_is_not_treated_as_a_product():
     assert personalization.fact_sheet(thin).facts == []
     line, source = op.write_opener(thin, CONTACT, llm=lambda _prompt: "Acme sells official Website.")
     assert line == "" and source == "none"
-    assert "cedar soap" in op._shopper_sentence("Acme", "recent product: Cedar Soap").lower()
-    assert "hibiscus rose soda" in op._shopper_sentence("Acme", "Hibiscus rose soda").lower()
+    assert op._shopper_sentence("Acme", "recent product: Cedar Soap") == ""
+    assert op._shopper_sentence("Acme", "Hibiscus rose soda") == ""
 
 
 def test_company_labels_drop_suffixes_and_prefer_the_store_title():
@@ -280,8 +277,7 @@ def test_model_refusal_is_held_and_never_sent():
         "store_profile": {"description": "Single origin coffee"},
     }
     kept, kept_source = op.write_opener(coffee, CONTACT, llm=lambda _prompt: REFUSAL)
-    assert kept_source == "fallback"
-    assert "single origin coffee" in kept.lower()
+    assert kept_source == "none" and kept == ""
     assert "writing nothing" not in kept.lower()
     assert "i have no" not in kept.lower()
     for echo in ("as an AI", "I cannot", "I have no", "no concrete product", "writing nothing"):
@@ -415,6 +411,6 @@ def test_ungrounded_opener_is_held_even_when_the_sentence_looks_specific():
         "email": "ray@bellarosacoffeecompany.com",
         "site_product": "house roast",
     }
-    assert op.opener_hold_reason(
+    assert "retired sells template" in op.opener_hold_reason(
         "Bella Rosa Coffee Company sells house roast.", grounded,
-    ) == ""
+    )

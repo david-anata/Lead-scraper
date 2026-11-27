@@ -360,6 +360,13 @@ def style_violation(
         return "claims the brand already sells on Amazon"
     if role == "angle" and raw.lower().startswith("anata helps"):
         return "anata helps"
+    if role == "opener":
+        from outbound_openers import plan_signal_reason, sells_template_reason
+
+        if sells_template_reason(raw):
+            return "retired sells template"
+        if plan_signal_reason(raw):
+            return "plan change"
     if recipe:
         # Every recipe keeps the same ban. plan_upgrade and replatform are
         # the ones David called out; the check is not limited to them.
@@ -441,7 +448,9 @@ def _prompt(sheet: FactSheet) -> str:
         "Angle is one sentence of about 15 words, never more than 20. "
         "The angle must not repeat the opener and must not start with Anata helps. "
         "No digits, no em dashes, no URLs, no hype, no platform, plan, app, pixel, "
-        "or the words moved or upgraded. "
+        "or the words moved or upgraded. Do not write 'Brand sells something.' "
+        "Do not mention a plan upgrade, a plan change, or a store plan. "
+        "Write about the product or the brand. "
         "Do not use the category label as the sentence. Do not say shoppers already "
         "compare options. Do not write strategy, channels, or automation. Do not say "
         "the brand is sold in retail stores unless a store name is in the facts. "

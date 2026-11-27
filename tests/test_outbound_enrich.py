@@ -65,7 +65,9 @@ def test_enriches_stores_and_reports(engine):
     assert r.contacts_found == 2 and r.credits_used == 4
     assert r.find_rate == 0.5 and r.credits_per_contact == 2.0
     assert r.dry_run and r.pushed == 0
-    assert len(r.samples) == 2 and "toothpaste tabs" in r.samples[0]["opener"]
+    assert len(r.samples) == 2
+    assert str(r.samples[0]["opener_source"]).startswith("general:")
+    assert "sells " not in r.samples[0]["opener"].lower()
 
 
 def test_second_run_never_re_spends_on_same_domain(engine):
@@ -133,7 +135,9 @@ def test_pushed_lead_carries_brand_and_opener(engine):
     oe.run_enrichment(engine, [lead("a.com", "Acme")], api_key="k", find=f, write=opener,
                       campaign_id="new-campaign", dry_run=False, push=ok)
     assert seen["lead"]["company_name"] == "Acme"
-    assert "Acme sells toothpaste tabs." in seen["lead"]["personalization"]
+    assert seen["lead"]["custom_variables"]["opener_type"] == "general"
+    assert "sells " not in seen["lead"]["personalization"].lower()
+    assert "Acme" in seen["lead"]["personalization"]
     assert seen["lead"]["email"] == "x@a.com"
 
 
