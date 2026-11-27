@@ -301,6 +301,14 @@ def resolve_recipe_campaign(
         if target:
             return target, "routed", name
         return "", "queued", ""
+    if name == _campaigns.NEW_STORE_180D_KEY:
+        # This pull exists to fill amz_off. An Amazon channel, or no channel
+        # list, is not that campaign. Plan upgrade and replatform keep their
+        # own pulls. They are not a second destination for this recipe.
+        evidence = set(_evidence_recipes(signals or []))
+        if "amz_on" in evidence or "amz_off" not in evidence:
+            return "", "queued", ""
+        name = "amz_off"
     known = set(RECIPE_CAMPAIGN_MAP)
     if campaign_map is not None:
         known.update(campaign_map)

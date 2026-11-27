@@ -220,6 +220,22 @@ already read, and a dead StoreLeads cursor continues from the last rank
 instead of the top 500 of `-rank`. Sourcing does not spend Prospeo credits
 and does not call Instantly.
 
+`new_store_180d` is a second query inside the `amz_off` allowance, approved
+on November 27, 2026. It asks for Shopify stores created in the last 180
+days (midnight UTC on the day of the pull, never a fixed date), in the US,
+Active, with an email, from $10k a month through $20M a year. Dropshipper
+and Print on Demand tags are removed from the rows after the pull.
+StoreLeads' combined tag filter does not subtract those two tags, so it is
+not sent. A store that lists Amazon, or that does not list a sales channel,
+is not added to `amz_off`. Up to 40 companies a run come from this query.
+40 is the seeded `amz_off` daily cap, and those companies count against
+that allowance rather than raising it. `amz_on`, `plan_upgrade`, and
+`replatform` keep their own filters and caps. Contact finding, the opener,
+and the push use the existing `amz_off` Instantly campaign
+(`138a162d-6654-4916-9959-20c11e31214b`). StoreLeads' created date is a
+discovery estimate, and some institution or band-merch shops can still
+match. The digital-product gate is applied when that function is present.
+
 Smaller revenue bands (`under_10k`, `10k_25k`, `25k_100k`) are separate
 recipe tags such as `amz_off__under_10k`. They stay off unless
 `OUTBOUND_REVENUE_BAND_EXPERIMENTS=true`. Turning that on does not create
