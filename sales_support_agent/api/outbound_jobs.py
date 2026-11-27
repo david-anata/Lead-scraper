@@ -512,15 +512,42 @@ def run_morning_routine(*, now: datetime | None = None, scan_limit: int = _SCAN_
             out["pulled"] += recorded
             out["recipes"].extend(list(sourced.get("recipes") or []))
         for item in sourced.get("campaigns") or []:
+            fresh = int(item.get("recorded") or 0)
+            scanned = int(item.get("scanned") or 0)
+            skipped = int(item.get("skipped_seen") or 0)
+            new_fresh = new_scanned = new_skipped = 0
+            if str(item.get("recipe_key") or "") == "amz_off":
+                # These companies are already inside amz_off's recorded count.
+                # The batch row for the 180-day pull carries them, so the
+                # amz_off row keeps only the broad query. Summing the two
+                # rows then matches the companies actually stored.
+                new_fresh = int(item.get("new_store_180d") or 0)
+                new_scanned = int(item.get("new_store_scanned") or 0)
+                new_skipped = int(item.get("new_store_skipped_seen") or 0)
+                fresh = max(0, fresh - new_fresh)
+                scanned = max(0, scanned - new_scanned)
+                skipped = max(0, skipped - new_skipped)
             recipe_runs.append({
                 "recipe_key": str(item.get("recipe_key") or ""),
                 "recipe_label": str(item.get("recipe_key") or ""),
                 "status": "failed" if item.get("error") else "complete",
-                "fresh": int(item.get("recorded") or 0),
-                "scanned": int(item.get("scanned") or 0),
-                "matched": int(item.get("recorded") or 0),
-                "skipped_seen": int(item.get("skipped_seen") or 0),
+                "fresh": fresh,
+                "scanned": scanned,
+                "matched": fresh,
+                "skipped_seen": skipped,
                 "error": str(item.get("error") or ""),
+            })
+            if not (new_fresh or new_scanned or item.get("new_store_error")):
+                continue
+            recipe_runs.append({
+                "recipe_key": "new_store_180d",
+                "recipe_label": "Stores created in the last 180 days",
+                "status": "failed" if item.get("new_store_error") else "complete",
+                "fresh": new_fresh,
+                "scanned": new_scanned,
+                "matched": new_fresh,
+                "skipped_seen": new_skipped,
+                "error": str(item.get("new_store_error") or ""),
             })
         if not sourced.get("campaigns") and sourced.get("stopped_reason"):
             recipe_runs.append({

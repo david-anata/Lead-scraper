@@ -400,6 +400,11 @@ def _recipe_names(row: dict[str, Any]) -> list[str]:
     names.extend(
         part.strip() for part in str(row.get("recipe_aliases") or "").split(",") if part.strip()
     )
+    import outbound_campaigns as _campaigns
+
+    for alias in _campaigns.source_aliases(str(row.get("recipe_key") or "")):
+        if alias not in names:
+            names.append(alias)
     return [name for name in names if name]
 
 

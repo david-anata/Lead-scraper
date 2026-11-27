@@ -19,6 +19,12 @@ The four live recipes query $10k a month through $20M a year. Comparison
 bands stay off unless ``OUTBOUND_REVENUE_BAND_EXPERIMENTS`` is true, and
 those tags do not create an Instantly campaign.
 
+``new_store_180d`` is not one of those rows. It is a second query inside
+``amz_off``'s existing allowance: stores created in the last 180 days,
+with Dropshipper and Print on Demand removed after the pull, and with
+Amazon stores left out. The per-run ceiling is the seeded ``amz_off``
+daily cap. Companies it keeps are enriched and pushed as ``amz_off``.
+
 The morning routine runs this before the older recipe pulls so ``amz_on``
 and ``amz_off`` are filled from these filters.
 """
@@ -455,6 +461,124 @@ def legacy_recipe_pull_reason(
     return ""
 
 
+def pull_new_store_180d(
+    *,
+    api_key: str,
+    now: datetime,
+    seen: set[str],
+    want: int,
+    fetch: Callable[..., Any],
+    engine: Any = None,
+    record: Optional[Callable[..., int]] = None,
+) -> dict[str, Any]:
+    """Pull up to ``want`` new stores for the existing amz_off campaign.
+
+    The query is the approved 180-day StoreLeads filter. Dropshipper and
+    Print on Demand tags, Amazon sellers, and stores that do not list a
+    sales channel are dropped after the response comes back. Domains
+    already in ``seen`` are skipped. ``seen`` is the same contacted set
+    the other campaign recipes use. Push-time domain suppression still
+    applies later, the same way it does for those recipes.
+
+    The cursor key omits ``f:cratmin`` so the walk continues tomorrow
+    instead of restarting when the rolling date moves. A dead cursor is
+    dropped and the page is read again.
+    """
+
+    import outbound_instantly_push as push
+
+    out: dict[str, Any] = {
+        "leads": [],
+        "scanned": 0,
+        "skipped_seen": 0,
+        "skipped_unfit": 0,
+        "error": "",
+    }
+    want = max(0, int(want))
+    if want <= 0 or not (api_key or "").strip():
+        return out
+    filters = campaigns.new_store_180d_filters(now)
+    cursor_params = {key: value for key, value in filters.items() if key != "f:cratmin"}
+    cursor_key = pipeline.storeleads_cursor_key(campaigns.NEW_STORE_180D_KEY, cursor_params)
+    cursor = pipeline.load_storeleads_cursor(engine, cursor_key) if engine is not None else None
+    checkpoint = cursor or ""
+    fresh: list[dict[str, Any]] = []
+    stale_reset = False
+    pages = 0
+    while pages < _MAX_PAGES and len(fresh) < want:
+        pages += 1
+        requested = cursor
+        try:
+            page = fetch(api_key, extra_params=filters, cursor=cursor, page_size=_PAGE_SIZE)
+        except Exception as exc:  # noqa: BLE001
+            if requested and not stale_reset:
+                stale_reset = True
+                cursor = None
+                pipeline.save_storeleads_cursor(engine, cursor_key, "")
+                continue
+            out["error"] = str(exc)[:200]
+            logger.exception("[outbound-campaign-source] new_store_180d StoreLeads failed")
+            break
+        domains, cursor, page_error = _domains_from(page)
+        if (page_error or not domains) and requested and not stale_reset:
+            stale_reset = True
+            cursor = None
+            pipeline.save_storeleads_cursor(engine, cursor_key, "")
+            continue
+        if page_error:
+            out["error"] = page_error
+            break
+        if not domains:
+            pipeline.save_storeleads_cursor(engine, cursor_key, "")
+            break
+        stopped_early = False
+        for store in domains:
+            out["scanned"] += 1
+            lead = _lead_from(store, campaigns.NEW_STORE_180D_KEY)
+            if lead is None:
+                continue
+            if campaigns.new_store_180d_skip_reason(store):
+                out["skipped_unfit"] += 1
+                continue
+            if lead["domain"] in seen:
+                out["skipped_seen"] += 1
+                continue
+            if not pipeline.passes_company_fit(store):
+                out["skipped_unfit"] += 1
+                continue
+            lead["signals"] = [campaigns.NEW_STORE_180D_KEY, push.ROUTE_AMZ_OFF]
+            lead["reason"] = (
+                "They do not sell on Amazon, and the store was created in the last 180 days"
+            )
+            seen.add(lead["domain"])
+            fresh.append(lead)
+            if len(fresh) >= want:
+                stopped_early = True
+                break
+        pipeline.save_storeleads_cursor(
+            engine, cursor_key, (requested if stopped_early else cursor) or "",
+        )
+        if stopped_early or not cursor:
+            break
+    saved = len(fresh)
+    if fresh and record is not None:
+        try:
+            saved = int(record(fresh, campaigns.NEW_STORE_180D_KEY) or 0)
+        except Exception:  # noqa: BLE001
+            logger.exception("[outbound-campaign-source] could not record new_store_180d")
+            saved = 0
+        if saved < len(fresh):
+            for lead in fresh:
+                seen.discard(lead["domain"])
+            pipeline.save_storeleads_cursor(engine, cursor_key, checkpoint)
+            if saved <= 0:
+                out["error"] = out["error"] or "could not record leads"
+            fresh = []
+            saved = 0
+    out["leads"] = fresh[:saved] if saved else []
+    return out
+
+
 def source_active_campaigns(
     engine: Any,
     *,
@@ -687,12 +811,47 @@ def source_active_campaigns(
         _blank(row, min(int(allowance), room), False)
         for row, allowance in zip(pending, shares)
     ]
+
+    def _take_new_stores(state: dict[str, Any], take: int) -> int:
+        """Spend part of amz_off's allowance on the 180-day query."""
+
+        result = pull_new_store_180d(
+            api_key=api_key,
+            now=moment,
+            seen=seen,
+            want=take,
+            fetch=fetch,
+            engine=engine,
+            record=record,
+        )
+        state["kept"].extend(result["leads"])
+        state["scanned"] += result["scanned"]
+        state["skipped"] += result["skipped_seen"]
+        state["unfit"] += result["skipped_unfit"]
+        state["new_store_recorded"] = len(result["leads"])
+        state["new_store_scanned"] = result["scanned"]
+        state["new_store_skipped"] = result["skipped_seen"]
+        state["new_store_error"] = result["error"]
+        return len(result["leads"])
+
     for state in states:
         if room <= 0 or state["allowance"] <= 0:
             state["can_take"] = False
             continue
+        if str(state["row"].get("recipe_key") or "") == "amz_off" and not state["experiment"]:
+            take = min(campaigns.NEW_STORE_180D_MAX_PER_RUN, int(state["allowance"]), room)
+            room -= _take_new_stores(state, take)
+        if room <= 0:
+            state["can_take"] = False
+            continue
+        remaining = int(state["allowance"]) - len(state["kept"])
+        if remaining <= 0:
+            # The 180-day query filled this share. The broad amz_off query
+            # has not run, so a later unused-room grant can still use it.
+            state["can_take"] = True
+            continue
         before = len(state["kept"])
-        _pull_more(state, min(state["allowance"], room))
+        _pull_more(state, min(remaining, room))
         room -= len(state["kept"]) - before
 
     for _cycle in range(4):
@@ -741,9 +900,12 @@ def source_active_campaigns(
         out["skipped_unfit"] += state["unfit"]
         if kept and row["recipe_key"] not in out["recipes"]:
             out["recipes"].append(row["recipe_key"])
+        if any(str(lead.get("recipe") or "") == campaigns.NEW_STORE_180D_KEY for lead in kept):
+            if campaigns.NEW_STORE_180D_KEY not in out["recipes"]:
+                out["recipes"].append(campaigns.NEW_STORE_180D_KEY)
         if state["experiment"] and not kept and not state["scanned"]:
             continue
-        out["campaigns"].append({
+        entry = {
             "recipe_key": row["recipe_key"],
             "campaign_id": row.get("campaign_id") or "",
             "recorded": len(kept),
@@ -752,7 +914,13 @@ def source_active_campaigns(
             "skipped_unfit": state["unfit"],
             "filters": state["filters"],
             "error": state["error"],
-        })
+        }
+        if str(row.get("recipe_key") or "") == "amz_off" and not state["experiment"]:
+            entry["new_store_180d"] = int(state.get("new_store_recorded") or 0)
+            entry["new_store_scanned"] = int(state.get("new_store_scanned") or 0)
+            entry["new_store_skipped_seen"] = int(state.get("new_store_skipped") or 0)
+            entry["new_store_error"] = str(state.get("new_store_error") or "")
+        out["campaigns"].append(entry)
     return out
 
 

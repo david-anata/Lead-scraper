@@ -92,6 +92,17 @@ MONTHLY_CEILING_CENTS = 20_000_000 * 100 // 12
 # that still says $10k-$20k a month does not need a database edit.
 STANDARD_REVENUE_RECIPES = ("amz_on", "amz_off", "plan_upgrade", "replatform")
 
+# A daily StoreLeads pull that feeds the existing amz_off campaign. It is
+# not a fifth Instantly campaign and it is not a seeded row. 40 matches the
+# seeded amz_off daily_cap. The pull spends that many of amz_off's existing
+# allowance. It does not add a cap and it does not raise the others.
+NEW_STORE_180D_KEY = "new_store_180d"
+NEW_STORE_180D_DAYS = 180
+NEW_STORE_180D_MAX_PER_RUN = 40
+# StoreLeads' combined tag filter does not subtract these. f:tags with
+# op=or returns nothing, and op=not with both tags does not exclude them.
+EXCLUDED_STORE_TAGS = frozenset({"dropshipper", "print on demand"})
+
 # Off unless OUTBOUND_REVENUE_BAND_EXPERIMENTS is true. These are tags for
 # comparison. They are not seeded and they do not create Instantly campaigns.
 REVENUE_BAND_EXPERIMENT_FLAG = "OUTBOUND_REVENUE_BAND_EXPERIMENTS"
@@ -372,6 +383,121 @@ def resolve_filters(value: Any, now: Optional[datetime] = None) -> dict[str, Any
     resolved["f:cc"] = "US"
     resolved["f:cc:op"] = "or"
     return resolved
+
+
+def new_store_180d_filters(now: Optional[datetime] = None) -> dict[str, Any]:
+    """List Domains query for US Shopify stores created in the last 180 days.
+
+    ``f:cratmin`` is midnight UTC, 180 days before ``now``. The date is
+    computed here and is never a stored literal. StoreLeads' created date
+    is a discovery estimate, not the brand's founding date.
+
+    Revenue is the approved monthly band ($120k to $20M a year). Employee
+    bounds and ``f:tags`` are not sent. The tag exclusion does not work as
+    a combined server filter, so Dropshipper and Print on Demand are
+    removed from the rows after the pull.
+    """
+
+    moment = now or datetime.now(timezone.utc)
+    if moment.tzinfo is None:
+        moment = moment.replace(tzinfo=timezone.utc)
+    moment = moment.astimezone(timezone.utc)
+    start = datetime(moment.year, moment.month, moment.day, tzinfo=timezone.utc)
+    start = start - timedelta(days=NEW_STORE_180D_DAYS)
+    filters = {
+        "f:p": "shopify",
+        "f:cc": "US",
+        "f:cc:op": "or",
+        "f:ds": "Active",
+        "f:it": "email",
+        "f:ermin": MONTHLY_FLOOR_CENTS,
+        "f:ermax": MONTHLY_CEILING_CENTS,
+        "f:cratmin": start.strftime("%Y-%m-%dT%H:%M:%S.000Z"),
+    }
+    return {key: value for key, value in filters.items() if key in CONFIRMED_FILTERS}
+
+
+def store_tag_names(store: dict[str, Any]) -> list[str]:
+    """Tag labels on a StoreLeads row. A comma string or a list both count."""
+
+    if not isinstance(store, dict):
+        return []
+    raw = store.get("tags")
+    parts: list[str] = []
+    if isinstance(raw, str):
+        parts = [item.strip() for item in raw.split(",")]
+    elif isinstance(raw, (list, tuple)):
+        for item in raw:
+            if isinstance(item, dict):
+                parts.append(str(item.get("name") or item.get("title") or ""))
+            else:
+                parts.append(str(item))
+    return [part.strip() for part in parts if part and str(part).strip()]
+
+
+def excluded_store_tag(store: dict[str, Any]) -> str:
+    """The Dropshipper or Print on Demand tag on this store, or ''."""
+
+    for tag in store_tag_names(store):
+        if tag.casefold() in EXCLUDED_STORE_TAGS:
+            return tag
+    return ""
+
+
+def digital_product_block_reason(store: dict[str, Any]) -> str:
+    """Why PR #614's digital-product gate rejects this store, or ''.
+
+    That gate is not on this tree yet. When ``digital_product_reason``
+    exists, this calls it. The gate's own rules are not copied here.
+    """
+
+    import outbound_pipeline as pipeline
+
+    checker = getattr(pipeline, "digital_product_reason", None)
+    if not callable(checker):
+        return ""
+    try:
+        return str(checker(store) or "").strip()
+    except Exception:  # noqa: BLE001
+        logger.exception("[outbound-campaigns] digital-product gate failed")
+        return ""
+
+
+def new_store_180d_skip_reason(store: dict[str, Any]) -> str:
+    """Why this row must not enter amz_off, or '' when it may.
+
+    Amazon uses the same sales-channel read as the route tokens. A store
+    that lists Amazon is on Amazon. A store with no channel list is not
+    proof that it is off Amazon, so it does not enter the campaign whose
+    copy says the brand is not on Amazon yet. Institution and band-merch
+    shops are not filtered further. StoreLeads' created date already lets
+    some of them through, and this pull does not invent a second screen.
+    """
+
+    tagged = excluded_store_tag(store)
+    if tagged:
+        return f"tagged {tagged}"
+    digital = digital_product_block_reason(store)
+    if digital:
+        return digital
+    import outbound_instantly_push as push
+
+    tokens = set(push.route_tokens_for_store(store))
+    if push.ROUTE_AMZ_ON in tokens or push.ROUTE_AMZ_OFF not in tokens:
+        return "not an off-Amazon store"
+    return ""
+
+
+def source_aliases(recipe_key: str) -> tuple[str, ...]:
+    """Pull recipes that share a campaign's contact-finding cap.
+
+    ``new_store_180d`` has no Instantly campaign of its own. Companies it
+    finds are enriched inside ``amz_off``'s existing daily cap.
+    """
+
+    if str(recipe_key or "").strip() == "amz_off":
+        return (NEW_STORE_180D_KEY,)
+    return ()
 
 
 def apply_configured_revenue(recipe_key: str, filters: dict[str, Any]) -> dict[str, Any]:
