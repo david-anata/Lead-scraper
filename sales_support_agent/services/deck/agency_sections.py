@@ -11,7 +11,9 @@ No new CSS is introduced, so the sections inherit the agency_v1 look.
 from __future__ import annotations
 
 import html
-from datetime import date, timedelta
+from datetime import date
+
+from sales_support_agent.services.deck.calendar import next_follow_up_date
 from typing import Any
 
 from sales_support_agent.services.deck.intelligence_v2 import (
@@ -108,9 +110,7 @@ def render_offer_section(
     The free-trial card and the trial signup step render only when the
     selected offer includes a trial. A custom Agency fee does not get them.
     """
-    follow_up = generated + timedelta(days=3)
-    while follow_up.weekday() >= 5:
-        follow_up += timedelta(days=1)
+    follow_up = next_follow_up_date(generated)
     follow_up_label = _e(follow_up.strftime("%A, %B %-d"))
     follow_up_copy = _e(impact) if impact else "We review this analysis and your first sync together."
     booking_step = f"""
@@ -123,7 +123,7 @@ def render_offer_section(
     if include_trial:
         trial_card = (
             '<article class="offer-card featured"><h3>Anata Intelligence · Free 14-day trial</h3>'
-            f'<p class="desc">$0 for 14 days. Then plans from $99/mo. Card on file, cancel anytime.</p>'
+            '<p class="desc">Free for 14 days. Then plans from $99/mo. Card on file, cancel anytime.</p>'
             "<dl>"
             "<div><dt>Trial</dt><dd>14 days free</dd></div>"
             "<div><dt>After trial</dt><dd>From $99/mo</dd></div>"

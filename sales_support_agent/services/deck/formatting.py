@@ -158,9 +158,8 @@ def _slugify(value: str) -> str:
     return re.sub(r"[^a-z0-9]+", "-", str(value or "").strip().lower()).strip("-")
 
 
-# PR49: stopword set for variant-name extraction. Generic Amazon-SEO words
-# get dropped so "Zantrex Black – Naturally Boost…" yields "Black", not
-# "Black Naturally Boost".
+# Variant-name extraction drops generic catalog words so a title like
+# "Northstar Black, Naturally Boost" yields "Black", not "Black Naturally".
 _VARIANT_STOPWORDS: frozenset[str] = frozenset({
     "naturally", "natural", "premium", "pure", "best", "new", "original",
     "with", "for", "and", "the", "a", "an", "to", "of", "in", "by",
@@ -176,10 +175,10 @@ def extract_short_product_name(*, title: str, brand: str, max_tokens: int = 1) -
     stopwords, and returns the first `max_tokens` meaningful words.
 
     Examples:
-      title="Zantrex Black – Naturally Boost GLP-1…", brand="Zantrex"
-        → "Black"
-      title="Zantrex Skinnystix Mixed Berry Energy Drink Mix…", brand="Zantrex"
-        → "Skinnystix" (max_tokens=1) or "Skinnystix Mixed" (max_tokens=2)
+      title="Northstar Black, Naturally Boost", brand="Northstar"
+        returns "Black"
+      title="Northstar Skinnystix Mixed Berry Energy Drink Mix", brand="Northstar"
+        returns "Skinnystix" (max_tokens=1) or "Skinnystix Mixed" (max_tokens=2)
     """
     title_clean = _clean_listing_title(title or "")
     if not title_clean:
@@ -405,6 +404,162 @@ def _trim_text(value: str, limit: int) -> str:
     if len(cleaned) <= limit:
         return cleaned
     return cleaned[: max(limit - 1, 1)].rstrip() + "…"
+_SITE_TITLE_NOISE = frozenset({
+    "home",
+    "home page",
+    "shop",
+    "store",
+    "welcome",
+    "homepage",
+    "official",
+    "site",
+    "official site",
+    "official website",
+    "official store",
+    "official shop",
+    "contact",
+    "contact us",
+    "about us",
+})
+_REGION_SUFFIXES = frozenset({
+    "us", "usa", "uk", "eu", "gb", "au", "ca", "nz", "jp", "kr",
+})
+# Trailing catalog words that are the product, not the brand. "Elvy Charger"
+# and "Earth Moon Magick Tarot" are the brand plus the product line.
+_PRODUCT_TITLE_WORDS = frozenset({
+    "charger", "tarot", "cards", "candle", "candles", "serum", "cream",
+    "lipstick", "perfume", "headphones", "speaker", "speakers", "cable",
+    "supplement", "powder", "tracker", "alarm", "incense", "crystal",
+    "crystals", "oracle", "potion", "soap", "soaps", "lotion", "mascara",
+    "earbuds", "adapter", "bottle", "bottles",
+})
+_HOME_PAGE_SUFFIX_RE = re.compile(r"\s*(?:\||\u2013|\u2014|-)\s*Home Page\b", re.IGNORECASE)
+_CONTACT_NAV_RE = re.compile(r"\bContact Us\b(?:\s+[A-Z][\w'&-]*){1,16}")
+_SITE_TITLE_SPLIT_RE = re.compile(r"\s*(?:\||\u2013|\u2014|·)\s*|\s+-\s+|\s+:\s+")
+
+
+def strip_site_title_noise(title: str, *, brand: str = "") -> str:
+    """Drop storefront chrome from a page title.
+
+    "Home - Babaco Alarm Systems" becomes "Babaco Alarm Systems".
+    A product name that uses a spaced hyphen, such as
+    "Grip Stick - Hydrating Lip Treatment", stays intact because neither
+    side is site chrome or a long tagline.
+    """
+
+    cleaned = _clean_listing_title(title)
+    if not cleaned:
+        return ""
+    parts = [part.strip(" -|") for part in _SITE_TITLE_SPLIT_RE.split(cleaned) if part.strip(" -|")]
+    if len(parts) <= 1:
+        return cleaned
+
+    def _noise(part: str) -> bool:
+        return " ".join(part.lower().split()) in _SITE_TITLE_NOISE
+
+    def _tagline(part: str) -> bool:
+        return len(part.split()) >= 8
+
+    substantive = [part for part in parts if not _noise(part) and not _tagline(part)]
+    if len(substantive) == len(parts):
+        return cleaned
+    if not substantive:
+        substantive = [part for part in parts if not _noise(part)] or parts
+    brand_clean = _clean_listing_title(brand)
+    if brand_clean:
+        for part in substantive:
+            if part.lower() == brand_clean.lower():
+                return part
+    if len(substantive) == 1:
+        return substantive[0]
+    return min(substantive, key=lambda part: (len(part.split()), len(part)))
+
+
+def scrub_scraped_page_chrome(text: str) -> str:
+    """Remove storefront title junk from visible copy.
+
+    Page titles contribute " - Home Page". A scraped nav run contributes
+    "Contact Us Shop About FAQ". Style and script blocks are left alone.
+    """
+
+    if not text:
+        return text
+
+    def _scrub_chunk(chunk: str) -> str:
+        chunk = _HOME_PAGE_SUFFIX_RE.sub("", chunk)
+        chunk = _CONTACT_NAV_RE.sub("", chunk)
+        chunk = re.sub(r"[ \t]{2,}", " ", chunk)
+        chunk = re.sub(r" +\n", "\n", chunk)
+        return chunk
+
+    return _scrub_visible(text, _scrub_chunk)
+
+
+_VISIBLE_STYLE_RE = re.compile(
+    r"(<style\b[^>]*>.*?</style>|<script\b[^>]*>.*?</script>)",
+    re.IGNORECASE | re.DOTALL,
+)
+
+
+def _scrub_visible(text: str, scrubber) -> str:
+    parts = _VISIBLE_STYLE_RE.split(text)
+    scrubbed: list[str] = []
+    for part in parts:
+        if part.lower().startswith("<style") or part.lower().startswith("<script"):
+            scrubbed.append(part)
+        else:
+            scrubbed.append(scrubber(part))
+    return "".join(scrubbed)
+
+
+def clean_strategy_brand(brand: str) -> str:
+    """The brand token for '{Brand} x anata strategy deck'.
+
+    Drops a repeated brand token ("Xvive Audio Xvive"), a region suffix
+    ("fwee US"), and a trailing product name ("Elvy Charger",
+    "Earth Moon Magick Tarot"). A one-word brand is left as-is.
+    """
+
+    cleaned = strip_site_title_noise(scrub_scraped_page_chrome(brand))
+    tokens = [token for token in cleaned.split() if token]
+    changed = True
+    while changed and len(tokens) > 1:
+        changed = False
+        last = tokens[-1].lower()
+        earlier = {token.lower() for token in tokens[:-1]}
+        if last in earlier or last in _REGION_SUFFIXES or last in _PRODUCT_TITLE_WORDS:
+            tokens.pop()
+            changed = True
+    return " ".join(tokens).strip()
+
+
+def usable_short_name(brand: str, short_name: str) -> str:
+    """A deck subtitle that is not the brand, a region, or a product name."""
+
+    short = " ".join(str(short_name or "").split())
+    if not short:
+        return ""
+    brand_tokens = {token.lower() for token in str(brand or "").split()}
+    short_tokens = short.split()
+    if any(token.lower() in brand_tokens for token in short_tokens):
+        return ""
+    if any(token.lower() in _REGION_SUFFIXES or token.lower() in _PRODUCT_TITLE_WORDS for token in short_tokens):
+        return ""
+    if short.lower() in str(brand or "").lower():
+        return ""
+    return short
+
+
+def strategy_deck_title(brand: str, short_name: str = "") -> str:
+    """'{Brand} x anata strategy deck', with junk short names removed."""
+
+    cleaned = clean_strategy_brand(brand)
+    short = usable_short_name(cleaned, short_name)
+    head = f"{cleaned} {short}".strip() if short else cleaned
+    head = head or "Prospect brand"
+    return f"{head} x anata strategy deck"
+
+
 def _clean_listing_title(value: str) -> str:
     cleaned = re.sub(r"<!--.*?-->", " ", str(value or ""), flags=re.DOTALL)
     cleaned = re.sub(r"<[^>]+>", " ", cleaned)

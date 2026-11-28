@@ -24,6 +24,7 @@ deploy changes nothing until the env vars are set:
   OUTBOUND_AUTO_ENRICH            must be "true" for the job to run (off by default)
   OUTBOUND_ENRICH_DAILY_COMPANIES companies per day across all calls (120)
   OUTBOUND_ENRICH_DAILY_CREDITS   Prospeo credits per day (250)
+  APOLLO_DAILY_CREDITS            Apollo fallback credits per Denver day (50)
   OUTBOUND_ENRICH_PER_RUN         companies per call (40), keeps a call short
   OUTBOUND_ENRICH_MAX_CONTACTS    verified people per brand (2)
 Leads only reach Instantly when OUTBOUND_PUSH_ENABLED is "true"; otherwise the
@@ -120,6 +121,10 @@ def summary_text(result: dict[str, Any]) -> str:
         f"Companies checked: {rep.get('companies_tried', 0)} | with a decision-maker: "
         f"{rep.get('companies_with_contacts', 0)} | contacts: {rep.get('contacts_found', 0)}",
         f"Prospeo credits: {rep.get('credits_used', 0)} (today so far: {result.get('credits_today', 0)})",
+        f"Apollo credits: {rep.get('apollo_credits_used', 0)} "
+        f"(today so far: {result.get('apollo_credits_today', 0)})",
+        f"Contacts by provider: prospeo {rep.get('contacts_prospeo', 0)}, "
+        f"apollo {rep.get('contacts_apollo', 0)}",
         f"Added to Instantly: {result.get('pushed', 0)}"
         + ("" if result.get("push_enabled") else " (sending switch is off, nothing added)"),
     ]
@@ -131,6 +136,10 @@ def summary_text(result: dict[str, Any]) -> str:
         lines.append(f"Skipped, on our suppression list: {rep['suppressed']}")
     if rep.get("stopped_reason"):
         lines.append(f"Stopped: {rep['stopped_reason']}")
+    skips = rep.get("skip_reasons") or {}
+    skip_parts = [f"{key} {value}" for key, value in sorted(skips.items()) if value]
+    if skip_parts:
+        lines.append("Skip reasons: " + ", ".join(skip_parts))
     queued = int((result.get("report") or {}).get("queued") or 0)
     if queued:
         lines.append(
@@ -210,6 +219,7 @@ def run_enrich_job(
     engine: Any = None,
     leads: Optional[list[dict[str, Any]]] = None,
     find: Optional[Callable[..., Any]] = None,
+    apollo_find: Optional[Callable[..., Any]] = None,
     write: Optional[Callable[..., Any]] = None,
     push: Optional[Callable[..., Any]] = None,
     post_slack: Optional[Callable[[str], Any]] = None,
@@ -252,7 +262,11 @@ def run_enrich_job(
 
     company_room = _int_env("OUTBOUND_ENRICH_DAILY_COMPANIES", DEFAULT_DAILY_COMPANIES) - today["companies"]
     credit_room = _int_env("OUTBOUND_ENRICH_DAILY_CREDITS", DEFAULT_DAILY_CREDITS) - today["credits"]
+    import outbound_apollo as _apollo
+    apollo_spent = int(today.get("apollo_credits") or 0)
+    apollo_room = max(0, _apollo.daily_credit_cap() - apollo_spent)
     out["credits_today"] = today["credits"]
+    out["apollo_credits_today"] = apollo_spent
     delivery = _refresh_delivery_state(engine)
     bounce_today = None
     try:
@@ -290,10 +304,11 @@ def run_enrich_job(
             max_companies=min(company_room, _int_env("OUTBOUND_ENRICH_PER_RUN", DEFAULT_PER_RUN)),
             max_contacts=_int_env("OUTBOUND_ENRICH_MAX_CONTACTS", DEFAULT_MAX_CONTACTS),
             credit_budget=credit_room,
+            apollo_credit_budget=apollo_room,
             # campaign_id is not a fallback destination. Mapped recipes and
             # signal-matched fillers are the only pushes.
             campaign_id="", dry_run=not push_on,
-            find=find, write=write, push=push,
+            find=find, apollo_find=apollo_find, write=write, push=push,
             deadline=time.monotonic() + _TIME_BUDGET_SECONDS,
             # Never touch a company Clay (or anything else) already put in Instantly.
             already_in_instantly=in_instantly or _ip.domain_in_instantly,
@@ -313,6 +328,7 @@ def run_enrich_job(
             and report.suppressed + report.queued < report.contacts_found
         ),
         credits_today=today["credits"] + report.credits_used,
+        apollo_credits_today=apollo_spent + report.apollo_credits_used,
         campaign_id="",
         campaign_missing=False,
         default_campaign_ignored=bool(ignored_default),
@@ -576,6 +592,10 @@ def _enrich_via_abby_result(result: dict[str, Any], window: str) -> dict[str, An
         "leads_attempted": leads_attempted,
         "enriched": enriched,
         "pushed": pushed,
+        "contacts_prospeo": int(report.get("contacts_prospeo") or 0),
+        "contacts_apollo": int(report.get("contacts_apollo") or 0),
+        "apollo_credits_used": int(report.get("apollo_credits_used") or 0),
+        "skip_reasons": report.get("skip_reasons") or {},
     }
     logger.info(
         "[enrich-via-abby] result window=%s ran=%s leads_attempted=%s enriched=%s pushed=%s reason=%s",

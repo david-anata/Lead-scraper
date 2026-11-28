@@ -14,6 +14,14 @@ def engine():
     return e
 
 
+@pytest.fixture(autouse=True)
+def _apollo_fallback_off(monkeypatch):
+    """A developer Apollo key must not turn the fallback on inside these tests."""
+
+    monkeypatch.delenv("APOLLO_API_KEY", raising=False)
+    monkeypatch.delenv("APOLLO_DAILY_CREDITS", raising=False)
+
+
 def lead(domain, brand=None):
     brand = brand or domain.split(".")[0].title()
     return {

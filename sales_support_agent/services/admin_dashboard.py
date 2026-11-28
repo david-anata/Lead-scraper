@@ -2129,7 +2129,8 @@ def render_dashboard_page(data: DashboardData, *, user: dict | None = None) -> s
       }}
       .confidence-banner {{
         position: sticky;
-        top: 84px;
+        /* Keep the notice below the two-row authenticated navigation. */
+        top: 126px;
         z-index: 30;
         display: flex;
         justify-content: space-between;
@@ -3452,6 +3453,9 @@ def render_dashboard_page(data: DashboardData, *, user: dict | None = None) -> s
         .meta-card h2 {{
           font-size: 24px;
         }}
+      }}
+      @media (max-width: 760px) {{
+        .confidence-banner {{ top: 76px; }}
       }}
     </style>
   </head>
@@ -7118,7 +7122,8 @@ def render_executive_page(data: ExecutiveData, *, user: dict | None = None) -> s
       }}
       .confidence-banner {{
         position: sticky;
-        top: 84px;
+        /* Keep the notice below the two-row authenticated navigation. */
+        top: 126px;
         z-index: 30;
         display: flex;
         justify-content: space-between;
@@ -7477,6 +7482,7 @@ def render_executive_page(data: ExecutiveData, *, user: dict | None = None) -> s
         }}
       }}
       @media (max-width: 860px) {{
+        .confidence-banner {{ top: 76px; }}
         .shell {{
           padding: 24px 14px 56px;
         }}

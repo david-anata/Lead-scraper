@@ -649,6 +649,36 @@ def test_nudge_text_passes_reply_checks():
     for n in (1, 2, 3):
         body, _ = runner.nudge_text(n, "Ann", "Huppy")
         assert abby.validate_reply("interested", body)[0], n
+    assert "Huppy's Amazon growth" in runner.nudge_text(1, "Ann", "Huppy")[0]
+    assert "for Huppy" in runner.nudge_text(2, "Ann", "Huppy")[0]
+
+
+def test_nudge_possessive_for_a_name_ending_in_s():
+    body, _ = runner.nudge_text(1, "Danielle", "CMY Cubes")
+    assert "Hi Danielle," in body
+    assert "CMY Cubes' Amazon growth" in body
+    assert "CMY Cubes's" not in body
+    assert abby.validate_reply("interested", body)[0]
+
+
+def test_nudge_without_a_name_or_company_uses_a_plain_sentence():
+    for n in (1, 2, 3):
+        body, cc = runner.nudge_text(n, "  ", None)
+        assert cc == []
+        assert "Hi there" not in body
+        assert "your brand" not in body
+        assert "Hi ," not in body
+        assert body.endswith(abby.SIGNATURE)
+        assert "\u2014" not in body and "\u2013" not in body and " - " not in body
+        assert "http" not in body.lower() and "zantrex" not in body.lower() and "redo" not in body.lower()
+        assert abby.validate_reply("interested", body)[0], body
+    missing_name, _ = runner.nudge_text(1, "", "CMY Cubes")
+    assert not missing_name.startswith("Hi")
+    assert "CMY Cubes' Amazon growth" in missing_name
+    missing_company, _ = runner.nudge_text(2, "Danielle", "")
+    assert missing_company.startswith("Hi Danielle,")
+    assert "for you" in missing_company
+    assert "your brand" not in missing_company
 
 
 def test_shadow_nudges_send_nothing(engine, monkeypatch):

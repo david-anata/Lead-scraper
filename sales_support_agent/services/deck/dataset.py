@@ -87,6 +87,11 @@ class DeckGenerationResult:
     evidence_status: str = "ready"
     market_evidence_sufficient: bool = True
     market_evidence_reason: str = ""
+    content_gate_passed: bool = True
+    content_gate_findings: tuple[str, ...] = ()
+    market_mode: str = "amazon"
+    amazon_presence: str = ""
+    amazon_listings: tuple[dict[str, Any], ...] = ()
 @dataclass(frozen=True)
 class TargetRowMatch:
     product: XrayProduct | None
@@ -200,6 +205,8 @@ def _build_target_snapshot_text(
     *,
     comparison_mode: str,
     hero_product: EnrichedHeroProduct,
+    amazon_status: str = "",
+    amazon_listings: list[dict[str, Any]] | tuple[dict[str, Any], ...] | None = None,
 ) -> str:
     if comparison_mode == "matched_market" and target_row:
         revenue_text = target_row.revenue_label if target_row.revenue_label and target_row.revenue_label != "n/a" else ""
@@ -225,11 +232,17 @@ def _build_target_snapshot_text(
             f"{_brand_product_reference(brand_name)} is live, but it was not matched to the current niche export.{metrics_clause} "
             "Use this deck to compare the PDP and offer against page-one leaders while the market benchmark is refined."
         )
-    return (
-        f"{_brand_product_reference(brand_name)} is not yet established in the current market set. "
-        "Use this deck to benchmark the product concept against niche leaders and shape the launch page, offer, and positioning. "
-        f"{brand_name} is not an Amazon seller."
+    if amazon_status == "present" or comparison_mode == "existing_seller":
+        from sales_support_agent.services.deck.amazon_presence import listing_plan_text
+
+        return listing_plan_text(brand_name, amazon_listings or ())
+    site_line = (
+        f"{_brand_product_reference(brand_name)} is described from its own site. "
+        "This deck does not show a category benchmark unless a competitor export supplies one."
     )
+    if amazon_status == "absent":
+        return f"{site_line} {brand_name} is not an Amazon seller."
+    return site_line
 def _build_market_summary(
     brand_name: str,
     xray_report: Helium10XrayReport,
@@ -255,16 +268,33 @@ def _build_executive_summary(
     keyword_report: Helium10KeywordReport | None,
     *,
     launch_mode: bool = False,
+    market_mode: str = "amazon",
+    amazon_status: str = "",
+    amazon_listings: list[dict[str, Any]] | tuple[dict[str, Any], ...] | None = None,
 ) -> str:
     keyword_text = ""
     if keyword_report and keyword_report.keywords:
         keyword_text = f" The leading search objective in the dataset is {keyword_report.keywords[0].phrase}."
+    if amazon_status == "present":
+        from sales_support_agent.services.deck.amazon_presence import listing_plan_text
+
+        return listing_plan_text(brand_name, amazon_listings or ()) + keyword_text
+    if market_mode == "dtc":
+        absence = f" {brand_name} is not an Amazon seller." if amazon_status == "absent" else ""
+        return (
+            f"This is an Amazon launch plan for {brand_name}, built from the brand's own store. "
+            "It uses the products and positioning on the site, a channel plan, and how Anata's software "
+            "and Agency team would launch the brand and run ads. Case studies later in the deck use "
+            "published results only. Competitor and market metrics are left out."
+            f"{absence}"
+        )
     if launch_mode and not xray_report.market_evidence_sufficient:
+        absence = f" {brand_name} is not an Amazon seller." if amazon_status == "absent" else ""
         return (
             f"This analysis treats {brand_name} as a market-entry brand and outlines the "
             "first launch-page and measurement actions. Market-size and competitor-benchmark "
-            "claims are withheld until enough relevant products are verified. "
-            f"{brand_name} is not an Amazon seller."
+            "claims are withheld until enough relevant products are verified."
+            f"{absence}"
         )
     if not xray_report.market_evidence_sufficient:
         return (
@@ -273,10 +303,11 @@ def _build_executive_summary(
             "claims are withheld until enough relevant products are verified."
         )
     if launch_mode:
+        absence = f" {brand_name} is not an Amazon seller." if amazon_status == "absent" else ""
         return (
             f"This deck treats {brand_name} as a market-entry brand. It benchmarks the product concept "
-            f"against the live Amazon category and outlines the launch offer, page, and positioning. "
-            f"{brand_name} is not an Amazon seller."
+            f"against the live Amazon category and outlines the launch offer, page, and positioning."
+            f"{absence}"
             f"{keyword_text}"
         )
     return (
@@ -288,14 +319,23 @@ def _build_advertising_summary(
     keyword_report: Helium10KeywordReport | None,
     *,
     launch_mode: bool = False,
+    market_mode: str = "amazon",
+    amazon_status: str = "",
 ) -> str:
     top_keyword = keyword_report.keywords[0].phrase if keyword_report and keyword_report.keywords else "the primary search terms"
+    if market_mode == "dtc":
+        return (
+            "The Agency team would launch and run sponsored ads after the Amazon listing is live. "
+            "Anata's software would watch search terms, spend, and conversion once the account is connected. "
+            "This plan does not name a budget or a competitor."
+        )
     if launch_mode:
         if not xray_report.market_evidence_sufficient:
+            absence = " There is no Amazon listing to clean up yet." if amazon_status == "absent" else ""
             return (
                 "Advertising should follow the launch page and measurement setup. "
-                "Validate category terms against qualified competitors or Helium 10 data before scaling spend. "
-                "There is no Amazon listing to clean up yet."
+                "Validate category terms against qualified competitors or Helium 10 data before scaling spend."
+                f"{absence}"
             )
         return (
             f"Advertising should follow the launch page. Once the product is in market, lean into {top_keyword} "
@@ -324,7 +364,46 @@ def _build_plan_summary(offer_cards: list[dict[str, str]], channels: list[str], 
     if "tiktok_shop" in channels:
         services.append("package the TikTok Shop offer and creative")
     return "Phase 1: " + "; ".join(services[:3]) + ". Phase 2: launch the first measurement sprint and tune against live market response."
-def _build_expected_impact_summary(xray_report: Helium10XrayReport) -> str:
+def render_dtc_channel_plan(brand_name: str, description: str = "") -> str:
+    """Amazon entry plan for a store with no market export. No invented metrics."""
+
+    brand = str(brand_name or "").strip() or "this brand"
+    story = " ".join(str(description or "").split())
+    if story:
+        positioning = story[:700]
+    else:
+        positioning = "The store page did not expose a product description, so this plan does not guess one."
+    return (
+        '<section class="slide" data-screen-label="04 Channel plan">'
+        '<header class="slide-head"><div class="heading-stack">'
+        '<p class="eyebrow">Channel plan</p>'
+        f'<h2 class="slide-title">How Anata would launch {html.escape(brand)} on Amazon</h2>'
+        "</div>"
+        "<p class=\"caption\">Built from the brand's own store. Competitor and market metrics are left out.</p>"
+        "</header>"
+        "<ul class=\"cklist\">"
+        f"<li><strong>Products and positioning.</strong> {html.escape(positioning)}</li>"
+        "<li><strong>Listing.</strong> The launch title and bullets use words already on the store page.</li>"
+        "<li><strong>Ads.</strong> The Agency team launches and runs sponsored ads after the listing is live. "
+        "Anata's software watches search terms, spend, and conversion once Amazon is connected.</li>"
+        "<li><strong>Channels.</strong> Amazon is the entry point. Shopify, TikTok Shop, and fulfillment "
+        "stay on the same plan when the brand wants them.</li>"
+        "</ul>"
+        "<p>Case studies later in this deck use published results only. No new figures are estimated here.</p>"
+        "</section>"
+    )
+
+
+def _build_expected_impact_summary(
+    xray_report: Helium10XrayReport,
+    *,
+    market_mode: str = "amazon",
+) -> str:
+    if market_mode == "dtc":
+        return (
+            "The first work is the Amazon listing, the image stack, and the measurement setup. "
+            "No growth figure is shown, because no market export was supplied."
+        )
     if not xray_report.market_evidence_sufficient:
         return "The first priority is validating the comparison set and baseline before forecasting growth."
     return (
@@ -471,19 +550,20 @@ def _build_keyword_rows(
                 ]
             )
         return rows
+    if not keyword_report or not keyword_report.keywords:
+        return []
     rows = [["Keyword", "Search volume", "Sales", "Competing products", "Title density"]]
-    if keyword_report:
-        for keyword in keyword_report.keywords[:10]:
-            rows.append(
-                [
-                    keyword.phrase,
-                    keyword.search_volume_label,
-                    keyword.keyword_sales_label,
-                    str(keyword.competing_products or ""),
-                    str(keyword.title_density or ""),
-                ]
-            )
-    return rows
+    for keyword in keyword_report.keywords[:10]:
+        rows.append(
+            [
+                keyword.phrase,
+                keyword.search_volume_label,
+                keyword.keyword_sales_label,
+                str(keyword.competing_products or ""),
+                str(keyword.title_density or ""),
+            ]
+        )
+    return rows if len(rows) > 1 else []
 
 
 def _build_observed_marketplace_keyword_rows(products: list[XrayProduct]) -> list[list[str]]:
@@ -543,6 +623,14 @@ def _build_seo_recommendations(
 ) -> list[str]:
     branded_reference = _brand_product_reference(brand_name)
     cleaned_title = _trim_text(_clean_listing_title(target_title), 60) or branded_reference
+    has_keyword_export = bool(
+        (keyword_report and keyword_report.keywords) or (cerebro_report and cerebro_report.keywords)
+    )
+    if not xray_report.market_evidence_sufficient and not has_keyword_export:
+        return [
+            f"Use the words already on the store page in the launch title. Current page title: '{cleaned_title}'.",
+            "Search volume is not in this deck. Do not forecast keyword demand until a keyword export is attached.",
+        ]
     title_misses = list(search_insights.get("title_misses", []))
     copy_misses = list(search_insights.get("copy_misses", []))
     if keyword_report and keyword_report.keywords:
@@ -591,6 +679,12 @@ _INGREDIENT_CATEGORY_TOKENS = frozenset(
 )
 
 
+_APPAREL_CATEGORY_RE = re.compile(
+    r"\b(?:socks?|apparel|clothing|shirts?|pants|dresses|jackets?|sweaters?|hoodies?|beanies?|gloves?|underwear|leggings|jeans|scarves|scarfs|activewear|knitwear|footwear|shoes|sneakers|boots)\b",
+    re.IGNORECASE,
+)
+
+
 def is_ingredient_category(*texts: str) -> bool:
     """True when the listing sells something whose ingredients drive the buy
     (supplements, food and drink, skin and hair care). Used to keep
@@ -603,19 +697,35 @@ def is_ingredient_category(*texts: str) -> bool:
     return bool(tokens & _INGREDIENT_CATEGORY_TOKENS)
 
 
+def category_family(*texts: str) -> str:
+    """Apparel, ingredient, or general. General advice stays category-neutral."""
+
+    blob = " ".join(str(text or "") for text in texts)
+    if is_ingredient_category(blob):
+        return "ingredient"
+    if _APPAREL_CATEGORY_RE.search(blob):
+        return "apparel"
+    return "general"
+
+
 def _build_cro_recommendations(
     target_row: XrayProduct | None,
     competitors: list[XrayProduct],
     *,
     category_text: str = "",
 ) -> list[str]:
-    ingredient_led = is_ingredient_category(category_text, target_row.title if target_row else "")
-    detail_step = "ingredient context" if ingredient_led else "product details (materials, size and fit)"
+    family = category_family(category_text, target_row.title if target_row else "")
+    if family == "ingredient":
+        detail_step = "ingredient context"
+    elif family == "apparel":
+        detail_step = "product details (materials, size and fit)"
+    else:
+        detail_step = "what the product is and how it is used"
     recommendations = [
         "Simplify the above-the-fold value proposition so the primary outcome is readable in under five seconds.",
         f"Tighten the PDP information hierarchy: hero image, proof, {detail_step}, usage, and trust markers should read in that order.",
     ]
-    if target_row and (target_row.review_count or 0) < 75:
+    if target_row is not None and target_row.review_count is not None and target_row.review_count < 75:
         recommendations.append("Compensate for the lighter review base with stronger proof blocks, FAQ coverage, and comparison framing.")
     if competitors:
         recommendations.append(f"{_trim_text(competitors[0].title, 30)} does a better job of showing proof and hierarchy early; replicate that clarity in the first image stack.")
@@ -626,8 +736,13 @@ def _build_creative_recommendations(
     *,
     category_text: str = "",
 ) -> list[str]:
-    ingredient_led = is_ingredient_category(category_text, target_row.title if target_row else "")
-    shots = "clinical or generic packaging shots" if ingredient_led else "plain product-on-white shots"
+    family = category_family(category_text, target_row.title if target_row else "")
+    if family == "ingredient":
+        shots = "clinical or generic packaging shots"
+    elif family == "apparel":
+        shots = "plain product-on-white shots"
+    else:
+        shots = "a single product shot with no use context"
     recommendations = [
         "Rebuild the hero image sequence so each panel communicates one claim, one proof point, or one use case.",
         f"Add visual comparison and product-context frames instead of relying only on {shots}.",
@@ -1148,13 +1263,13 @@ def resolve_category_label(
        smell where the seed search term is one of the competitors), derive a
        broader label from the most common non-brand 2-token phrase across
        keyword phrases.
-    4. Fall back to "this category".
+    4. Otherwise return an empty label. Callers must not print a placeholder category.
     """
     if user_input and user_input.strip():
         return user_input.strip()
     niche_lc = (niche_keyword or "").strip().lower()
     if not niche_lc:
-        return "this category"
+        return ""
     brands_lc = {b.lower() for b in competitor_brands if b}
     if niche_lc not in brands_lc:
         return niche_keyword.strip()
@@ -1176,7 +1291,7 @@ def resolve_category_label(
     if bigram_counts:
         best = max(bigram_counts.items(), key=lambda kv: kv[1])
         return best[0]
-    return "this category"
+    return ""
 
 
 def _phrase_is_category_relevant(phrase: str, category_buckets: list[set[str]]) -> bool:
@@ -1218,7 +1333,7 @@ def _build_search_insights(
     category_buckets = _category_tokens(category_label)
     # When a relevance filter is active, widen the candidate pool so we have
     # enough on-topic terms to surface AFTER filtering out spillover. Without
-    # widening, a target with mostly-spillover top-10 (Zantrex's cerebro is a
+    # widening, a target with mostly-spillover top-10 (one supplement cerebro is a
     # good example: protein/creatine/cortisol/waist-trainer dominate the top
     # by volume) would surface only 1-2 relevant suggestions or none.
     pool_size = 60
@@ -1261,11 +1376,15 @@ def _build_target_opportunities(
     best_seller: XrayProduct | None,
     price_label: str = "",
     dtc_price: bool = False,
+    image_supported: bool = False,
+    reviews_supported: bool = False,
+    amazon_status: str = "",
+    amazon_listings: list[dict[str, Any]] | tuple[dict[str, Any], ...] | None = None,
 ) -> tuple[list[str], list[str]]:
     strengths: list[str] = []
     gaps: list[str] = []
     launch_mode = comparison_mode == "concept_only"
-    if hero_product.image_url:
+    if image_supported and hero_product.image_url:
         if launch_mode:
             strengths.append("The product already has a usable primary image, so launch creative can focus on sequencing and proof.")
         else:
@@ -1278,14 +1397,33 @@ def _build_target_opportunities(
     )
     if price_summary:
         strengths.append(price_summary)
-    if target_row and (target_row.rating or 0) >= 4.2:
+    if reviews_supported and target_row and (target_row.rating or 0) >= 4.2:
         strengths.append(f"The listing already carries a credible review signal at {target_row.rating_label}.")
     if search_insights.get("title_hits"):
         strengths.append("The title already captures some high-intent search terms: " + ", ".join(search_insights["title_hits"][:3]) + ".")
+    if amazon_status == "present" or comparison_mode == "existing_seller":
+        from sales_support_agent.services.deck.amazon_presence import listing_plan_text
+
+        strengths.insert(0, listing_plan_text(brand_name, amazon_listings or ()))
     if comparison_mode == "live_unmatched":
         gaps.append("The live Amazon target was not matched in the current niche export, so the benchmark column uses the top page-one competitor while direct target data fills identity, BSR, rating, and review signals where available.")
     elif comparison_mode == "concept_only":
-        gaps.append("The prospect is not currently visible in the Amazon market set, so the benchmark column uses the top page-one competitor instead. This brand does not sell on Amazon yet.")
+        if amazon_status == "absent" and best_seller is not None:
+            gaps.append(
+                "The prospect is not currently visible in the Amazon market set, so the benchmark column uses the top page-one competitor. This brand does not sell on Amazon yet."
+            )
+        elif amazon_status == "absent":
+            gaps.append(
+                "This brand does not sell on Amazon yet, and no competitor export was supplied, so there is no benchmark column."
+            )
+        elif best_seller is not None:
+            gaps.append(
+                "The benchmark column uses the top page-one competitor."
+            )
+        else:
+            gaps.append(
+                "No competitor export was supplied, so there is no benchmark column."
+            )
     if not hero_product.description:
         if launch_mode:
             gaps.append("The product story does not yet carry enough detail for a launch page; the offer and support content still need to be written.")
@@ -1295,10 +1433,15 @@ def _build_target_opportunities(
         gaps.append("Important title keywords are still missing: " + ", ".join(search_insights["title_misses"][:3]) + ".")
     if search_insights.get("copy_misses"):
         gaps.append("The bullets / description are not covering: " + ", ".join(search_insights["copy_misses"][:3]) + ".")
-    if target_row and (target_row.review_count or 0) < 75:
+    if reviews_supported and target_row is not None and target_row.review_count is not None and target_row.review_count < 75:
         gaps.append("The review moat is still light, so the PDP needs stronger proof blocks and comparison framing.")
     if not strengths:
-        strengths.append(f"{_brand_product_reference(brand_name)} already gives us a clear product to benchmark against the current niche leaders.")
+        if launch_mode and best_seller is None:
+            strengths.append(
+                f"{_brand_product_reference(brand_name)} is described on its own store, so the Amazon launch plan starts from that positioning."
+            )
+        else:
+            strengths.append(f"{_brand_product_reference(brand_name)} already gives us a clear product to benchmark against the current niche leaders.")
     if not gaps:
         gaps.append("The next gap is to tighten the claim hierarchy, comparison frames, and conversion proof above the fold.")
     return strengths[:4], gaps[:4]

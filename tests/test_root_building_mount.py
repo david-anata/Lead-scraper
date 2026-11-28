@@ -48,6 +48,8 @@ def test_both_entrypoints_mount_complete_building_surface() -> None:
         "/admin/building/settings",
         "/admin/building/content",
         "/admin/building/agreement-readiness",
+        "/review",
+        "/building/review",
         "/api/public/building/offerings",
         "/api/public/building/inquiries",
         "/api/public/building/event-estimates",

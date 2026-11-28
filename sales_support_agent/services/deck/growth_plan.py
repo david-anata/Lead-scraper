@@ -375,7 +375,7 @@ _SUPPLEMENT_OFF_CHANNEL_CPC = (
     "~$1.20–$1.81 (WordStream 2025 / Digital Applied 2026) and is modeled separately when ROAS-on-the-click is the objective."
 )
 _NEUTRAL_ON_CHANNEL_CPC = (
-    "Sponsored Products / Brands CPC is a planning assumption for this category. "
+    "Sponsored Products / Brands CPC is a planning assumption for the category. "
     "No published category CPC benchmark is applied."
 )
 _NEUTRAL_OFF_CHANNEL_CPC = (
@@ -946,6 +946,7 @@ def render_growth_plan_section(
     target_brand: str,
     target_aov: float = 0.0,
     launch_mode: bool = False,
+    amazon_status: str = "",
 ) -> str:
     """Emit the HTML for the single 'Growth plan synopsis' slide."""
     # PR55: shorter caption — the original packed three concepts (units→CVR
@@ -962,10 +963,15 @@ def render_growth_plan_section(
             f"{html.escape(target_brand)} needs +{plan.delta_sessions:,} monthly sessions "
             f"across up to 24 months and 5 channels to reach the competitor benchmark."
         )
-    elif launch_mode:
+    elif launch_mode and amazon_status == "absent":
         gap_caption = (
             f"There is no Amazon session baseline for {html.escape(target_brand)}. "
             "The plan below is a market-entry scenario, not a record of existing marketplace sales."
+        )
+    elif launch_mode:
+        gap_caption = (
+            f"The session baseline for {html.escape(target_brand)} is not confirmed, "
+            "so this plan is a scenario rather than a record of current sales."
         )
     else:
         gap_caption = (
@@ -1056,7 +1062,7 @@ def render_growth_plan_section(
     # PR55: tiles now show ABSOLUTE end-state values (current + delivered),
     # not just the incremental delta. Previous version labeled the delta as
     # "Total monthly sessions" which read as the end-state to prospects —
-    # for Zantrex the tile showed 69k when steady-state was actually 108k
+    # one early deck showed 69k on the tile when steady-state was actually 108k
     # (current 39k + delivered 69k). The honest read is the absolute number.
     steady_state_sessions = plan.current_sessions + plan.total_sessions_delivered
     expected_units_steady = int(round(steady_state_sessions * (plan.cvr_pct / 100.0)))

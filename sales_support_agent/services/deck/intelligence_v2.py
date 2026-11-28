@@ -18,7 +18,9 @@ import html
 import json
 import re
 from dataclasses import dataclass
-from datetime import date, timedelta
+from datetime import date
+
+from sales_support_agent.services.deck.calendar import next_follow_up_date
 from functools import lru_cache
 from pathlib import Path
 from typing import Any, Iterable
@@ -234,8 +236,12 @@ def _requested_channels(payload: dict[str, Any]) -> list[str]:
 
 
 def _launch_mode(payload: dict[str, Any]) -> bool:
-    """True when the prospect has no Amazon listing to narrate."""
+    """True when the deck is a market-entry brief rather than an existing listing."""
     return str((payload.get("target") or {}).get("comparison_mode") or "") == "concept_only"
+
+
+def _amazon_presence(payload: dict[str, Any]) -> str:
+    return str(payload.get("amazon_presence") or "")
 
 
 def build_findings(payload: dict[str, Any]) -> list[dict[str, str]]:
@@ -244,7 +250,7 @@ def build_findings(payload: dict[str, Any]) -> list[dict[str, str]]:
     findings: list[dict[str, str]] = []
     xray = payload.get("xray_report")
     market_ready = bool(getattr(xray, "market_evidence_sufficient", True)) if xray is not None else False
-    category = str(payload.get("category_label") or "").strip() or "this category"
+    category = str(payload.get("category_label") or "").strip()
     if xray is not None and market_ready:
         listings = unique_listings(getattr(xray, "products", []) or [])
         total = sum(float(getattr(p, "revenue", 0) or 0) for p in listings)
@@ -252,7 +258,10 @@ def build_findings(payload: dict[str, Any]) -> list[dict[str, str]]:
         if total > 0 and shares and shares[0].share:
             findings.append(
                 {
-                    "headline": f"{shares[0].brand} holds {shares[0].share:.0f}% of {_money(total)}/mo in {category}",
+                    "headline": (
+                        f"{shares[0].brand} holds {shares[0].share:.0f}% of {_money(total)}/mo"
+                        + (f" in {category}" if category else "")
+                    ),
                     "detail": f"Across {len(listings)} unique listings in the comparison set.",
                     "source": _market_source(payload),
                 }
@@ -397,20 +406,32 @@ def _cover(payload: dict[str, Any], brand: str, findings: list[dict[str, str]], 
     if not cards:
         cards = "<p class='muted'>Upload Helium 10 files to add data-backed findings here.</p>"
     category = str(payload.get("category_label") or "").strip()
+    presence = _amazon_presence(payload)
+    if _launch_mode(payload) and presence == "absent" and category:
+        lede = (
+            f"<p class='lede'>What the Amazon category shows for a { _e(brand) } market entry, "
+            f"and what the first 14 days of launch prep would look like. { _e(brand) } is not an Amazon seller.</p>"
+        )
+    elif _launch_mode(payload) and category:
+        lede = (
+            f"<p class='lede'>What the Amazon category shows for a { _e(brand) } market entry, "
+            "and what the first 14 days of launch prep would look like.</p>"
+        )
+    elif presence == "present" and category:
+        lede = (
+            f"<p class='lede'>{_e(brand)} already sells on Amazon. "
+            f"What we found in {_e(category)}, and what the first 14 days would look like.</p>"
+        )
+    elif category:
+        lede = f"<p class='lede'>What we found in {_e(category)} on Amazon, and what the first 14 days would look like.</p>"
+    else:
+        lede = ""
     return (
         "<section class='slide cover' id='cover' data-section='cover' data-screen-label='Cover'>"
         "<div class='slide-inner'>"
         f"<p class='eyebrow light'><span>01</span>Brand analysis · {_e(generated.strftime('%B %-d, %Y'))}</p>"
         f"<h1>{_e(brand)} <em>x</em> Anata Intelligence</h1>"
-        + (
-            (
-                f"<p class='lede'>What the Amazon category shows for a { _e(brand) } market entry, and what the first 14 days of launch prep would look like. { _e(brand) } is not an Amazon seller.</p>"
-                if _launch_mode(payload)
-                else f"<p class='lede'>What we found in {_e(category)} on Amazon, and what the first 14 days would look like.</p>"
-            )
-            if category
-            else ""
-        )
+        + lede
         + f"<div class='findings'>{cards}</div>"
         "<div class='offer-pill'><strong>The offer:</strong> a free 14-day trial of Anata Intelligence, card on file, cancel anytime. Plans from $99/mo after that.</div>"
         f"</div>{_cta_strip(urls)}</section>"
@@ -434,6 +455,24 @@ def _snapshot(payload: dict[str, Any], link_check: dict[str, Any] | None, urls: 
         else "<span class='muted'>Amazon presence: not verified</span>"
     )
     launch = _launch_mode(payload)
+    presence = _amazon_presence(payload)
+    listing_rows = []
+    for item in payload.get("amazon_listings") or []:
+        if not isinstance(item, dict):
+            continue
+        bits = [str(item.get("title") or "").strip(), str(item.get("asin") or "").strip()]
+        if isinstance(item.get("rating"), (int, float)):
+            bits.append(f"{float(item['rating']):.1f} stars")
+        if isinstance(item.get("review_count"), int):
+            bits.append(f"{int(item['review_count']):,} reviews")
+        if str(item.get("price") or "").strip():
+            bits.append(str(item["price"]).strip())
+        if isinstance(item.get("image_count"), int):
+            bits.append(f"{int(item['image_count'])} images")
+        line = ", ".join(bit for bit in bits if bit)
+        if line:
+            listing_rows.append(f"<li>{_e(line)}</li>")
+    listing_html = f"<ul class='ticks'>{''.join(listing_rows)}</ul>" if listing_rows else ""
     fact_fields = (
         (("Product reviewed", "title"), ("Price", "price"))
         if launch
@@ -449,15 +488,19 @@ def _snapshot(payload: dict[str, Any], link_check: dict[str, Any] | None, urls: 
     image = str(target.get("image_url") or "").strip()
     image_html = f"<img class='hero-img' src='{_e(image)}' alt='{_e(target.get('title'))}' loading='lazy' onerror=\"this.remove()\" />" if image else ""
     channels = _requested_channels(payload)
-    fact_source = (
-        "Product inputs supplied for this market-entry brief. This brand is not an Amazon seller."
-        if launch
-        else "Amazon listing data for the ASIN or URL provided"
-    )
+    if presence == "present":
+        fact_source = "Amazon listing data from a brand search on amazon.com"
+    elif launch and presence == "absent":
+        fact_source = "Product inputs supplied for this market-entry brief. This brand is not an Amazon seller."
+    elif launch:
+        fact_source = "Product inputs supplied for this market-entry brief."
+    else:
+        fact_source = "Amazon listing data for the ASIN or URL provided"
     body = (
         "<div class='two'>"
         f"<div><dl class='facts'>{''.join(facts)}</dl>{_source(fact_source) if facts else ''}"
         f"<div class='links'><p><strong>Website</strong><br>{site_html}</p><p><strong>Amazon</strong><br>{amazon_html}</p>"
+        f"{listing_html}"
         "<p class='src'>Links appear only when our system opened them during this analysis.</p></div>"
         + (f"<p><strong>Channels in scope:</strong> {_e(', '.join(channels))}</p>" if channels else "")
         + f"</div><div class='media'>{image_html}</div></div>"
@@ -658,20 +701,19 @@ def _offer(payload: dict[str, Any], urls: dict[str, str]) -> str:
     )
     body = (
         "<div class='two'><div class='plan-card'><p class='eyebrow'>Free 14-day trial</p>"
-        "<p class='big'>$0 for 14 days</p><p>Then plans from $99/mo.</p>"
+        "<p class='big'>Free for 14 days</p><p>Then plans from $99/mo.</p>"
         f"{included}<a class='cta primary' href='{_e(urls['trial'])}' target='_blank' rel='noreferrer'>{TRIAL_LABEL}</a></div>"
         f"<div>{addon_html}</div></div>"
     )
     return _slide(8, "offer", "Offer and pricing", "Start with the platform. Add people when you want them.", body, urls)
 
 
-def _next(urls: dict[str, str], generated: date, *, launch_mode: bool = False) -> str:
-    follow_up = generated + timedelta(days=3)
-    while follow_up.weekday() >= 5:
-        follow_up += timedelta(days=1)
+def _next(urls: dict[str, str], generated: date, *, launch_mode: bool = False, amazon_presence: str = "") -> str:
+    follow_up = next_follow_up_date(generated)
+    not_on_amazon = launch_mode and amazon_presence == "absent"
     steps = (
         "<ol class='next'>"
-        f"<li><strong>Sign up</strong><p>{'Start the free 14-day trial. Amazon connects once the brand is live on the marketplace.' if launch_mode else 'Start the free 14-day trial and connect Amazon.'}</p><a href='{_e(urls['trial'])}' target='_blank' rel='noreferrer'>{TRIAL_LABEL}</a></li>"
+        f"<li><strong>Sign up</strong><p>{'Start the free 14-day trial. Amazon connects once the brand is live on the marketplace.' if not_on_amazon else 'Start the free 14-day trial and connect Amazon.'}</p><a href='{_e(urls['trial'])}' target='_blank' rel='noreferrer'>{TRIAL_LABEL}</a></li>"
         f"<li><strong>Follow-up on {_e(follow_up.strftime('%A, %B %-d'))}</strong><p>We review this analysis and your first sync together.</p></li>"
         f"<li><strong>Book a call</strong><p>Prefer to talk first? Pick a time that works.</p><a href='{_e(urls['booking'])}' target='_blank' rel='noreferrer'>Book a call</a></li>"
         "</ol>"
@@ -777,7 +819,7 @@ def render_intelligence_v2_deck(
         _plan(payload, urls),
         _proof(payload, urls),
         _offer(payload, urls),
-        _next(urls, generated_on, launch_mode=_launch_mode(payload)),
+        _next(urls, generated_on, launch_mode=_launch_mode(payload), amazon_presence=_amazon_presence(payload)),
     ]
     nav = "".join(
         f"<a href='#{key}'>{label}</a>"

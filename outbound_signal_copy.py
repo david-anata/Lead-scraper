@@ -1,8 +1,9 @@
 """Five-step cold copy for the four live signal campaigns.
 
-These bodies are the source Instantly is patched from. A manual edit in
-Instantly is overwritten the next time ``yes-cta`` applies, so the words
-live here.
+These bodies are the source Instantly is patched from. The apply updates
+the subject and body of a variant that is still live. It does not turn a
+paused variant back on, and it does not put back a variant that was
+removed in Instantly unless that variant sets ``restore_if_removed``.
 
 Proof lines use only figures already published in
 ``sales_support_agent/services/deck/data/case_studies.json`` or on the
@@ -40,10 +41,11 @@ STEP1_SUBJECTS = (
 )
 SIGNATURE = "Abby\nAccount Specialist, Anata"
 
-# Step 1 variant numbers (1-based) that are paused in Instantly. Default is live.
+# Step 1 variant numbers (1-based) that are paused. Variant 2 is the
+# "idea for" opener. It stays paused on every signal campaign. The apply
+# also keeps any other variant Instantly already has turned off.
 _PAUSED_STEP1: dict[str, frozenset[int]] = {
-    "amz_off": frozenset({2}),
-    "plan_upgrade": frozenset({2}),
+    key: frozenset({2}) for key, _campaign_id in CAMPAIGNS
 }
 
 # Worst-case opener the word budget must still clear. The report also
@@ -195,13 +197,16 @@ _FOLLOWUPS: dict[str, tuple[tuple[str, ...], ...]] = {
 class Variant:
     """One plain-text variant.
 
-    ``paused`` is false unless Instantly has this variant turned off.
-    The apply sends that as ``v_disabled``.
+    ``paused`` is false unless this variant is turned off. The apply sends
+    that as ``v_disabled`` and also keeps a variant that is already paused
+    in Instantly. ``restore_if_removed`` is the only flag that puts a
+    variant back after it was deleted live.
     """
 
     text: str
     subject: str = ""
     paused: bool = False
+    restore_if_removed: bool = False
 
 
 def send_days(delays: tuple[int, ...] = STEP_DELAYS) -> tuple[int, ...]:
@@ -274,11 +279,14 @@ def to_html(text: str, *, opener: bool) -> str:
 def _variant_payload(variant: Variant) -> dict[str, Any]:
     """Instantly variant. ``v_disabled`` is the v2 field that pauses one variant."""
 
-    return {
+    payload = {
         "subject": variant.subject,
         "body": to_html(variant.text, opener="{{personalization}}" in variant.text),
         "v_disabled": variant.paused,
     }
+    if variant.restore_if_removed:
+        payload["restore_if_removed"] = True
+    return payload
 
 
 def steps_for(campaign: str) -> list[dict[str, Any]]:

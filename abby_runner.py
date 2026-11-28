@@ -984,9 +984,35 @@ def interest_to_confirm(decision: abby.Decision) -> Optional[int]:
     return value
 
 
-def _build_deck_url(build_deck: Optional[Callable[..., str]], *, lead: str,
-                    company: str, domain: str, first_name: str) -> str:
-    """The prospect plan URL, or '' when the generator cannot build one."""
+def _deck_outcome(value: Any) -> tuple[str, str]:
+    """URL and the reason the public page would not return 200.
+
+    An empty reason means the page would serve the deck. A plain URL string
+    is a test double or an older builder. Those decks are treated as already
+    checked. A real deck uses the same predicate as the public page.
+    """
+
+    if value is None:
+        return "", ""
+    if isinstance(value, str):
+        return value.strip(), ""
+    from sales_support_agent.services.deck.quality import public_deck_block_reason
+
+    url = str(getattr(value, "view_url", "") or getattr(value, "url", "") or "").strip()
+    reason = public_deck_block_reason({
+        "content_gate_passed": bool(getattr(value, "content_gate_passed", True)),
+        "content_gate_findings": getattr(value, "content_gate_findings", ()) or (),
+        "market_mode": getattr(value, "market_mode", "") or "",
+        "evidence_status": getattr(value, "evidence_status", "ready") or "ready",
+        "market_evidence_sufficient": bool(getattr(value, "market_evidence_sufficient", True)),
+        "market_evidence_reason": getattr(value, "market_evidence_reason", "") or "",
+    })
+    return url, reason
+
+
+def _build_deck_url(build_deck: Optional[Callable[..., Any]], *, lead: str,
+                    company: str, domain: str, first_name: str) -> tuple[str, str]:
+    """The prospect plan URL and why the public page would withhold it."""
 
     builder = build_deck
     if builder is None:
@@ -996,17 +1022,18 @@ def _build_deck_url(build_deck: Optional[Callable[..., str]], *, lead: str,
             builder = build_prospect_deck
         except Exception:  # noqa: BLE001
             logger.exception("[abby] deck builder is not available")
-            return ""
+            return "", ""
     try:
-        url = str(builder(lead=lead, company=company, domain=domain, first_name=first_name) or "").strip()
+        raw = builder(lead=lead, company=company, domain=domain, first_name=first_name)
     except Exception:  # noqa: BLE001
         logger.exception("[abby] deck generation failed")
-        return ""
+        return "", ""
+    url, block_reason = _deck_outcome(raw)
     if url.startswith("/"):
         url = "https://agent.anatainc.com" + url
-    if not url.startswith("https://"):
-        return ""
-    return url
+    if url and not url.startswith("https://"):
+        return "", block_reason
+    return url, block_reason
 
 
 def _record_deck_send(engine, *, lead: str, campaign_id: str, thread_id: str,
@@ -1161,13 +1188,13 @@ def _handle_claimed(engine, email: dict, *, client: Instantly, campaign_id: str,
         if run_mode != "live":
             detail = "shadow: deck"
         else:
-            url = _build_deck_url(
+            url, block_reason = _build_deck_url(
                 build_deck, lead=lead, company=info.get("company", ""),
                 domain=str(info.get("domain") or ""),
                 first_name=info.get("first_name", ""),
             )
+            cc_address = ",".join(decision.cc)
             if not url:
-                cc_address = ",".join(decision.cc)
                 decision = abby.Decision(
                     decision.category, "hold", reason="deck generation failed",
                     note="deck", send_deck=False,
@@ -1177,6 +1204,29 @@ def _handle_claimed(engine, email: dict, *, client: Instantly, campaign_id: str,
                     source_email_id=str(email.get("id") or ""), reply_id="",
                     cc_address=cc_address, deck_url="", status="failed",
                     sent_at=now, detail="deck generation failed",
+                )
+            elif block_reason:
+                logger.info("[abby] deck held for %s: %s", lead, block_reason)
+                gate_failure = block_reason.lower().startswith("content gate")
+                decision = abby.Decision(
+                    decision.category, "hold",
+                    reason="deck content gate failed" if gate_failure else "deck withheld from the public page",
+                    note=block_reason,
+                    send_deck=False,
+                    slack=(
+                        f"Abby held the deck for {lead}. "
+                        + (
+                            f"The content gate failed ({block_reason})."
+                            if gate_failure
+                            else f"The public page would not serve it ({block_reason})."
+                        )
+                    ),
+                )
+                _record_deck_send(
+                    engine, lead=lead, campaign_id=campaign_id, thread_id=str(email.get("thread_id") or ""),
+                    source_email_id=str(email.get("id") or ""), reply_id="",
+                    cc_address=cc_address, deck_url=url, status="held",
+                    sent_at=now, detail=block_reason[:500],
                 )
             else:
                 deck_url = url
@@ -1893,12 +1943,48 @@ def send_due_scheduled(engine, client: Instantly, now: datetime, run_mode: str,
     return sent
 
 
+def _normalized_site(value: Any) -> str:
+    """A website Instantly can use as a deck target, or '' when it is not one.
+
+    The same rules as ``abby_deck._target``: an http(s) URL is kept, and a
+    host with a dot and no spaces becomes ``https://`` plus that host.
+    """
+
+    try:
+        from abby_deck import _target
+    except Exception:  # noqa: BLE001
+        logger.exception("[abby] domain normalizer is not available")
+        return ""
+    site = _target(str(value or ""), "", "")
+    if site.startswith("http://") or site.startswith("https://"):
+        return site
+    return ""
+
+
+def _domain_from_instantly(rec: dict) -> str:
+    """Instantly ``website``, or ``company_domain`` when website is not a host."""
+
+    for key in ("website", "company_domain"):
+        site = _normalized_site(rec.get(key))
+        if site:
+            return site
+    return ""
+
+
 def _instantly_info(client: Instantly, lead: str) -> dict:
+    """Name, company, and domain from the Instantly lead. Empty when the read fails."""
+
     try:
         rec = client.lead(lead) or {}
     except Exception:  # noqa: BLE001
         return {}
-    return {"first_name": str(rec.get("first_name") or ""), "company": str(rec.get("company_name") or "")}
+    if not isinstance(rec, dict):
+        return {}
+    return {
+        "first_name": str(rec.get("first_name") or ""),
+        "company": str(rec.get("company_name") or ""),
+        "domain": _domain_from_instantly(rec),
+    }
 
 
 # Nudges for Interested leads that went quiet: days since OUR last message
@@ -1907,20 +1993,48 @@ NUDGE_GAPS_DAYS = (3, 4, 7)
 MAX_NUDGES_PER_RUN = 4
 
 
+def _possessive(name: str) -> str:
+    """English possessive. A name that already ends in s takes one apostrophe."""
+
+    cleaned = " ".join(str(name or "").split())
+    if cleaned.lower().endswith("s"):
+        return f"{cleaned}'"
+    return f"{cleaned}'s"
+
+
 def nudge_text(n: int, first_name: str, company: str) -> tuple[str, list[str]]:
-    hi = f"Hi {first_name}," if first_name else "Hi there,"
+    """Quiet-thread nudge. No generic name or brand stand-in.
+
+    A missing first name drops the greeting. A missing company is written
+    around, not replaced with "your brand". Names ending in s use an
+    apostrophe only, so "CMY Cubes" stays "CMY Cubes'".
+    """
+
+    first = " ".join(str(first_name or "").split())
+    brand = " ".join(str(company or "").split())
     sign = abby.SIGNATURE
-    who = company or "your brand"
     if n == 1:
-        body = (f"{hi}\n\nQuick nudge in case this got buried. "
-                f"I found something that could help {who}'s Amazon growth. Can I send it to you?\n\n{sign}")
-        return body, []
-    if n == 2:
-        body = (f"{hi}\n\nStill happy to put a short Amazon plan together for {who}. "
-                f"Mind if I send it?\n\n{sign}")
-        return body, []
-    body = (f"{hi}\n\nLast note from me. If the timing is off, no worries at all. "
-            f"If you want the short Amazon plan for {who}, I can send it.\n\n{sign}")
+        growth = f"{_possessive(brand)} Amazon growth" if brand else "your Amazon growth"
+        sentence = (
+            "Quick nudge in case this got buried. "
+            f"I found something that could help {growth}. Can I send it to you?"
+        )
+    elif n == 2:
+        target = brand if brand else "you"
+        sentence = (
+            f"Still happy to put a short Amazon plan together for {target}. "
+            "Mind if I send it?"
+        )
+    else:
+        offer = f"the short Amazon plan for {brand}" if brand else "the short Amazon plan"
+        sentence = (
+            "Last note from me. If the timing is off, no worries at all. "
+            f"If you want {offer}, I can send it."
+        )
+    if first:
+        body = f"Hi {first},\n\n{sentence}\n\n{sign}"
+    else:
+        body = f"{sentence}\n\n{sign}"
     return body, []
 
 
@@ -2168,18 +2282,47 @@ def should_reopen_handled(action: str, category: str, reason: str, detail: str) 
     return action in {"hold", "ignore", "skip", ""}
 
 
+def _coerce_utc(stamp: Any) -> Optional[datetime]:
+    if isinstance(stamp, datetime):
+        return stamp if stamp.tzinfo else stamp.replace(tzinfo=timezone.utc)
+    if stamp is None or stamp == "":
+        return None
+    return _parse_ts(str(stamp))
+
+
+def _fix_attempt_limit(detail: str, sent_at: Any, created_at: Any, now: datetime) -> int:
+    """Three tries. A deck-generation miss from the last 14 days gets one more.
+
+    The extra try is how a hold that already used its three tries, and failed
+    only because the domain was missing, is picked up once after a deploy.
+    """
+
+    if "deck generation failed" not in (detail or "").lower():
+        return 3
+    stamp = _coerce_utc(sent_at) or _coerce_utc(created_at)
+    if stamp is None:
+        return 3
+    current = now if now.tzinfo else now.replace(tzinfo=timezone.utc)
+    if current - stamp <= timedelta(days=14):
+        return 4
+    return 3
+
+
 def _claim_fix(engine, email_id: str, *, lead: str, campaign_id: str, previous: str,
-               reclaim_held: bool = False) -> bool:
+               reclaim_held: bool = False, now: Optional[datetime] = None) -> bool:
     """Own this fix. A sent row is not taken again.
 
     A still-held row is taken only when ``reclaim_held`` is set, for a hold
-    the auto-reply check now recognizes. A failed deck build can be retried
-    twice more. Two workers cannot both own it.
+    the auto-reply check now recognizes. A failed send can be retried twice
+    more. A deck generation failure from the last 14 days can be retried once
+    more after that. Two workers cannot both own it.
     """
 
+    now = now or datetime.now(timezone.utc)
     with engine.begin() as conn:
         row = conn.execute(text(
-            "SELECT outcome, attempts FROM abby_missed_reply_fixes WHERE email_id = :i"
+            "SELECT outcome, attempts, detail, sent_at, created_at "
+            "FROM abby_missed_reply_fixes WHERE email_id = :i"
         ), {"i": email_id}).fetchone()
         if row:
             outcome, attempts = str(row[0] or ""), int(row[1] or 0)
@@ -2189,12 +2332,13 @@ def _claim_fix(engine, email_id: str, *, lead: str, campaign_id: str, previous: 
                     "WHERE email_id = :i AND outcome = 'still_held'"
                 ), {"i": email_id}).rowcount
                 return bool(updated)
-            if outcome != "failed" or attempts >= 3:
+            limit = _fix_attempt_limit(str(row[2] or ""), row[3], row[4], now)
+            if outcome != "failed" or attempts >= limit:
                 return False
             updated = conn.execute(text(
                 "UPDATE abby_missed_reply_fixes SET attempts = attempts + 1, outcome = 'pending', "
-                "previous_action = :p WHERE email_id = :i AND outcome = 'failed' AND attempts < 3"
-            ), {"i": email_id, "p": previous[:200]}).rowcount
+                "previous_action = :p WHERE email_id = :i AND outcome = 'failed' AND attempts < :limit"
+            ), {"i": email_id, "p": previous[:200], "limit": limit}).rowcount
             return bool(updated)
         try:
             conn.execute(text(
@@ -2284,7 +2428,7 @@ def run_missed_replies(engine, *, client: Any, campaign_ids: Iterable[str],
                 continue
             if not _claim_fix(
                 engine, email_id, lead=lead, campaign_id=str(campaign_id or ""),
-                previous=previous, reclaim_held=notice is not None,
+                previous=previous, reclaim_held=notice is not None, now=now,
             ):
                 summary["skipped"] += 1
                 continue

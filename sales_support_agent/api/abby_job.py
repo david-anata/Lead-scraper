@@ -234,7 +234,9 @@ def run_missed_replies(request: Request) -> dict[str, Any]:
         campaigns = abby_runner.watched_campaign_ids(
             client.campaign_ids_named(reengage.NAME), engine,
         )
-        summary = abby_runner.run_missed_replies(engine, client=client, campaign_ids=campaigns)
+        summary = abby_runner.run_missed_replies(
+            engine, client=client, campaign_ids=campaigns, lead_info=lead_info_from_db(engine),
+        )
     except Exception as exc:  # noqa: BLE001
         logger.exception("[abby] missed-reply fix failed")
         return {"status": "error", "error": type(exc).__name__}

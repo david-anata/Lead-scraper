@@ -118,6 +118,9 @@ Outbound contact finding (defaults are unchanged until these are set):
 
 - `OUTBOUND_ENRICH_DAILY_COMPANIES` — companies per weekday (default 120)
 - `OUTBOUND_ENRICH_DAILY_CREDITS` — Prospeo credits per weekday (default 250)
+- `APOLLO_DAILY_CREDITS` — Apollo fallback credits per Denver day (default 50).
+  People search is free. Each people match that returns a person counts as one
+  credit unless Apollo reports `credits_consumed`. Phone reveal stays off.
 - `OUTBOUND_ENRICH_PER_RUN` — companies per cron call (default 40)
 - `OUTBOUND_ENRICH_MAX_CONTACTS` — verified people per brand (default 2)
 - `ABBY_CAMPAIGN_IDS` — comma separated. When set, this replaces the outbound
@@ -222,6 +225,18 @@ recipe tags such as `amz_off__under_10k`. They stay off unless
 `OUTBOUND_REVENUE_BAND_EXPERIMENTS=true`. Turning that on does not create
 an Instantly campaign and does not spend the contact-finding cap.
 
+The hourly enrich job tries Prospeo first, then Apollo when Prospeo is out of
+credits (HTTP 402, quota, or an insufficient-credit response), returns HTTP 429,
+finds no person, or finds a person with no verified email. After Prospeo is out
+of credits, the rest of that run skips Prospeo. Only an email Apollo marks
+`verified` is kept. `APOLLO_API_KEY` empty disables the fallback and leaves the
+Prospeo path unchanged. The run summary records `contacts_prospeo`,
+`contacts_apollo`, `apollo_credits_used`, and `skip_reasons`. Each stored
+contact has `provider` `prospeo` or `apollo` once
+`sales_support_agent/migrations/20261120_outbound_apollo_provider.sql` is applied.
+Until that column exists, the summary still has the counts and Apollo credits
+are carried on the domain reason as `apollo_credits=N`.
+
 The hourly enrich job tries active `outbound_campaigns` recipes first,
 oldest unenriched brand first, up to each row's remaining `daily_cap`
 (the live caps are 100). The recipes are interleaved. `icp_baseline`,
@@ -294,9 +309,14 @@ reply on the thread.
 
 Cold steps ask for a small yes instead of a call. The four signal campaigns
 take their steps from `outbound_signal_copy.py`: five emails in one thread,
-sent on days 0, 3, 7, 11, and 16. Step 1 has a third variant with no
-personalization line. On `amz_off v2` and `plan_upgrade`, step 1 variant 2
-stays disabled (`v_disabled`) so a later apply does not turn it back on.
+sent on days 0, 3, 7, 11, and 16. Step 1 variant 2, subject
+`idea for {{companyName | your brand}}`, stays disabled (`v_disabled`) on
+`amz_on`, `amz_off v2`, `plan_upgrade`, and `replatform v2`. The apply reads
+the live sequence, keeps every variant that is already paused, and does not
+add a variant that is not already in Instantly unless that variant sets
+`restore_if_removed`. The repo still has a third step 1 variant with no
+personalization line. The apply leaves that variant out while it is not live.
+`amz_on` step 2 is the Shadyvue line only.
 Each of those steps, and each live `abby_reengage` step, ends with a plain
 opt-out line and the postal address.
 Trial Offer is not rewritten. The five-minute Abby job
@@ -669,6 +689,22 @@ The table is created by
 migration is additive: it creates `building_tenant_directory_contacts` and does
 not change existing tables. Apply it before using the page on a database that
 skips boot-time schema changes.
+
+### Front desk reviews
+
+`/review` (and `/building/review`) is the public page behind the front-desk QR
+code at 1657 N State Street. There is no login. A visitor taps 1–5 stars. Four
+and five stars show a short thank-you and open the Google review link. One to
+three stars keep that star selection and ask for a private note. Every star
+tap is stored in `building_visitor_reviews`, including people sent to Google.
+Private notes alert the same Slack channel as new Building inquiries and, when
+Resend is configured, email `building@anatainc.com`. Recent taps are listed on
+`/admin/building/operations`.
+
+Vercel does not create tables at boot. Apply
+`supabase/migrations/20261123193000_building_visitor_reviews.sql` before the
+page is used in production. The migration is additive and idempotent. Local
+SQLite and the Render pre-deploy command create the same table from the model.
 
 ### Building public content and publication readiness
 

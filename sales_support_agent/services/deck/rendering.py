@@ -712,7 +712,10 @@ def _render_gallery_card(item: dict[str, Any]) -> str:
 def _render_signal_list(title: str, hits: list[str], misses: list[str], miss_label: str) -> str:
     """PR34: emit the design's `.cov-list` markup (term · has/miss pill).
     Each row is a single keyword status (✓ covered / ✕ missing), so the
-    presenter can scan title-coverage and bullet-coverage at a glance."""
+    presenter can scan title-coverage and bullet-coverage at a glance.
+    An empty hit and miss list is omitted. A row of "0 covered" is not a metric."""
+    if not hits and not misses:
+        return ""
     in_label = "in title" if "title" in title.lower() else "in copy"
     miss_label_short = "missing"
     items: list[str] = []
@@ -731,10 +734,17 @@ def _render_signal_list(title: str, hits: list[str], misses: list[str], miss_lab
             f"<li><span class='term'>{html.escape(term)}</span>"
             f"<span class='miss'>✕ {miss_label_short}</span></li>"
         )
+    covered_count = len(hits[:5])
+    missing_count = len(misses[:5])
+    counts: list[str] = []
+    if covered_count:
+        counts.append(f"{covered_count} covered")
+    if missing_count:
+        counts.append(f"{missing_count} {miss_label_short}")
     return (
         "<div class='card-h'>"
         f"<h3>{html.escape(title)}</h3>"
-        f"<span class='meta'>{len(hits[:5])} covered · {len(misses[:5])} {miss_label_short}</span>"
+        f"<span class='meta'>{html.escape(' · '.join(counts))}</span>"
         "</div>"
         f"<ul class='cov-list'>{''.join(items)}</ul>"
     )
@@ -986,8 +996,8 @@ def render_visual_proof_panel(
     target_title = str(target.get("title") or target.get("asin") or unnamed).strip()
 
     bs_image = ""
-    bs_brand = "Best seller"
-    bs_title = "Best seller"
+    bs_brand = ""
+    bs_title = ""
     if best_seller is not None:
         bs_image = str(getattr(best_seller, "image_url", "") or "").strip()
         bs_brand = str(getattr(best_seller, "brand", "") or "Best seller").strip()
@@ -1011,6 +1021,19 @@ def render_visual_proof_panel(
     caption_html = "".join(
         f"<li>{html.escape(_trim_text(line, 220))}</li>" for line in proof_lines if line
     )
+    benchmark_html = ""
+    if best_seller is not None:
+        benchmark_html = (
+            "<div class='visual-proof-arrow' aria-hidden='true'>→</div>"
+            "<figure class='visual-proof-card visual-proof-benchmark'>"
+            f"<div class='visual-proof-thumb'>{_media(bs_image)}</div>"
+            "<figcaption>"
+            "<span class='eyebrow-subtle'>Best-seller benchmark</span>"
+            f"<strong>{html.escape(_trim_text(bs_title, 48))}</strong>"
+            f"<span class='muted'>{html.escape(bs_brand)}</span>"
+            "</figcaption>"
+            "</figure>"
+        )
 
     return (
         "<div class='visual-proof-panel'>"
@@ -1023,18 +1046,10 @@ def render_visual_proof_panel(
         f"<span class='muted'>{html.escape(target_brand)}</span>"
         "</figcaption>"
         "</figure>"
-        "<div class='visual-proof-arrow' aria-hidden='true'>→</div>"
-        "<figure class='visual-proof-card visual-proof-benchmark'>"
-        f"<div class='visual-proof-thumb'>{_media(bs_image)}</div>"
-        "<figcaption>"
-        f"<span class='eyebrow-subtle'>Best-seller benchmark</span>"
-        f"<strong>{html.escape(_trim_text(bs_title, 48))}</strong>"
-        f"<span class='muted'>{html.escape(bs_brand)}</span>"
-        "</figcaption>"
-        "</figure>"
+        f"{benchmark_html}"
         "</div>"
         + (
-            f"<div class='visual-proof-caption'><strong>What the side-by-side shows:</strong><ul>{caption_html}</ul></div>"
+            f"<div class='visual-proof-caption'><strong>{'What the side-by-side shows:' if best_seller is not None else 'What to build:'}</strong><ul>{caption_html}</ul></div>"
             if caption_html
             else ""
         )

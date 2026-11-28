@@ -66,6 +66,65 @@ def test_webhook_rejects_a_missing_secret_and_ignores_other_events():
     assert ignored.json()["reason"] == "event_type"
 
 
+def test_webhook_reply_passes_db_lead_info(monkeypatch):
+    engine = object()
+    info = lambda _email: {"domain": "from-db"}
+    captured = {}
+
+    def process(payload, **kwargs):
+        captured["payload"] = payload
+        captured["engine"] = kwargs.get("engine")
+        captured["lead_info"] = kwargs.get("lead_info")
+        return {"status": "processed"}
+
+    monkeypatch.setattr(webhook_api, "process_reply", process)
+    monkeypatch.setattr("sales_support_agent.models.database.get_engine", lambda: engine)
+    monkeypatch.setattr(
+        "sales_support_agent.api.abby_job.lead_info_from_db",
+        lambda eng: info if eng is engine else None,
+    )
+    webhook_api._run_reply({"event_type": "reply_received", "email_id": "e1"})
+    assert captured["payload"]["email_id"] == "e1"
+    assert captured["engine"] is engine
+    assert captured["lead_info"] is info
+
+
+def test_missed_replies_job_passes_db_lead_info(monkeypatch):
+    monkeypatch.setenv("ABBY_MODE", "live")
+    engine = object()
+    info = lambda _email: {"domain": "from-db"}
+    captured = {}
+
+    monkeypatch.setattr("sales_support_agent.models.database.get_engine", lambda: engine)
+    monkeypatch.setattr(
+        "sales_support_agent.api.abby_job.lead_info_from_db",
+        lambda eng: info if eng is engine else None,
+    )
+    monkeypatch.setattr("outbound_instantly_push.api_key", lambda: "test-key")
+
+    class Client:
+        def campaign_ids_named(self, _name):
+            return ["camp"]
+
+    monkeypatch.setattr(abby_runner, "Instantly", lambda _key: Client())
+    monkeypatch.setattr(abby_runner, "watched_campaign_ids", lambda *_args, **_kwargs: ["camp"])
+
+    def run(eng, **kwargs):
+        captured["engine"] = eng
+        captured["lead_info"] = kwargs.get("lead_info")
+        return {"seen": 0, "sent": 0, "skipped": 0, "failed": 0}
+
+    monkeypatch.setattr(abby_runner, "run_missed_replies", run)
+    response = _app().post(
+        "/api/jobs/abby/missed-replies",
+        headers={"X-Internal-Api-Key": "internal-key"},
+    )
+    assert response.status_code == 200
+    assert response.json()["status"] == "ok"
+    assert captured["engine"] is engine
+    assert captured["lead_info"] is info
+
+
 def test_webhook_returns_200_and_the_background_task_sees_the_payload(monkeypatch):
     seen = []
     monkeypatch.setattr(webhook_api, "_settled", lambda _email_id: False)

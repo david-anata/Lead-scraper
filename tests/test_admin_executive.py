@@ -274,6 +274,8 @@ class AdminExecutiveTests(unittest.TestCase):
         self.assertIn("Loading owner risk focus", html)
         self.assertIn("Show secondary breakdowns", html)
         self.assertIn("Sync now", html)
+        self.assertIn(".confidence-banner { top: 76px; }", html)
+        self.assertIn("top: 126px;", html)
         self.assertIn("id=\"owner-filter\"", html)
         self.assertIn("id=\"scorecard-table\"", html)
         self.assertNotIn("Due</th>", html)
