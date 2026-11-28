@@ -30,7 +30,6 @@ Hard rules, enforced in code not just in the prompt:
 
 from __future__ import annotations
 
-import hashlib
 import logging
 import os
 import re
@@ -2095,20 +2094,10 @@ def shopper_lines(lead: dict[str, Any]) -> tuple[str, str]:
     return opener, angle
 
 
-# General fallback openers. One variant per tier. The email template already
-# asks "Can I send it to you?", so these lines do not.
+# Last resort when neither a product name nor a brand can be said. A usable
+# product or brand uses its own sentence and does not fall through to these.
 GENERAL_OPENERS: dict[str, str] = {
-    "v1": "{Brand} came up while I was looking at brands in {category} that sell direct to shoppers.",
-    "v2": "I've been looking at brands in {category} that sell direct, and {Brand} made my short list.",
-    "v3": "{Brand} came up while I was looking at brands that run their own online store.",
-    "v4": "{Brand} is one of a handful of brands I wanted to write to this week.",
     "v5": "I've been looking at brands {category_clause}that sell direct on their own site, and yours made my short list.",
-}
-_TIER_VARIANTS = {
-    "t1": ("v1", "v2"),
-    "t2": ("v3",),
-    "t3": ("v4",),
-    "t5": ("v5",),
 }
 _BRAND_PREFIXES = ("www.", "shop.", "store.", "eu.", "us.", "pro.")
 _WEAK_CATEGORIES = frozenset({
@@ -2138,17 +2127,6 @@ def _category_raw(lead: dict[str, Any]) -> str:
     if isinstance(raw, (list, tuple)):
         raw = ", ".join(str(item) for item in raw if str(item or "").strip())
     return str(raw or "").strip()
-
-
-def _storefront_confirmed(lead: dict[str, Any]) -> bool:
-    """True when the lead is a store, not a bare brand name."""
-
-    domain = str(lead.get("domain") or "").strip()
-    if "." in domain:
-        return True
-    profile = _profile_of(lead)
-    platform = str(lead.get("platform") or profile.get("platform") or "").strip()
-    return bool(platform)
 
 
 def clean_brand_for_copy(lead: dict[str, Any]) -> str:
@@ -2239,20 +2217,24 @@ def clean_category_for_copy(lead: dict[str, Any]) -> str:
     return text
 
 
-def _mask_brand(line: str, brand: str) -> str:
-    if not brand:
-        return line
-    return re.sub(re.escape(brand), "Acme", line, flags=re.I)
+def _mask_tokens(line: str, *tokens: str) -> str:
+    masked = line
+    for token in tokens:
+        if token:
+            masked = re.sub(re.escape(token), "Acme", masked, flags=re.I)
+    return masked
 
 
-def _general_line_ok(line: str, brand: str) -> bool:
+def _general_line_ok(line: str, *tokens: str) -> bool:
     """True when the fallback line passes the cold-email rules.
 
-    The brand token is masked first so a real name like "710 Labs" or
-    "A.w.a.k.e. Mode" does not trip the number or sentence checks.
+    Name tokens are masked first so "710 Labs" or "A.w.a.k.e. Mode" do not
+    trip the number or sentence checks. Template tags are never allowed.
     """
 
-    masked = _mask_brand(line, brand)
+    if "{{" in line or "}}" in line:
+        return False
+    masked = _mask_tokens(line, *tokens)
     ok, _why = validate(masked, allow_amazon=False)
     if not ok:
         return False
@@ -2260,57 +2242,110 @@ def _general_line_ok(line: str, brand: str) -> bool:
         return False
     if _COPY_URL.search(masked) or _BACKEND_COPY.search(masked):
         return False
-    if _BRAND_BANNED.search(masked):
+    if _BRAND_BANNED.search(masked) or sells_template_reason(masked) or plan_signal_reason(masked):
         return False
     if len(line.split()) > MAX_WORDS or sentence_count(masked) != 1:
         return False
     return True
 
 
+def clean_product_for_copy(lead: dict[str, Any]) -> str:
+    """A product name safe to put in the gift line. Empty when it is not.
+
+    Digits, dashes, links, template tags, and page chrome are rejected so
+    the sentence can name the product without inventing a fact.
+    """
+
+    if not isinstance(lead, dict):
+        return ""
+    profile = _profile_of(lead)
+    candidates: list[Any] = []
+    for key in ("site_product", "scraped_product"):
+        candidates.append(lead.get(key))
+        candidates.append(profile.get(key))
+    product = profile.get("most_recently_published_product")
+    if not isinstance(product, dict):
+        product = lead.get("most_recently_published_product")
+    if isinstance(product, dict):
+        candidates.append(product.get("title"))
+    brand = clean_brand_for_copy(lead)
+    for raw in candidates:
+        text = _clean_product_token(raw, brand)
+        if text:
+            return text
+    return ""
+
+
+def _clean_product_token(value: Any, brand: str) -> str:
+    text = " ".join(str(value or "").split()).strip(" .")
+    if not text or "{{" in text or "}}" in text:
+        return ""
+    if is_page_boilerplate(text, brand) or is_platform_copy(text) or is_promo_title(text):
+        return ""
+    if re.search(r"\d", text) or _GENERAL_PUNCT.search(text) or _COPY_URL.search(text):
+        return ""
+    if _BRAND_BANNED.search(text) or plan_signal_reason(text):
+        return ""
+    if len(text.split()) > 8 or len(text) > 60:
+        return ""
+    if text.lower() in _WEAK_CATEGORIES:
+        return ""
+    folded = re.sub(r"[^a-z0-9]+", "", text.lower())
+    brand_folded = re.sub(r"[^a-z0-9]+", "", (brand or "").lower())
+    if not folded or (brand_folded and folded == brand_folded):
+        return ""
+    if text.islower():
+        text = text[:1].upper() + text[1:]
+    return text
+
+
 def _render_general(variant: str, brand: str, category: str) -> str:
+    """Render a last-resort line. Names are concatenated, never brace tags."""
+
     clause = f"in {category} " if category else ""
-    return GENERAL_OPENERS[variant].format(
-        Brand=brand, category=category, category_clause=clause,
+    template = GENERAL_OPENERS[variant]
+    return (
+        template
+        .replace("{category_clause}", clause)
+        .replace("{category}", category)
+        .replace("{Brand}", brand)
+        .replace("{brand}", brand)
     )
 
 
-def _pick_variant(domain: str, options: tuple[str, ...]) -> str:
-    from outbound_contacts import registrable_domain
+def _product_line(product: str) -> str:
+    return "Your " + product + " looks like an easy gift pick this season."
 
-    key = registrable_domain(domain) or str(domain or "").strip().lower() or "unknown"
-    number = int(hashlib.sha1(key.encode("utf-8")).hexdigest(), 16)
-    return options[number % len(options)]
+
+def _brand_line(brand: str) -> str:
+    return brand + " has a look people remember."
 
 
 def general_opener(lead: dict[str, Any]) -> tuple[str, str]:
     """Return (line, "general:<id>") for a company with no specific opener.
 
-    Brand and category pick the tier. The variant inside the tier is
-    sha1 of the registrable domain, so every contact at the company shares
-    the line. v5 is the last resort when the brand cannot be said.
+    A clean product name uses the gift line. A usable brand with no product
+    uses the brand line. v5 is only for a lead that has neither.
     """
 
     if not isinstance(lead, dict):
         lead = {}
+    product = clean_product_for_copy(lead)
+    if product:
+        line = _product_line(product)
+        if _general_line_ok(line, product):
+            return line, f"{GENERAL_OPENER_PREFIX}product"
     brand = clean_brand_for_copy(lead)
+    if brand:
+        line = _brand_line(brand)
+        if _general_line_ok(line, brand):
+            return line, f"{GENERAL_OPENER_PREFIX}brand"
     category = clean_category_for_copy(lead)
-    domain = str(lead.get("domain") or "")
-    if brand and category:
-        tier = "t1"
-    elif brand and _storefront_confirmed(lead):
-        tier = "t2"
-    elif brand:
-        tier = "t3"
-    else:
-        tier = "t5"
-    variant = _pick_variant(domain, _TIER_VARIANTS[tier])
-    line = _render_general(variant, brand, category if tier == "t1" else "")
-    if tier == "t5":
-        line = _render_general("v5", "", category)
-    if _general_line_ok(line, brand if tier != "t5" else ""):
-        return line, f"{GENERAL_OPENER_PREFIX}{variant}"
+    line = _render_general("v5", "", category)
+    if _general_line_ok(line):
+        return line, f"{GENERAL_OPENER_PREFIX}v5"
     bare = _render_general("v5", "", "")
-    if _general_line_ok(bare, ""):
+    if _general_line_ok(bare):
         return bare, f"{GENERAL_OPENER_PREFIX}v5"
     return "", ""
 

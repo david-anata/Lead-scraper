@@ -21,51 +21,79 @@ def _masked(line: str, brand: str) -> str:
     return line.replace(brand, "Acme")
 
 
+def _assert_cold_line(line: str, source: str, lead: dict) -> None:
+    assert len(line.split()) < 25
+    assert op.sentence_count(_masked(line, lead.get("brand") or lead.get("site_product") or "")) == 1 or (
+        op.sentence_count(op._mask_tokens(line, lead.get("brand") or "", lead.get("site_product") or "")) == 1
+    )
+    masked = op._mask_tokens(line, str(lead.get("brand") or ""), str(lead.get("site_product") or ""))
+    assert op.validate(masked, allow_amazon=False)[0], (line, op.validate(masked, allow_amazon=False))
+    assert op.opener_hold_reason(line, lead, source=source) == ""
+    low = line.lower()
+    assert "http" not in low and "www." not in low
+    assert "—" not in line and "–" not in line and " - " not in line
+    assert "?" not in line
+    assert "{{" not in line and "}}" not in line
+    for word in BANNED:
+        assert word not in low
+
+
 def test_each_general_variant_is_one_short_sentence():
-    samples = {
-        "v1": op._render_general("v1", "Acme", "food and beverage"),
-        "v2": op._render_general("v2", "Acme", "food and beverage"),
-        "v3": op._render_general("v3", "Acme", ""),
-        "v4": op._render_general("v4", "Acme", ""),
-        "v5": op._render_general("v5", "", "food and beverage"),
-        "v5-bare": op._render_general("v5", "", ""),
+    product_lead = {
+        "brand": "Acme", "domain": "acme.com", "categories": "food_beverage",
+        "site_product": "cedar soap",
     }
-    lead = {"brand": "Acme", "domain": "acme.com", "categories": "food_beverage"}
-    for key, line in samples.items():
-        assert len(line.split()) < 25, key
-        assert op.sentence_count(line) == 1, key
-        assert op.validate(line, allow_amazon=False)[0], key
-        source = "general:v5" if key.startswith("v5") else f"general:{key}"
-        assert op.opener_hold_reason(line, lead, source=source) == "", key
-        low = line.lower()
-        assert "http" not in low and "www." not in low
+    brand_lead = {"brand": "Acme", "domain": "acme.com", "categories": "food_beverage"}
+    product_line, product_source = op.general_opener(product_lead)
+    brand_line, brand_source = op.general_opener(brand_lead)
+    assert product_line == "Your Cedar soap looks like an easy gift pick this season."
+    assert product_source == "general:product"
+    assert brand_line == "Acme has a look people remember."
+    assert brand_source == "general:brand"
+    _assert_cold_line(product_line, product_source, product_lead)
+    _assert_cold_line(brand_line, brand_source, brand_lead)
+    last = op._render_general("v5", "", "food and beverage")
+    bare = op._render_general("v5", "", "")
+    for line in (last, bare):
+        assert len(line.split()) < 25
+        assert op.sentence_count(line) == 1
+        assert op.validate(line, allow_amazon=False)[0]
         assert "—" not in line and "–" not in line and " - " not in line
-        assert "?" not in line and not any(ch.isdigit() for ch in line)
-        for word in BANNED:
-            assert word not in low
+        assert "{{" not in line and "}}" not in line
+        assert op.opener_hold_reason(line, {}, source="general:v5") == ""
 
 
 def test_tier_selection_and_ugly_brands():
-    both = {"brand": "Acme", "domain": "acme.com", "categories": "food_beverage"}
-    assert op.general_opener(both)[1] in {"general:v1", "general:v2"}
+    product = {
+        "brand": "Acme", "domain": "acme.com", "categories": "food_beverage",
+        "site_product": "cedar soap",
+    }
+    line, source = op.general_opener(product)
+    assert (line, source) == (
+        "Your Cedar soap looks like an easy gift pick this season.", "general:product",
+    )
 
-    store = {"brand": "Acme", "domain": "acme.com"}
-    assert op.general_opener(store)[1] == "general:v3"
+    for lead in (
+        {"brand": "Acme", "domain": "acme.com", "categories": "food_beverage"},
+        {"brand": "Acme", "domain": "acme.com"},
+        {"brand": "Acme"},
+    ):
+        assert op.general_opener(lead) == ("Acme has a look people remember.", "general:brand")
 
-    name_only = {"brand": "Acme"}
-    assert op.general_opener(name_only)[1] == "general:v4"
-
+    assert op.general_opener({"brand": "Shop.bigthirst", "domain": "bigthirst.com"}) == (
+        "Bigthirst has a look people remember.", "general:brand",
+    )
+    assert op.general_opener({"brand": "Www.innovafoodsco", "domain": "innovafoodsco.com"}) == (
+        "Innovafoodsco has a look people remember.", "general:brand",
+    )
     for brand in (
-        "Shop.bigthirst",
-        "Www.innovafoodsco",
         "National Tree Company Business Website · Extra",
         "Order Online @ IMCS",
     ):
         line, source = op.general_opener({"brand": brand, "domain": "example.com"})
-        assert line and source.startswith("general:")
-        assert source == "general:v5" or brand.split(".")[-1].lower()[:4] in line.lower() or (
-            "Bigthirst" in line or "Innovafoodsco" in line
-        )
+        assert source == "general:v5"
+        assert "yours made my short list" in line
+        assert "{{" not in line
 
     for brand, domain in (
         ("710 Labs", "710labs.com"),
@@ -74,11 +102,12 @@ def test_tier_selection_and_ugly_brands():
     ):
         lead = {"brand": brand, "domain": domain, "categories": "apparel"}
         line, source = op.general_opener(lead)
-        assert line and brand in line
-        assert source.startswith("general:v")
+        assert line == f"{brand} has a look people remember."
+        assert source == "general:brand"
         masked = _masked(line, brand)
         assert op.validate(masked, allow_amazon=False)[0], (brand, op.validate(masked, allow_amazon=False))
         assert op.opener_hold_reason(line, lead, source=source) == ""
+        assert "{{" not in line and "—" not in line and " - " not in line
 
 
 def test_category_cleaning_and_alcoholic_exclusion():
@@ -108,16 +137,11 @@ def test_variant_is_stable_per_domain_and_both_tier_one_lines_appear():
         "brand": "Acme", "domain": "shop.acme.com", "categories": ["food_beverage"],
         "email": "b@acme.com",
     })
-    assert first == second
-    seen = set()
-    for index in range(100):
-        _line, source = op.general_opener({
-            "brand": "Acme",
-            "domain": f"brand{index}.example",
-            "categories": "food_beverage",
-        })
-        seen.add(source)
-    assert seen == {"general:v1", "general:v2"}
+    assert first == second == ("Acme has a look people remember.", "general:brand")
+    bare = op.general_opener({"domain": "nobody.example", "categories": "food_beverage"})
+    again = op.general_opener({"brand": "", "domain": "shop.nobody.example"})
+    assert bare[1] == "general:v5" and again[1] == "general:v5"
+    assert "{{" not in bare[0] and "{{" not in again[0]
 
 
 def _engine():
@@ -158,13 +182,14 @@ def test_discovery_pushes_a_general_opener_when_the_store_has_no_facts(monkeypat
     )
     assert result.pushed == 1 and sent
     assert sent[0]["custom_variables"]["opener_type"] == "general"
-    assert str(sent[0]["custom_variables"]["opener_variant"]).startswith("v")
+    assert sent[0]["custom_variables"]["opener_variant"] == "brand"
+    assert sent[0]["personalization"] == "Plain Brand has a look people remember."
     with engine.connect() as conn:
         source, reason = conn.execute(text(
             "SELECT opener_source, skip_reason FROM outbound_enriched_contacts "
             "WHERE email = 'ada@plainbrand.com'"
         )).one()
-    assert str(source).startswith("general:v")
+    assert source == "general:brand"
     assert reason in ("", None)
     assert "held:opener" not in str(reason or "")
 
@@ -410,11 +435,21 @@ def test_sells_template_and_plan_upgrade_openers_become_general_lines(monkeypatc
         text = row["personalization"]
         low = text.lower()
         assert row["custom_variables"]["opener_type"] == "general"
-        assert str(row["custom_variables"]["opener_variant"]).startswith("v")
         assert "sells " not in low
         assert "plan upgrade" not in low and "plan change" not in low and "store plan" not in low
         assert "http" not in low and "—" not in text and "–" not in text and " - " not in text
+        assert "{{" not in text and "}}" not in text
         assert "redo" not in low
+    assert by_email["ada@leadoffbaseball.com"]["personalization"] == (
+        "Your The Daily Swing Station looks like an easy gift pick this season."
+    )
+    assert by_email["ada@leadoffbaseball.com"]["custom_variables"]["opener_variant"] == "product"
+    assert by_email["ada@3sixteen.com"]["personalization"] == "3sixteen has a look people remember."
+    assert by_email["ada@3sixteen.com"]["custom_variables"]["opener_variant"] == "brand"
+    assert by_email["ada@scaled.com"]["personalization"] == (
+        "Your Selvedge denim looks like an easy gift pick this season."
+    )
+    assert by_email["ada@scaled.com"]["custom_variables"]["opener_variant"] == "product"
     product_led = "The Daily Swing Station looks like a great gift for young hitters."
     assert op.sells_template_reason(product_led) == ""
     assert op.plan_signal_reason(product_led) == ""

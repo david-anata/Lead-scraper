@@ -135,9 +135,12 @@ def test_pushed_lead_carries_brand_and_opener(engine):
     oe.run_enrichment(engine, [lead("a.com", "Acme")], api_key="k", find=f, write=opener,
                       campaign_id="new-campaign", dry_run=False, push=ok)
     assert seen["lead"]["company_name"] == "Acme"
+    assert seen["lead"]["personalization"] == (
+        "Your Toothpaste tabs looks like an easy gift pick this season."
+    )
     assert seen["lead"]["custom_variables"]["opener_type"] == "general"
-    assert "sells " not in seen["lead"]["personalization"].lower()
-    assert "Acme" in seen["lead"]["personalization"]
+    assert seen["lead"]["custom_variables"]["opener_variant"] == "product"
+    assert "{{" not in seen["lead"]["personalization"]
     assert seen["lead"]["email"] == "x@a.com"
 
 
@@ -541,8 +544,8 @@ def test_category_filler_uses_a_general_opener_instead_of_a_hold(engine, monkeyp
     line = sent[-1][0]["personalization"]
     variables = sent[-1][0]["custom_variables"]
     assert variables["opener_type"] == "general"
-    assert str(variables["opener_variant"]).startswith("v")
-    assert "Kalm" in line
+    assert variables["opener_variant"] == "brand"
+    assert line == "Kalm has a look people remember."
     assert oe.unpushed(engine) == []
     with engine.connect() as conn:
         source, reason = conn.execute(text(
