@@ -178,7 +178,7 @@ def build_arena_commercial_draft(
             "party_hours": {
                 "saturday": "08:00-24:00",
                 "sunday": "08:00-22:00",
-                "new_years_eve_any_day": True,
+                "new_years_eve_any_day": False,
             },
             "overtime": {
                 "booking_unit": "quoted_separately",
@@ -222,11 +222,18 @@ def build_arena_commercial_draft(
                     "parties_weekends_only",
                     "saturday_8am_midnight",
                     "sunday_8am_10pm",
-                    "new_years_eve_any_day",
                     "setup_reset_tiers",
                     "av_technician_75_hour",
                     "event_labor_125_staff_hour",
                     "one_transfer_14_days_six_months",
+                ],
+            },
+            {
+                "source": "Owner decision, November 23, 2026",
+                "classification": "owner_approved_business_rules",
+                "terms": [
+                    "weekday_business_events_only",
+                    "new_years_eve_closed",
                 ],
             },
         ],
