@@ -44,7 +44,7 @@ def test_prompts_state_the_word_caps_and_one_sentence():
 
 
 def test_validator_enforces_the_hard_max_and_keeps_the_old_bans():
-    assert op.validate(_words(25, "Huppy", "sells", "oral", "care"))[0]
+    assert op.validate(_words(25, "Huppy", "makes", "oral", "care"))[0]
     ok, why = op.validate(_words(26, "Huppy", "sells", "oral", "care"))
     assert not ok and why == "too long"
     assert op.validate(_words(20, "Anata", "helps", "Huppy", "grow"), max_words=op.ANGLE_MAX_WORDS)[0]
@@ -55,7 +55,7 @@ def test_validator_enforces_the_hard_max_and_keeps_the_old_bans():
     assert not op.validate("Huppy grew 4 percent.")[0]
     assert not op.validate("See https://huppy.com today.")[0]
     assert not op.validate("Nice work — really")[0]
-    assert personalization.style_violation(_words(25, "Huppy", "sells", "oral", "care")) == ""
+    assert personalization.style_violation(_words(25, "Huppy", "makes", "oral", "care")) == ""
     assert personalization.style_violation(_words(26, "Huppy", "sells", "oral", "care")) == "too long"
     assert personalization.style_violation(
         _words(21, "Shoppers", "compare", "oral", "care"), role="angle",
@@ -70,12 +70,12 @@ def test_over_long_opener_is_regenerated_once_then_held():
         calls.append(prompt)
         if len(calls) == 1:
             return _words(30, "Huppy", "sells", "oral", "care")
-        return "Huppy sells toothpaste tabs."
+        return "Huppy's toothpaste tabs have a loyal following."
 
     line, source = op.write_opener(
         {**LEAD, "domain": "retry.com", "site_product": "toothpaste tabs"}, CONTACT, llm=llm,
     )
-    assert source == "ai" and line == "Huppy sells toothpaste tabs."
+    assert source == "ai" and line == "Huppy's toothpaste tabs have a loyal following."
     assert len(calls) == 2
     assert "too long" in calls[1]
     assert "never more than 25" in calls[0]
@@ -90,11 +90,11 @@ def test_over_long_opener_is_regenerated_once_then_held():
     assert line == "" and source == "none"
     assert len(calls) == 2
     assert "25 words" in op.opener_hold_reason(
-        _words(26, "Huppy", "sells", "toothpaste", "tabs"),
+        _words(26, "Huppy", "makes", "toothpaste", "tabs"),
         {"brand": "Huppy", "categories": "Food"},
     )
     assert op.opener_hold_reason(
-        _words(25, "Huppy", "sells", "toothpaste", "tabs"),
+        _words(25, "Huppy", "makes", "toothpaste", "tabs"),
         {"brand": "Huppy", "categories": "Food", "site_product": "toothpaste tabs"},
     ) == ""
 
@@ -132,7 +132,7 @@ def test_rich_pair_over_the_max_is_regenerated_once_then_left_empty():
     calls = {"n": 0}
     long_opener = _words(30, "Huppy", "sells", "toothpaste", "tabs")
     short = {
-        "opener": "Huppy sells toothpaste tabs.",
+        "opener": "Huppy's toothpaste tabs have a loyal following.",
         "angle": "Shoppers reorder toothpaste tabs.",
     }
 
@@ -144,7 +144,8 @@ def test_rich_pair_over_the_max_is_regenerated_once_then_left_empty():
 
     opener, angle, source = personalization.generate(lead, llm=llm)
     assert calls["n"] == 2 and source == "ai"
-    assert opener == short["opener"] and angle == short["angle"]
+    assert opener == short["opener"] and "sells " not in opener.lower()
+    assert angle == short["angle"]
 
     calls["n"] = 0
 
@@ -204,7 +205,7 @@ def test_trial_offer_never_claims_or_assumes_amazon():
 
     line, source = op.write_opener(trial, CONTACT, llm=claim_amazon)
     assert "amazon" not in line.lower()
-    assert source == "fallback"
+    assert source == "none"
     assert len(calls) == 2
     assert "Trial Offer" in calls[0]
     assert "already sells on Amazon" in calls[0]
@@ -212,7 +213,8 @@ def test_trial_offer_never_claims_or_assumes_amazon():
     assert "already sells on Amazon" in op.opener_hold_reason(
         "Huppy sells on Amazon.", trial,
     )
-    assert op.opener_hold_reason("Huppy sells toothpaste tabs.", trial) == ""
+    assert "amazon" not in op.opener_hold_reason("Huppy sells toothpaste tabs.", trial).lower()
+    assert "retired sells template" in op.opener_hold_reason("Huppy sells toothpaste tabs.", trial)
     for claim in (
         "Shoppers reorder on Amazon.",
         "Your Amazon store is ready.",

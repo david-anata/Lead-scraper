@@ -99,13 +99,7 @@ def morning_pull_status(engine, now: datetime) -> dict:
             ),
         }
     if match is not None:
-        held = 0
-        try:
-            import outbound_enrich as enrich
-
-            held = enrich._count_opener_holds(engine)
-        except Exception:  # noqa: BLE001
-            held = 0
+        opener_line = _opener_status_line(engine, now)
         return {
             "ok": True,
             "status": "finished",
@@ -116,12 +110,12 @@ def morning_pull_status(engine, now: datetime) -> dict:
             "matched": match.matched,
             "completed_count": match.completed_count,
             "recipe_count": match.recipe_count,
-            "held_openers": held,
+            "opener_line": opener_line,
             "reason": (
                 f"Already ran today. Finished with {match.unique_companies} companies, "
                 f"scanned {match.scanned}, matched {match.matched}, "
-                f"{match.completed_count} of {match.recipe_count} recipes complete, "
-                f"{held} held contacts."
+                f"{match.completed_count} of {match.recipe_count} recipes complete. "
+                f"{opener_line}"
             ),
         }
     if _morning_state.get("last_status") == "failed" and _morning_state.get("last_reason"):
@@ -129,7 +123,25 @@ def morning_pull_status(engine, now: datetime) -> dict:
     return {"ok": True, "status": "ready", "reason": "No pull yet today."}
 
 
-def post_sales_alert(batch: Any, recipe_runs: list[dict], *, slack: Any, held: int = 0) -> dict:
+def _opener_status_line(engine, now: datetime) -> str:
+    """Denver-day opener mix. Never the old held-opener sentence."""
+
+    try:
+        import outbound_enrich as enrich
+
+        return enrich.format_opener_daily(enrich.opener_daily_counts(engine, now))
+    except Exception:  # noqa: BLE001
+        logger.exception("[outbound-jobs] opener counts could not be read")
+        return "Openers today: 0 specific, 0 general. Excluded today: none."
+
+
+def post_sales_alert(
+    batch: Any,
+    recipe_runs: list[dict],
+    *,
+    slack: Any,
+    opener_line: str = "",
+) -> dict:
     """Tell #sales when a daily batch delivered nothing or a recipe failed.
 
     A skipped held recipe is not an error. Slack being unconfigured does not
@@ -152,8 +164,8 @@ def post_sales_alert(batch: Any, recipe_runs: list[dict], *, slack: Any, held: i
         lines.append(
             f"Recipe {run.get('recipe_key') or 'unknown'} failed: {run.get('error') or 'no reason recorded'}."
         )
-    if held:
-        lines.append(f"Held contacts waiting for a shopper-visible opener: {held}.")
+    if opener_line:
+        lines.append(opener_line)
     text = " ".join(lines)
     try:
         result = slack.post_message(text=text, channel=SALES_SLACK_CHANNEL)
@@ -679,21 +691,14 @@ def run_morning_routine(*, now: datetime | None = None, scan_limit: int = _SCAN_
         engine, batch_id=batch_id, recipe_runs=recipe_runs, leads=all_leads,
         filename=f"anata-daily-leads-{_today(now)}.csv",
     )
-    held_openers = 0
-    if engine is not None:
-        try:
-            import outbound_enrich as _enrich
-
-            held_openers = _enrich._count_opener_holds(engine)
-        except Exception:  # noqa: BLE001
-            logger.exception("[outbound-jobs] could not count held openers")
-    out["held_openers"] = held_openers
+    opener_line = _opener_status_line(engine, now) if engine is not None else ""
+    out["opener_line"] = opener_line
     try:
         from sales_support_agent.config import load_settings
         from sales_support_agent.integrations.slack import SlackClient
 
         alert = post_sales_alert(
-            batch, recipe_runs, slack=SlackClient(load_settings()), held=held_openers,
+            batch, recipe_runs, slack=SlackClient(load_settings()), opener_line=opener_line,
         )
         out["sales_alert"] = alert.get("posted")
     except Exception:  # noqa: BLE001

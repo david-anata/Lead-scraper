@@ -415,6 +415,13 @@ def build_lead(contact: dict[str, Any], lead: dict[str, Any], opener: str) -> di
     {{firstName}}, {{companyName}}, {{personalization}}, {{category}}, {{brandAngle}}."""
     category = friendly_category(lead.get("categories") or "") or str(lead.get("niche") or "").strip().lower()
     angle = str(contact.get("brand_angle") or lead.get("brand_angle") or "").strip()
+    source = str(contact.get("opener_source") or lead.get("opener_source") or "").strip()
+    if source.startswith("general:"):
+        opener_type = "general"
+        opener_variant = source.split(":", 1)[1]
+    else:
+        opener_type = "specific"
+        opener_variant = source
     return {
         "email": str(contact.get("email") or "").strip().lower(),
         "first_name": str(contact.get("first_name") or "").strip(),
@@ -428,6 +435,8 @@ def build_lead(contact: dict[str, Any], lead: dict[str, Any], opener: str) -> di
             "tier": str(lead.get("tier") or "").strip(),
             "contact_title": str(contact.get("title") or "").strip(),
             "brandAngle": angle,
+            "opener_type": opener_type,
+            "opener_variant": opener_variant,
         },
     }
 
