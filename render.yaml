@@ -262,7 +262,7 @@ services:
     schedule: "0 * * * *"
     buildCommand: pip install -r requirements.txt
     startCommand: |
-      curl -sS -X POST "$AGENT_URL/api/jobs/website-ops/run" \
+      curl -sS --max-time 750 -X POST "$AGENT_URL/api/jobs/website-ops/run" \
         -H "Content-Type: application/json" \
         -H "X-Internal-Api-Key: $(printf %s "$SALES_AGENT_INTERNAL_API_KEY")" \
         -d '{"mode":"scheduled"}'

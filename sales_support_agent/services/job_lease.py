@@ -126,6 +126,55 @@ def claim_scheduled_job(
     return None
 
 
+def expire_stale_scheduled_jobs(
+    engine: Any,
+    *,
+    now: datetime,
+    job_key: str | None = None,
+) -> int:
+    """Fail running leases whose expiry is already in the past.
+
+    Rows still inside their lease window are left running. Passing ``job_key``
+    limits the sweep to that job; otherwise every expired running lease is
+    failed. A row is stale only when ``lease_expires_at < now``.
+    """
+
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=timezone.utc)
+    now_text = now.astimezone(timezone.utc).isoformat()
+    params: dict[str, Any] = {
+        "completed_at": now_text,
+        "details_json": json.dumps(
+            {
+                "reason": "lease_expired",
+                "note": "Stale running lease expired before it finished.",
+            },
+            sort_keys=True,
+        ),
+        "now": now_text,
+    }
+    scope = ""
+    if job_key is not None:
+        scope = " AND job_key = :job_key"
+        params["job_key"] = job_key
+    with engine.begin() as connection:
+        result = connection.execute(
+            text(
+                f"""
+                UPDATE scheduled_job_runs
+                   SET status = 'failed',
+                       completed_at = :completed_at,
+                       details_json = :details_json
+                 WHERE status = 'running'
+                   AND lease_expires_at < :now
+                   {scope}
+                """
+            ),
+            params,
+        )
+        return int(result.rowcount or 0)
+
+
 def finish_scheduled_job(
     engine: Any,
     lease: JobLease,

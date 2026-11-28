@@ -898,20 +898,7 @@ def startup() -> None:
         init_database(_sf)
         init_cashflow_db(_cf_db_url)
     app.state.session_factory = _sf  # required by sales_router and cashflow_router
-    if os.getenv("WEBSITE_OPS_DATABASE_MIRROR", "false").strip().lower() in {
-        "1",
-        "true",
-        "yes",
-        "on",
-    }:
-        from sales_support_agent.services.website_ops_storage import (
-            synchronize_website_ops_cache,
-        )
-
-        synchronize_website_ops_cache(
-            app.state.website_ops_settings,
-            _sf.kw["bind"],
-        )
+    # The Website Ops mirror is restored on the first Website Ops request.
     # Store AdminDashboardSettings so cashflow auth_deps can always find
     # admin_cookie_name even when agent_settings fails to load.
     app.state.admin_dashboard_settings = load_admin_dashboard_settings()

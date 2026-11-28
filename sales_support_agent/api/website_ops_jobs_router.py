@@ -8,7 +8,7 @@ import secrets
 import logging
 import hashlib
 import time
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from threading import Event
 from typing import Any
 from urllib.parse import urlparse
@@ -37,6 +37,7 @@ from sales_support_agent.services.website_ops_query_intelligence import (
 )
 from sales_support_agent.services.job_lease import (
     claim_scheduled_job,
+    expire_stale_scheduled_jobs,
     finish_scheduled_job,
 )
 from sales_support_agent.services.website_ops_outcomes import (
@@ -74,6 +75,104 @@ def _website_ops_step_budget_seconds() -> int:
 
 def _pulse_slot(local_now: datetime) -> str:
     return f"{local_now.date().isoformat()}:{local_now.hour:02d}"
+
+
+_INTERRUPTED_LEASE_DETAILS = {
+    "error": "Website Ops was interrupted or timed out before the lease was finished.",
+    "reason": "interrupted_or_timeout",
+}
+
+
+def _scheduled_trigger(method: str, *, force: bool) -> str:
+    """Label Vercel cron GETs separately from the Render POST cron."""
+
+    if force:
+        return "internal_force"
+    if str(method or "").upper() == "GET":
+        return "vercel_cron"
+    return "render_cron"
+
+
+def _finish_website_ops_lease(
+    engine: Any,
+    lease: Any,
+    *,
+    status: str,
+    details: dict[str, Any] | None,
+) -> bool:
+    """Finish a claimed lease. Return False when the update itself fails."""
+
+    if engine is None or lease is None:
+        return True
+    try:
+        finish_scheduled_job(engine, lease, status=status, details=details)
+    except Exception:
+        logger.exception("Website Ops lease could not be finished.")
+        return False
+    return True
+
+
+def _expire_stale_mode_run_files(settings: Any, now: datetime) -> list[str]:
+    """Fail daily or weekly file state that has been queued or running too long."""
+
+    expired: list[str] = []
+    minutes = int(WEBSITE_OPS_RUNNING_STALE_AFTER.total_seconds() // 60)
+    current = now if now.tzinfo is not None else now.replace(tzinfo=timezone.utc)
+    for mode in ("daily", "weekly"):
+        state = get_website_ops_run_state(settings, mode)
+        status = str(state.get("status", ""))
+        if status not in {"queued", "running"}:
+            continue
+        started_raw = str(state.get("last_started_at", "") or "").strip()
+        stale = True
+        if started_raw:
+            try:
+                started_at = datetime.fromisoformat(started_raw)
+            except ValueError:
+                started_at = None
+            if started_at is not None:
+                if started_at.tzinfo is None:
+                    started_at = started_at.replace(tzinfo=timezone.utc)
+                age = current.astimezone(timezone.utc) - started_at.astimezone(timezone.utc)
+                stale = age > WEBSITE_OPS_RUNNING_STALE_AFTER
+        if not stale:
+            continue
+        started_label = started_raw or "an unknown time"
+        write_website_ops_run_state(
+            settings,
+            mode,
+            {
+                "status": "failed",
+                "last_completed_at": datetime.now(timezone.utc).isoformat(),
+                "last_error": (
+                    f"Marked failed because this {mode} run stayed {status} "
+                    f"after {started_label}, past the {minutes}-minute limit, "
+                    "and never finished. The next pulse can start new work."
+                ),
+                "recovery_status": "exhausted",
+            },
+        )
+        expired.append(mode)
+        logger.info("Marked stale Website Ops %s file state failed.", mode)
+    return expired
+
+
+def _sweep_expired_website_ops_leases(engine: Any) -> None:
+    """Fail website_ops leases that have already passed their expiry."""
+
+    if engine is None:
+        return
+    try:
+        expired = expire_stale_scheduled_jobs(
+            engine,
+            now=datetime.now(timezone.utc),
+            job_key="website_ops",
+        )
+    except Exception:
+        logger.exception("Could not expire stale Website Ops leases.")
+        return
+    if expired:
+        logger.info("Expired %s stale website_ops lease(s).", expired)
 
 
 def _daily_run_is_fresh(state: dict[str, Any], local_now: datetime) -> bool:
@@ -164,6 +263,7 @@ def _run_embedded_pulse(settings: Any, local_now: datetime) -> dict[str, Any]:
     mirror_enabled = engine is not None and database_mirror_enabled()
 
     def execute() -> dict[str, Any]:
+        _expire_stale_mode_run_files(settings, local_now)
         pulse_slot = _pulse_slot(local_now)
         current_state = get_website_ops_run_state(settings, "daily")
         failed_status = str(current_state.get("status", "")) in {
@@ -221,6 +321,7 @@ def _run_embedded_pulse(settings: Any, local_now: datetime) -> dict[str, Any]:
         if engine is not None and lease is None:
             return {"status": "skipped", "message": "This Website Ops pulse is already running."}
 
+        lease_finished = False
         try:
             results = _run_due_modes(
                 settings,
@@ -233,23 +334,30 @@ def _run_embedded_pulse(settings: Any, local_now: datetime) -> dict[str, Any]:
                 item.get("status") in {"failed", "failed_outcome"}
                 for item in results.values()
             )
-            if engine is not None and lease is not None:
-                finish_scheduled_job(
-                    engine,
-                    lease,
-                    status="failed" if failed else "succeeded",
-                    details=results,
-                )
+            lease_finished = _finish_website_ops_lease(
+                engine,
+                lease,
+                status="failed" if failed else "succeeded",
+                details=results,
+            )
             return {"status": "failed" if failed else "succeeded", "details": results}
         except Exception as exc:
-            if engine is not None and lease is not None:
-                finish_scheduled_job(
+            if not lease_finished:
+                lease_finished = _finish_website_ops_lease(
                     engine,
                     lease,
                     status="failed",
                     details={"error": str(exc)},
                 )
             raise
+        finally:
+            if not lease_finished:
+                _finish_website_ops_lease(
+                    engine,
+                    lease,
+                    status="failed",
+                    details=dict(_INTERRUPTED_LEASE_DETAILS),
+                )
 
     if mirror_enabled:
         with website_ops_cache_transaction(engine, settings.website_ops_root):
@@ -354,6 +462,7 @@ def _run_due_modes(
     run_business_date = business_date or datetime.now(
         ZoneInfo("America/Denver")
     ).date()
+    _expire_stale_mode_run_files(settings, datetime.now(timezone.utc))
     # One budget for every mode in this invocation. A later mode that does not
     # fit yields immediately and resumes on the next cron instead of crossing
     # Vercel's 800s maxDuration.
@@ -675,13 +784,6 @@ async def run_scheduled_website_ops(request: Request) -> dict:
         raise HTTPException(status_code=400, detail="Unsupported run mode.")
 
     local_now = datetime.now(ZoneInfo("America/Denver"))
-    if requested_mode == "scheduled" and local_now.hour not in WEBSITE_OPS_PULSE_HOURS:
-        return {
-            "status": "skipped",
-            "message": "Website Ops scheduler is waiting for an 8 AM through 3 PM America/Denver pulse.",
-            "local_time": local_now.isoformat(),
-        }
-
     from sales_support_agent.models.database import get_engine
 
     try:
@@ -691,6 +793,15 @@ async def run_scheduled_website_ops(request: Request) -> dict:
         # always initializes the shared engine and therefore always uses the
         # cross-instance lease below.
         engine = None
+    _sweep_expired_website_ops_leases(engine)
+    _expire_stale_mode_run_files(request.app.state.settings, local_now)
+    if requested_mode == "scheduled" and local_now.hour not in WEBSITE_OPS_PULSE_HOURS:
+        return {
+            "status": "skipped",
+            "message": "Website Ops scheduler is waiting for an 8 AM through 3 PM America/Denver pulse.",
+            "local_time": local_now.isoformat(),
+        }
+
     pulse_slot = (
         f"{local_now.date().isoformat()}:{local_now.hour:02d}"
         if requested_mode == "scheduled"
@@ -738,6 +849,7 @@ async def run_scheduled_website_ops(request: Request) -> dict:
             "run_key": run_key,
         }
 
+    lease_finished = False
     try:
         modes = (
             [requested_mode]
@@ -748,19 +860,18 @@ async def run_scheduled_website_ops(request: Request) -> dict:
             _run_due_modes,
             request.app.state.settings,
             modes,
-            trigger="internal_force" if force else "render_cron",
+            trigger=_scheduled_trigger(request.method, force=force),
             force=force,
             pulse_slot=pulse_slot,
             business_date=local_now.date(),
         )
         failed = any(item.get("status") == "failed" for item in results.values())
-        if engine is not None and lease is not None:
-            finish_scheduled_job(
-                engine,
-                lease,
-                status="failed" if failed else "succeeded",
-                details=results,
-            )
+        lease_finished = _finish_website_ops_lease(
+            engine,
+            lease,
+            status="failed" if failed else "succeeded",
+            details=results,
+        )
         if failed:
             raise HTTPException(
                 status_code=503,
@@ -770,14 +881,22 @@ async def run_scheduled_website_ops(request: Request) -> dict:
     except HTTPException:
         raise
     except Exception as exc:
-        if engine is not None and lease is not None:
-            finish_scheduled_job(
+        if not lease_finished:
+            lease_finished = _finish_website_ops_lease(
                 engine,
                 lease,
                 status="failed",
                 details={"error": str(exc)},
             )
         raise
+    finally:
+        if not lease_finished:
+            _finish_website_ops_lease(
+                engine,
+                lease,
+                status="failed",
+                details=dict(_INTERRUPTED_LEASE_DETAILS),
+            )
 
 
 @router.post("/release-log")

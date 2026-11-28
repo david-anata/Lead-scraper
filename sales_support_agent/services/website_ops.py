@@ -7,6 +7,7 @@ import hashlib
 import json
 import os
 import re
+import threading
 import time
 import urllib.request
 import xml.etree.ElementTree as ET
@@ -211,6 +212,7 @@ def _default_mode_run_state(mode: str) -> dict[str, str]:
         "last_stage": "",
         "next_operation": "",
         "failure_stage": "",
+        "last_pulse_slot": "",
     }
 
 
@@ -1703,6 +1705,19 @@ WEBSITE_OPS_PIPELINE_STAGES = (
     "execute",
     "finalize",
 )
+# Leave this much of the step budget after the pipeline returns so the request
+# middleware can snapshot changed files before Vercel's 800s wall.
+WEBSITE_OPS_SNAPSHOT_HEADROOM_SECONDS = 45
+# One stage cannot run until the function is killed. The cap is far under both
+# the 540s step budget and the 800s maxDuration.
+WEBSITE_OPS_STAGE_INNER_TIMEOUT_SECONDS = 240
+# Finalize writes the large report and sends mail. Do not enter it unless the
+# remaining budget can finish that work and still leave the snapshot headroom.
+WEBSITE_OPS_FINALIZE_MIN_SECONDS = 30
+
+
+class _StageBudgetPause(Exception):
+    """A stage was not started, or it exceeded its inner timeout."""
 
 
 def _pipeline_cursor_path(settings: Settings, mode: str) -> Path:
@@ -1774,10 +1789,70 @@ def _clear_pipeline_cursor(settings: Settings, mode: str, run_date: str) -> None
     _save_pipeline_cursor(settings, mode, finished, checkpoint=False)
 
 
-def _pipeline_budget_expired(deadline: float | None, clock: Callable[[], float]) -> bool:
+def _consume_budget(
+    deadline: float | None,
+    clock: Callable[[], float],
+) -> tuple[float | None, float | None]:
+    """Return ``(now, allowance_seconds)`` from a single clock read.
+
+    ``allowance_seconds`` is None when the run has no deadline. It is 0 when
+    the stage must not start: the time left is only the snapshot headroom, or
+    less. Otherwise it is the inner timeout for this stage, which cannot reach
+    the 800s wall.
+    """
+
     if deadline is None:
-        return False
-    return float(clock()) >= float(deadline)
+        return None, None
+    now = float(clock())
+    available = float(deadline) - WEBSITE_OPS_SNAPSHOT_HEADROOM_SECONDS - now
+    if available <= 0:
+        return now, 0.0
+    return now, min(float(WEBSITE_OPS_STAGE_INNER_TIMEOUT_SECONDS), available)
+
+
+def _call_with_stage_timeout(
+    allowance: float | None,
+    work: Callable[[], Any],
+    *,
+    cancel: threading.Event | None = None,
+) -> Any:
+    """Run ``work`` inline, or stop waiting when its inner allowance is exhausted.
+
+    The join timeout is what keeps one blocking stage from running until the
+    800s function wall. The worker is a daemon so a timed-out stage cannot
+    hold the process open after the pulse has already paused. ``cancel`` is
+    set when the wait ends early so the stage can avoid persisting later work.
+    """
+
+    if allowance is None:
+        return work()
+    if allowance <= 0:
+        if cancel is not None:
+            cancel.set()
+        raise _StageBudgetPause()
+    box: dict[str, Any] = {}
+
+    def runner() -> None:
+        try:
+            box["value"] = work()
+        except BaseException as exc:  # noqa: BLE001
+            box["error"] = exc
+
+    thread = threading.Thread(target=runner, name="website-ops-stage", daemon=True)
+    thread.start()
+    thread.join(allowance)
+    if thread.is_alive():
+        if cancel is not None:
+            cancel.set()
+        raise _StageBudgetPause()
+    if "error" in box:
+        raise box["error"]
+    return box.get("value")
+
+
+def _pipeline_budget_expired(deadline: float | None, clock: Callable[[], float]) -> bool:
+    _now, allowance = _consume_budget(deadline, clock)
+    return allowance == 0
 
 
 def _paused_pipeline_result(next_stage: str) -> WebsiteOpsActionResult:
@@ -1913,8 +1988,10 @@ def run_website_ops(
                 str(record.get("feedback_id", "")): record
                 for record in visible_feedback_entries
             }
-            if bounded_resumable and _pipeline_budget_expired(deadline, clock):
-                return pause("resume_approved")
+            if bounded_resumable:
+                now, allowance = _consume_budget(deadline, clock)
+                if allowance == 0:
+                    return pause("resume_approved")
             approval_checkpoint_needed = False
             for candidate in bounded_resumable:
                 feedback_id = str(candidate.get("feedback_id", "")).strip()
@@ -1953,16 +2030,23 @@ def run_website_ops(
                     continue
                 if not _record_is_auto_executable(record):
                     continue
-                if _pipeline_budget_expired(deadline, clock):
+                now, allowance = _consume_budget(deadline, clock)
+                if allowance == 0:
                     return pause("resume_approved")
+                item_deadline = None if now is None else now + float(allowance)
                 try:
-                    result = _execute_record(
-                        settings,
-                        config,
-                        record,
-                        raise_on_error=False,
-                        budget_deadline=deadline,
+                    result = _call_with_stage_timeout(
+                        allowance,
+                        lambda record=record, item_deadline=item_deadline: _execute_record(
+                            settings,
+                            config,
+                            record,
+                            raise_on_error=False,
+                            budget_deadline=item_deadline,
+                        ),
                     )
+                except _StageBudgetPause:
+                    return pause("resume_approved")
                 except PipelineBudgetExceeded:
                     return pause("resume_approved")
                 if result:
@@ -1978,88 +2062,112 @@ def run_website_ops(
         )
 
     if next_stage == "report":
-        if _pipeline_budget_expired(deadline, clock):
+        _now, allowance = _consume_budget(deadline, clock)
+        if allowance == 0:
             return pause("report")
-        feedback_entries = load_feedback_records(settings)
-        visible_feedback_entries = _mvp_filter_feedback_records(feedback_entries)
-        monitored_urls = discover_website_ops_urls(settings)
-        pipeline = website_ops.run_daily_report_pipeline(
-            list(monitored_urls),
-            config=config,
-            output_dir=output_dir,
-            feedback_entries=visible_feedback_entries,
-            title=report_title,
-            report_type=f"website_ops_{mode}",
-            scope=f"agent-admin {mode} sweep",
-            notes=[
-                f"Run mode: {mode}.",
-                f"Monitored URLs: {len(monitored_urls)}.",
-                "Scope source: production sitemap with marketing-site host restrictions.",
-                f"Feedback loaded: {len(feedback_entries)}.",
-                f"Changes applied: {len(executed_actions)}.",
-            ],
-            report_date=run_date,
-            executed_actions=executed_actions,
-        )
-        observations = [
-            dict(item)
-            for item in (pipeline.get("observations") or [])
-            if isinstance(item, Mapping)
-        ]
-        enriched_report = dict(pipeline["report"])
-        # Persist a truthful sitemap-backed inventory before slower analytics,
-        # article generation, or external publishing can fail. Later enrichment
-        # replaces this checkpoint with the fully joined intent projection.
-        checkpoint_indexing_inventory = load_indexing_inventory(settings.website_ops_root)
-        checkpoint_crawl_inventory = load_crawl_inventory(settings.website_ops_root)
-        checkpoint_query_intelligence = dict(
-            enriched_report.get("query_intelligence") or {}
-        )
-        enriched_report["production_inventory"] = build_production_inventory(
-            sitemap_urls=monitored_urls,
-            crawl_inventory=checkpoint_crawl_inventory,
-            indexing_inventory=checkpoint_indexing_inventory,
-            intent_coverage=dict(
-                checkpoint_query_intelligence.get("intent_coverage") or {}
-            ),
-        )
-        website_ops.write_daily_report_artifacts(
-            enriched_report,
-            output_dir=output_dir,
-            config=config,
-        )
-        enriched_report.update(
-            build_autonomy_overlay(
-                settings=settings,
-                report=enriched_report,
-                observations=observations,
+
+        report_cancel = threading.Event()
+
+        def _run_report_stage() -> None:
+            nonlocal monitored_urls, observations, enriched_report, next_stage
+
+            def _report_still_current() -> None:
+                if report_cancel.is_set():
+                    raise _StageBudgetPause()
+
+            feedback_entries = load_feedback_records(settings)
+            visible_feedback_entries = _mvp_filter_feedback_records(feedback_entries)
+            monitored_urls = discover_website_ops_urls(settings)
+            _report_still_current()
+            # The pipeline writes the day's JSON, Markdown, and HTML when
+            # persist is left on. A worker that outlives the stage timeout
+            # must not do that after the pulse has already paused.
+            pipeline = website_ops.run_daily_report_pipeline(
+                list(monitored_urls),
+                config=config,
+                output_dir=output_dir,
                 feedback_entries=visible_feedback_entries,
-                run_mode=mode,
+                title=report_title,
+                report_type=f"website_ops_{mode}",
+                scope=f"agent-admin {mode} sweep",
+                notes=[
+                    f"Run mode: {mode}.",
+                    f"Monitored URLs: {len(monitored_urls)}.",
+                    "Scope source: production sitemap with marketing-site host restrictions.",
+                    f"Feedback loaded: {len(feedback_entries)}.",
+                    f"Changes applied: {len(executed_actions)}.",
+                ],
+                report_date=run_date,
+                executed_actions=executed_actions,
+                persist=False,
             )
-        )
-        enriched_report = _mvp_filter_report_payload(enriched_report)
-        enriched_report["automation_mode"] = (
-            "validated_autopush" if has_baseline else "baseline_report_only"
-        )
-        enriched_report["action_queue"] = _sync_action_queue_feedback(
-            settings,
-            list(enriched_report.get("action_queue") or []),
-            visible_feedback_entries,
-            report_slug=_slugify_text(report_title),
-        )
-        bounded_actions, deferred_actions = select_bounded_actions(
-            list(enriched_report.get("action_queue") or [])
-        )
-        enriched_report["action_queue"] = bounded_actions + deferred_actions
-        next_stage = "execute"
-        persist_cursor(
-            next_stage=next_stage,
-            executed_actions=executed_actions,
-            has_baseline=has_baseline,
-            monitored_urls=list(monitored_urls),
-            observations=observations,
-            report=enriched_report,
-        )
+            _report_still_current()
+            observations = [
+                dict(item)
+                for item in (pipeline.get("observations") or [])
+                if isinstance(item, Mapping)
+            ]
+            enriched_report = dict(pipeline["report"])
+            # Persist a truthful sitemap-backed inventory before slower analytics,
+            # article generation, or external publishing can fail. Later enrichment
+            # replaces this checkpoint with the fully joined intent projection.
+            checkpoint_indexing_inventory = load_indexing_inventory(settings.website_ops_root)
+            checkpoint_crawl_inventory = load_crawl_inventory(settings.website_ops_root)
+            checkpoint_query_intelligence = dict(
+                enriched_report.get("query_intelligence") or {}
+            )
+            enriched_report["production_inventory"] = build_production_inventory(
+                sitemap_urls=monitored_urls,
+                crawl_inventory=checkpoint_crawl_inventory,
+                indexing_inventory=checkpoint_indexing_inventory,
+                intent_coverage=dict(
+                    checkpoint_query_intelligence.get("intent_coverage") or {}
+                ),
+            )
+            _report_still_current()
+            website_ops.write_daily_report_artifacts(
+                enriched_report,
+                output_dir=output_dir,
+                config=config,
+            )
+            enriched_report.update(
+                build_autonomy_overlay(
+                    settings=settings,
+                    report=enriched_report,
+                    observations=observations,
+                    feedback_entries=visible_feedback_entries,
+                    run_mode=mode,
+                )
+            )
+            enriched_report = _mvp_filter_report_payload(enriched_report)
+            enriched_report["automation_mode"] = (
+                "validated_autopush" if has_baseline else "baseline_report_only"
+            )
+            enriched_report["action_queue"] = _sync_action_queue_feedback(
+                settings,
+                list(enriched_report.get("action_queue") or []),
+                visible_feedback_entries,
+                report_slug=_slugify_text(report_title),
+            )
+            bounded_actions, deferred_actions = select_bounded_actions(
+                list(enriched_report.get("action_queue") or [])
+            )
+            enriched_report["action_queue"] = bounded_actions + deferred_actions
+            next_stage = "execute"
+            _report_still_current()
+            persist_cursor(
+                next_stage=next_stage,
+                executed_actions=executed_actions,
+                has_baseline=has_baseline,
+                monitored_urls=list(monitored_urls),
+                observations=observations,
+                report=enriched_report,
+            )
+
+        try:
+            _call_with_stage_timeout(allowance, _run_report_stage, cancel=report_cancel)
+        except _StageBudgetPause:
+            return pause("report")
 
     if next_stage == "execute":
         bounded_actions, deferred_actions = select_bounded_actions(
@@ -2072,8 +2180,10 @@ def run_website_ops(
             if str(item.get("feedback_id", "")).strip()
         }
         if settings.website_ops_execute_approved and has_baseline:
-            if bounded_feedback_ids and _pipeline_budget_expired(deadline, clock):
-                return pause("execute")
+            if bounded_feedback_ids:
+                _now, allowance = _consume_budget(deadline, clock)
+                if allowance == 0:
+                    return pause("execute")
             current_records = {
                 str(item.get("feedback_id", "")): item
                 for item in _mvp_filter_feedback_records(load_feedback_records(settings))
@@ -2114,16 +2224,23 @@ def run_website_ops(
                     continue
                 if record.get("status") != "approved" or not _record_is_auto_executable(record):
                     continue
-                if _pipeline_budget_expired(deadline, clock):
+                now, allowance = _consume_budget(deadline, clock)
+                if allowance == 0:
                     return pause("execute")
+                item_deadline = None if now is None else now + float(allowance)
                 try:
-                    result = _execute_record(
-                        settings,
-                        config,
-                        record,
-                        raise_on_error=True,
-                        budget_deadline=deadline,
+                    result = _call_with_stage_timeout(
+                        allowance,
+                        lambda record=record, item_deadline=item_deadline: _execute_record(
+                            settings,
+                            config,
+                            record,
+                            raise_on_error=True,
+                            budget_deadline=item_deadline,
+                        ),
                     )
+                except _StageBudgetPause:
+                    return pause("execute")
                 except PipelineBudgetExceeded:
                     return pause("execute")
                 if result:
@@ -2150,93 +2267,125 @@ def run_website_ops(
             report=enriched_report,
         )
 
-    if _pipeline_budget_expired(deadline, clock):
+    _now, allowance = _consume_budget(deadline, clock)
+    if allowance == 0 or (
+        allowance is not None and allowance < WEBSITE_OPS_FINALIZE_MIN_SECONDS
+    ):
         return pause("finalize")
-    indexing_inventory = load_indexing_inventory(settings.website_ops_root)
-    crawl_inventory = load_crawl_inventory(settings.website_ops_root)
-    crawl_observations = collect_crawl_resource_observations(
-        crawl_inventory,
-        observations,
-    )
-    crawl_verification = build_crawl_verification(
-        crawl_inventory,
-        crawl_observations,
-    )
-    save_crawl_verification(settings.website_ops_root, crawl_verification)
-    enriched_report["indexing_inventory"] = indexing_inventory
-    enriched_report["crawl_inventory"] = {
-        "generated_at": crawl_inventory.get("generated_at", ""),
-        "imports": list(crawl_inventory.get("imports") or []),
-        "summary": dict(crawl_inventory.get("summary") or {}),
-    }
-    enriched_report["crawl_verification"] = crawl_verification
-    query_intelligence = dict(enriched_report.get("query_intelligence") or {})
-    enriched_report["production_inventory"] = build_production_inventory(
-        sitemap_urls=monitored_urls,
-        crawl_inventory=crawl_inventory,
-        indexing_inventory=indexing_inventory,
-        intent_coverage=dict(query_intelligence.get("intent_coverage") or {}),
-    )
-    run_id = hashlib.sha256(
-        (
-            f"{mode}:{enriched_report.get('generated_at', '')}:"
-            f"{len(monitored_urls)}"
-        ).encode("utf-8")
-    ).hexdigest()[:24]
-    enriched_report["candidate_ledger"] = persist_candidate_ledger(
-        settings.website_ops_root,
-        candidates=build_candidates(enriched_report),
-        run_id=run_id,
-    )
-    enriched_report["program_plan"] = build_program_plan(
-        analytics_status=dict(enriched_report.get("analytics_status") or {}),
-        action_queue=list(enriched_report.get("action_queue") or []),
-        support_requests=list(enriched_report.get("support_requests") or []),
-        indexing_inventory=indexing_inventory,
-        crawl_verification=crawl_verification,
-    )
-    enriched_report["daily_action_portfolio"] = build_daily_action_portfolio(
-        action_queue=list(enriched_report.get("action_queue") or []),
-        candidate_ledger=dict(enriched_report.get("candidate_ledger") or {}),
-    )
-    codex_publications = reconcile_codex_publications(settings)
-    if codex_publications:
-        existing_urls = {
-            str(item.get("production_url") or item.get("page_url") or "").strip()
-            for item in enriched_report.get("executed_actions", []) or []
-            if isinstance(item, Mapping)
-        }
-        new_publications = [
-            item
-            for item in codex_publications
-            if str(item.get("production_url", "")).strip() not in existing_urls
-        ]
-        enriched_report["executed_actions"] = list(
-            enriched_report.get("executed_actions") or []
-        ) + new_publications
-        enriched_report["changes_applied"] = len(
-            enriched_report["executed_actions"]
+
+    finalize_cancel = threading.Event()
+
+    def _finalize_budget_remains() -> None:
+        _step_now, step_allowance = _consume_budget(deadline, clock)
+        if step_allowance == 0 or (
+            step_allowance is not None
+            and step_allowance < WEBSITE_OPS_FINALIZE_MIN_SECONDS
+        ):
+            raise _StageBudgetPause()
+
+    def _run_finalize_stage() -> WebsiteOpsActionResult:
+        indexing_inventory = load_indexing_inventory(settings.website_ops_root)
+        crawl_inventory = load_crawl_inventory(settings.website_ops_root)
+        crawl_observations = collect_crawl_resource_observations(
+            crawl_inventory,
+            observations,
         )
-        enriched_report["codex_publications"] = codex_publications
-    enriched_report["operations_summary"] = _build_operations_summary(enriched_report)
-    enriched_report["run_outcome"] = classify_run_outcome(enriched_report)
-    enriched_report["program_status"] = enriched_report["run_outcome"]["status"]
-    website_ops.write_daily_report_artifacts(
-        enriched_report,
-        output_dir=output_dir,
-        config=config,
-    )
-    enriched_report["email_delivery"] = send_website_ops_report_email(
-        settings,
-        mode=mode,
-        report=enriched_report,
-    )
-    _clear_pipeline_cursor(settings, mode, run_date)
-    return WebsiteOpsActionResult(
-        ok=enriched_report["run_outcome"]["status"] != FAILED_OUTCOME,
-        message=str(enriched_report["run_outcome"]["summary"]),
-        report=enriched_report,
-    )
+        crawl_verification = build_crawl_verification(
+            crawl_inventory,
+            crawl_observations,
+        )
+        save_crawl_verification(settings.website_ops_root, crawl_verification)
+        enriched_report["indexing_inventory"] = indexing_inventory
+        enriched_report["crawl_inventory"] = {
+            "generated_at": crawl_inventory.get("generated_at", ""),
+            "imports": list(crawl_inventory.get("imports") or []),
+            "summary": dict(crawl_inventory.get("summary") or {}),
+        }
+        enriched_report["crawl_verification"] = crawl_verification
+        query_intelligence = dict(enriched_report.get("query_intelligence") or {})
+        enriched_report["production_inventory"] = build_production_inventory(
+            sitemap_urls=monitored_urls,
+            crawl_inventory=crawl_inventory,
+            indexing_inventory=indexing_inventory,
+            intent_coverage=dict(query_intelligence.get("intent_coverage") or {}),
+        )
+        run_id = hashlib.sha256(
+            (
+                f"{mode}:{enriched_report.get('generated_at', '')}:"
+                f"{len(monitored_urls)}"
+            ).encode("utf-8")
+        ).hexdigest()[:24]
+        enriched_report["candidate_ledger"] = persist_candidate_ledger(
+            settings.website_ops_root,
+            candidates=build_candidates(enriched_report),
+            run_id=run_id,
+        )
+        enriched_report["program_plan"] = build_program_plan(
+            analytics_status=dict(enriched_report.get("analytics_status") or {}),
+            action_queue=list(enriched_report.get("action_queue") or []),
+            support_requests=list(enriched_report.get("support_requests") or []),
+            indexing_inventory=indexing_inventory,
+            crawl_verification=crawl_verification,
+        )
+        enriched_report["daily_action_portfolio"] = build_daily_action_portfolio(
+            action_queue=list(enriched_report.get("action_queue") or []),
+            candidate_ledger=dict(enriched_report.get("candidate_ledger") or {}),
+        )
+        codex_publications = reconcile_codex_publications(settings)
+        if codex_publications:
+            existing_urls = {
+                str(item.get("production_url") or item.get("page_url") or "").strip()
+                for item in enriched_report.get("executed_actions", []) or []
+                if isinstance(item, Mapping)
+            }
+            new_publications = [
+                item
+                for item in codex_publications
+                if str(item.get("production_url", "")).strip() not in existing_urls
+            ]
+            enriched_report["executed_actions"] = list(
+                enriched_report.get("executed_actions") or []
+            ) + new_publications
+            enriched_report["changes_applied"] = len(
+                enriched_report["executed_actions"]
+            )
+            enriched_report["codex_publications"] = codex_publications
+        enriched_report["operations_summary"] = _build_operations_summary(enriched_report)
+        enriched_report["run_outcome"] = classify_run_outcome(enriched_report)
+        enriched_report["program_status"] = enriched_report["run_outcome"]["status"]
+        _finalize_budget_remains()
+        if finalize_cancel.is_set():
+            raise _StageBudgetPause()
+        website_ops.write_daily_report_artifacts(
+            enriched_report,
+            output_dir=output_dir,
+            config=config,
+        )
+        _finalize_budget_remains()
+        if finalize_cancel.is_set():
+            raise _StageBudgetPause()
+        enriched_report["email_delivery"] = send_website_ops_report_email(
+            settings,
+            mode=mode,
+            report=enriched_report,
+        )
+        _clear_pipeline_cursor(settings, mode, run_date)
+        return WebsiteOpsActionResult(
+            ok=enriched_report["run_outcome"]["status"] != FAILED_OUTCOME,
+            message=str(enriched_report["run_outcome"]["summary"]),
+            report=enriched_report,
+        )
+
+    try:
+        return _call_with_stage_timeout(
+            allowance,
+            _run_finalize_stage,
+            cancel=finalize_cancel,
+        )
+    except _StageBudgetPause:
+        return pause("finalize")
+
+
 def _status_chip(value: str) -> str:
     return f'<span class="status-chip status-{html.escape(_feedback_status(value), quote=True)}">{html.escape(_feedback_status_label(value))}</span>'
 

@@ -147,26 +147,8 @@ def create_app() -> FastAPI:
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
-        from sales_support_agent.services.website_ops_storage import (
-            database_mirror_enabled,
-            synchronize_website_ops_cache,
-        )
-
-        if database_mirror_enabled():
-            try:
-                storage_stats = synchronize_website_ops_cache(
-                    settings,
-                    session_factory.kw["bind"],
-                )
-                logger.info(
-                    "lifecycle milestone=website_ops_storage_ready files=%s bytes=%s",
-                    storage_stats["files"],
-                    storage_stats["bytes"],
-                )
-            except Exception:  # A cache restore must not crash the whole Lambda.
-                logger.exception(
-                    "lifecycle milestone=website_ops_storage_restore_deferred"
-                )
+        # The Website Ops mirror is restored on the first Website Ops request,
+        # not during cold start. Unrelated routes must not download it.
         install_embedded_website_ops_scheduler(app)
         app.state.ready = True
         logger.info(
